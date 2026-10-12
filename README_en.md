@@ -100,6 +100,13 @@ use `--cann-target` for Method 2, or use `-DCANN_TARGET` for Method 3. Values ar
 
 ## Functional Tests
 
+On Ascend 950, torch_sparse SpMM is built and installed with `ops_gnn`. After
+installing `torch_sparse`, run `from ops_gnn import torch_sparse_spmm` before
+importing its frontend functions. See the [SpMM API reference](docs/en/api_reference.md#torch_sparse_spmm)
+for interfaces and the [development guide](docs/en/development_guide.md#torch_sparse_spmm)
+for dependencies, build commands and reproduction steps.
+
+
 ```bash
 # Install test dependencies
 pip install pytest pytest-cov

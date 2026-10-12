@@ -803,6 +803,64 @@ y = bspmm(ptr, idx, node_features, rhs=edge_features,
 ```
 
 
+### torch_sparse_spmm
+
+为 torch_sparse COO/CSR 稀疏矩阵乘稠密矩阵提供 NPU 实现，支持 CSR
+sum/add/mean/min/max、批量输入、可选边权，以及浮点 sum/mean 一阶梯度。
+实现随 `ops_gnn` 统一编译和分发。
+
+构建与测试见 [开发指南](development_guide.md#torch_sparse_spmm)，实现设计见 [设计文档](../experiment/design/torch_sparse_spmm/torch_sparse_spmm设计文档.md)。
+
+#### 使用
+
+在导入 torch_sparse/PyG 的前端别名前导入适配模块：
+
+```python
+import torch
+import torch_npu
+from ops_gnn import torch_sparse_spmm
+from torch_sparse import spmm
+
+torch.npu.set_device(0)
+index = torch.tensor([[0, 0, 2], [1, 2, 0]], device="npu", dtype=torch.int64)
+value = torch.tensor([0.5, 1.0, -1.0], device="npu", requires_grad=True)
+dense = torch.randn(3, 16, device="npu", requires_grad=True)
+out = spmm(index, value, 3, 3, dense)
+out.square().sum().backward()
+```
+
+`SparseTensor.spmm/matmul` 的稠密输入路径和 `torch.ops.torch_sparse`
+注册接口保持上游签名。`csr_spmm` 辅助接口可通过 `output_dtype` 选择混合输出：
+
+```python
+rowptr = torch.tensor([0, 2, 2, 3], device="npu", dtype=torch.int64)
+col = index[1].contiguous()
+out = torch_sparse_spmm.csr_spmm(rowptr, col, value, dense, reduce="mean")
+with torch.no_grad():
+    out, arg = torch_sparse_spmm.csr_spmm(rowptr, col, value, dense, reduce="max")
+```
+
+#### 接口约束
+
+| 输入类型 | 输出类型 | 累加类型 |
+| --- | --- | --- |
+| FP32 | FP32 | FP32 |
+| FP16 | FP16 或 FP32 | FP32 |
+| BF16 | BF16 或 FP32 | FP32 |
+| INT8 | INT32 或 FP32 | 对应 INT32 或 FP32 |
+
+- 索引为同一 NPU 上的 int64，稠密输入为 `[..., N, K]`，输出为 `[..., M, K]`。
+- 边权可省略，或为以 E 为首维、每条边 1 或 K 个权重的 Tensor；与稠密输入的类型、设备一致。
+- COO 仅 sum，CSR 支持四种归约，add 等同 sum。空行输出 0，最值 arg 为 E。
+- 最值忽略 NaN，平局保留第一条边；全 NaN 行返回 0/E。整数 mean 向零截断。
+- FP16/BF16 使用 FP32 计算。浮点默认输出同输入，INT8 默认输出 INT32。
+- sum/mean 支持浮点 value/mat 一阶梯度；min/max 梯度、二阶梯度及稀疏乘稀疏不支持。
+- 输入合法性由 Python/Host 检查和设备端 CSR 验证共同保证；NPU 输入不回退 CPU 计算。
+- 缓存仅复用索引拓扑，输入数值每次读取；原地 PyTorch 修改使缓存失效。
+  无版本号的 inference Tensor 不缓存；外部裸指针写入后须清除缓存。
+- `clear_validation_cache()` 清理缓存，`validation_cache_info()` 返回只读统计。
+  `coo_to_csr` 用于独立转换计时，输入必须符合其文档约束。
+
 ## 三、测试指南
 
 ### 运行测试

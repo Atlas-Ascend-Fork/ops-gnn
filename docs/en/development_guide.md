@@ -418,6 +418,57 @@ for reduce in sum mean min max; do
 done
 ```
 
+### torch_sparse_spmm
+
+See the [API reference](api_reference.md#torch_sparse_spmm) for constraints and examples.
+
+#### File responsibilities
+
+| File | Responsibility |
+| --- | --- |
+| `python/ops_gnn/torch_sparse_spmm.py` | torch_sparse adaptation, validation, topology caches and first-order gradients |
+| `csrc/npu/torch_sparse_spmm/op_host/torch_sparse_spmm.cpp` | ATen APIs, argument validation and dispatch on the current NPU stream |
+| `csrc/npu/torch_sparse_spmm/op_kernel/arch35/torch_sparse_spmm.h` / `.cpp` | Declarations and implementations of `TorchSparseSpmm` and its ValueGrad, Validate, Convert and PermuteValues helpers |
+| `torch_sparse_spmm_kernel.h` / `torch_sparse_spmm_tiling.h` | Compute templates and shape parameters |
+| `csrc/pybind.cpp` | Six central bindings in the ops_gnn package |
+
+Entry names follow the neighboring `SegmentCsr` and `SegmentCoo` operators. Helper entries share the `TorchSparseSpmm` prefix.
+
+#### Build and dependencies
+
+Use Ascend 950 (dav-3510), CANN 9.1.0 and compatible PyTorch/torch_npu versions.
+Install matching torch_sparse and torch_scatter packages; PyG tests additionally
+require torch_geometric. Python annotations support the repository's Python 3.9+
+range. From the ops-gnn repository root:
+
+```bash
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+CANN_TARGET=950 NPU_ARCH=dav-3510 MAX_JOBS=2 python -m pip install --no-build-isolation --no-deps -e .
+```
+
+Rebuild after native source changes. This module is unavailable in dav-2201
+builds. CMake discovers the host and architecture-specific kernel directories.
+Bindings are defined in csrc/pybind.cpp; there is no independent extension package.
+
+#### Tests and benchmark
+
+Run from the repository root with the extension and NPU dependencies installed:
+
+```bash
+python -m pytest -q test/torch_sparse_spmm/arch35/test_torch_sparse_spmm.py
+python test/torch_sparse_spmm/arch35/benchmark_torch_sparse_spmm.py --reduce sum --iter 100 --warmup 20
+python test/torch_sparse_spmm/arch35/benchmark_torch_sparse_spmm.py --format coo --dtype fp32
+```
+
+The test directory contains only the benchmark, golden and functional test files.
+Tests cover seven precision combinations, four reductions, gradients, validation,
+cache invalidation and PyG GCN/GIN. Missing PyG dependencies skip only PyG cases.
+The benchmark generates inputs in the script and reports synchronized average
+call latency in milliseconds. Warm COO timing includes weight permutation and
+SpMM; initial topology conversion is outside this average.
+Task acceptance inputs, ATK and profiler tools are in a separate PR validation
+attachment.
+
 ## More Resources
 
 - **[Back to README](../../README_en.md)**

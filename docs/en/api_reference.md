@@ -821,6 +821,69 @@ y = bspmm(ptr, idx, node_features, rhs=edge_features,
 ```
 
 
+### torch_sparse_spmm
+
+NPU sparse-dense multiplication for torch_sparse, integrated into the ops_gnn
+build and package. COO supports sum; CSR supports sum/add/mean/min/max, optional
+weights, batching and floating-point sum/mean first-order gradients.
+
+See the [development guide](development_guide.md#torch_sparse_spmm) for building/testing and the [design document](../experiment/design/torch_sparse_spmm/torch_sparse_spmm设计文档_en.md) for implementation details.
+
+#### Usage
+
+Import the adapter before importing torch_sparse/PyG frontend aliases:
+
+```python
+import torch
+import torch_npu
+from ops_gnn import torch_sparse_spmm
+from torch_sparse import spmm
+
+torch.npu.set_device(0)
+index = torch.tensor([[0, 0, 2], [1, 2, 0]], device="npu", dtype=torch.int64)
+value = torch.tensor([0.5, 1.0, -1.0], device="npu", requires_grad=True)
+dense = torch.randn(3, 16, device="npu", requires_grad=True)
+out = spmm(index, value, 3, 3, dense)
+out.square().sum().backward()
+```
+
+SparseTensor.spmm/matmul dense-input paths and torch.ops.torch_sparse retain
+upstream schemas. The csr_spmm helper accepts output_dtype for mixed outputs:
+
+```python
+rowptr = torch.tensor([0, 2, 2, 3], device="npu", dtype=torch.int64)
+col = index[1].contiguous()
+out = torch_sparse_spmm.csr_spmm(rowptr, col, value, dense, reduce="mean")
+with torch.no_grad():
+    out, arg = torch_sparse_spmm.csr_spmm(rowptr, col, value, dense, reduce="max")
+```
+
+#### Contract
+
+| Input | Output | Accumulation |
+| --- | --- | --- |
+| FP32 | FP32 | FP32 |
+| FP16 | FP16 or FP32 | FP32 |
+| BF16 | BF16 or FP32 | FP32 |
+| INT8 | INT32 or FP32 | INT32 or FP32 respectively |
+
+- Indices are int64 on the same NPU. Dense shape is [..., N, K]; output is [..., M, K].
+- Weights are optional or have E leading entries with 1 or K values per edge,
+  matching the dense input dtype and device.
+- COO supports sum; CSR supports all four reductions, with add equivalent to sum.
+  Empty rows return zero with arg=E. Min/max ignore NaN and retain the first tied
+  edge; all-NaN rows return zero/E. Integer mean truncates toward zero.
+- FP16/BF16 use FP32 computation. Floating outputs default to the input dtype;
+  INT8 defaults to INT32.
+- Floating sum/mean support first-order value/mat gradients. Min/max gradients,
+  double backward and sparse-sparse multiplication are outside scope.
+- Python/host checks and device CSR validation protect inputs. NPU computation
+  never falls back to CPU. Topology caches do not cache numerical inputs.
+- PyTorch mutations invalidate caches. Inference tensors are not cached. Clear
+  caches after external raw-pointer writes. clear_validation_cache clears entries;
+  validation_cache_info returns an immutable snapshot. coo_to_csr profiles a fresh
+  conversion on inputs satisfying its documented preconditions.
+
 ## Testing Guide
 
 ### Running Tests

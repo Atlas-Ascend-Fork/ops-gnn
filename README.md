@@ -99,6 +99,12 @@ wheel 文件名按目标设备区分：
 
 ## 功能测试
 
+Ascend 950 的 torch_sparse SpMM 随 `ops_gnn` 一起构建和安装。安装
+`torch_sparse` 后，在导入其前端函数前执行
+`from ops_gnn import torch_sparse_spmm` 注册 NPU 路径。接口、依赖与复现
+接口与约束见 [SpMM API 文档](docs/zh/api_reference.md#torch_sparse_spmm)，构建与测试命令见 [开发指南](docs/zh/development_guide.md#torch_sparse_spmm)。
+
+
 ```bash
 # 安装测试依赖
 pip install pytest pytest-cov

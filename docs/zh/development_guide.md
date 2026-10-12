@@ -408,6 +408,56 @@ for reduce in sum mean min max; do
 done
 ```
 
+### torch_sparse_spmm
+
+接口约束和示例见 [API 文档](api_reference.md#torch_sparse_spmm)。
+
+#### 文件职责
+
+| 文件 | 职责 |
+| --- | --- |
+| `python/ops_gnn/torch_sparse_spmm.py` | torch_sparse 适配、输入检查、拓扑缓存与一阶梯度 |
+| `csrc/npu/torch_sparse_spmm/op_host/torch_sparse_spmm.cpp` | ATen 接口、参数校验及当前 NPU stream 上的分发 |
+| `csrc/npu/torch_sparse_spmm/op_kernel/arch35/torch_sparse_spmm.h` / `.cpp` | `TorchSparseSpmm` 及 ValueGrad、Validate、Convert、PermuteValues 辅助入口声明与实现 |
+| `torch_sparse_spmm_kernel.h` / `torch_sparse_spmm_tiling.h` | 计算模板和形状参数 |
+| `csrc/pybind.cpp` | 六个中央绑定，复用 ops_gnn 包 |
+
+入口采用同仓 `SegmentCsr`、`SegmentCoo` 的算子名称格式。辅助入口使用 `TorchSparseSpmm` 前缀。
+
+#### 构建与依赖
+
+使用 Ascend 950（dav-3510）、CANN 9.1.0 及匹配的 PyTorch/torch_npu。
+需要安装与 PyTorch 匹配的 torch_sparse、torch_scatter；PyG 测试另需
+torch_geometric。Python 接口兼容仓库的 Python 3.9+ 范围。
+
+在 ops-gnn 仓库根目录执行：
+
+```bash
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+CANN_TARGET=950 NPU_ARCH=dav-3510 MAX_JOBS=2 python -m pip install --no-build-isolation --no-deps -e .
+```
+
+更新原生代码后重新构建。`dav-2201` 构建不提供此模块。
+Host、Kernel 通过仓库 CMake 的架构目录扫描编译；绑定集中在
+`csrc/pybind.cpp`，不创建独立扩展包。
+
+#### 测试与性能测试
+
+在仓库根目录执行，测试要求安装本模块和 NPU 依赖：
+
+```bash
+python -m pytest -q test/torch_sparse_spmm/arch35/test_torch_sparse_spmm.py
+python test/torch_sparse_spmm/arch35/benchmark_torch_sparse_spmm.py --reduce sum --iter 100 --warmup 20
+python test/torch_sparse_spmm/arch35/benchmark_torch_sparse_spmm.py --format coo --dtype fp32
+```
+
+测试目录仅包含 benchmark、golden 和功能测试三个文件。功能测试覆盖七种
+精度组合、四种归约、梯度、参数防护、缓存失效和 PyG GCN/GIN。
+PyG 依赖缺失时仅跳过 PyG 用例，其余功能测试继续执行。
+benchmark 在脚本内生成输入，报告同步后的平均调用耗时（毫秒）。
+COO 测量预热后的调用，包含边权重排和 SpMM；首次转换不计入该平均值。
+任务验收用例、ATK 和 profiler 工具保存在 PR 的独立验证附件中。
+
 ## 七、更多资源
 
 - **[返回 README](../../README.md)**

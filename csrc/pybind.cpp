@@ -26,6 +26,7 @@
 #include "ind2ptr/op_host/ind2ptr.h"
 #include "ptr2ind/op_host/ptr2ind.h"
 #include "scatter/op_host/scatter.h"
+#include "torch_sparse_spmm/op_host/torch_sparse_spmm.h"
 #include "segment_coo/op_host/segment_coo.h"
 #endif
 
@@ -64,9 +65,22 @@ void BindArch22(py::module_& m)
           py::arg("out") = py::none(), "Unified two-dimensional CSR SpMM on Ascend NPU");
 }
 #else
-void BindArch35(py::module_& m)
+void BindTorchSparseSpmm(py::module_& m)
 {
-    m.attr("npu_arch") = "dav-3510";
+    auto torch_sparse_spmm = m.def_submodule("torch_sparse_spmm", "torch_sparse SpMM on Ascend 950");
+    torch_sparse_spmm.def("forward", &opsgnn::TorchSparseSpmmForward, py::arg("ptr"), py::arg("col"), py::arg("value"),
+                          py::arg("mat"), py::arg("reduce"), py::arg("outtype"));
+    torch_sparse_spmm.def("validate", &opsgnn::TorchSparseSpmmValidate, py::arg("ptr"), py::arg("col"), py::arg("n"));
+    torch_sparse_spmm.def("value_backward", &opsgnn::TorchSparseSpmmValueGrad, py::arg("ptr"), py::arg("col"),
+                          py::arg("mat"), py::arg("grad"), py::arg("reduce"), py::arg("width"));
+    torch_sparse_spmm.def("convert", &opsgnn::TorchSparseSpmmConvert, py::arg("src"), py::arg("output"),
+                          py::arg("to_ptr"));
+    torch_sparse_spmm.def("permute_values", &opsgnn::TorchSparseSpmmPermuteValues, py::arg("value"), py::arg("perm"));
+    torch_sparse_spmm.def("tensor_version", &opsgnn::TorchSparseSpmmTensorVersion, py::arg("tensor"));
+}
+
+void BindSegmentCoo(py::module_& m)
+{
     m.attr("SEGMENT_COO_SUM") = static_cast<int32_t>(SEGMENT_COO_SUM);
     m.attr("SEGMENT_COO_MEAN") = static_cast<int32_t>(SEGMENT_COO_MEAN);
     m.attr("SEGMENT_COO_MIN") = static_cast<int32_t>(SEGMENT_COO_MIN);
@@ -74,6 +88,13 @@ void BindArch35(py::module_& m)
     m.def("segment_coo_forward", &segment_coo_forward, py::arg("src"), py::arg("index"),
           py::arg("out"), py::arg("dim_size"), py::arg("reduce"), py::arg("return_arg") = true,
           py::call_guard<py::gil_scoped_release>());
+}
+
+void BindArch35(py::module_& m)
+{
+    m.attr("npu_arch") = "dav-3510";
+    BindTorchSparseSpmm(m);
+    BindSegmentCoo(m);
     m.def("random_walk", &opsgnn::random_walk_npu,
           py::arg("rowptr"), py::arg("col"), py::arg("start"), py::arg("walk_length"),
           py::arg("p") = 1.0, py::arg("q") = 1.0, py::arg("return_edge_indices") = false,
