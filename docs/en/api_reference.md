@@ -315,7 +315,7 @@ def radius_graph(
 ```python
 x = torch.randn(1000, 3, device='npu')
 edge = ops_gnn.radius(x, x, 0.8)          # neighbors within radius 0.8
-edge_g = ops_gnn.radius_graph(x, 0.8)     # build K-NN graph (loop=False by default)
+edge_g = ops_gnn.radius_graph(x, 0.8)     # build a radius graph (loop=False by default)
 ```
 
 **Implementation architecture:**

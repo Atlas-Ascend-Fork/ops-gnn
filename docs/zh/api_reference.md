@@ -309,7 +309,7 @@ def radius_graph(
 ```python
 x = torch.randn(1000, 3, device='npu')
 edge = ops_gnn.radius(x, x, 0.8)          # 找半径 0.8 内的邻居
-edge_g = ops_gnn.radius_graph(x, 0.8)     # 构建 K-NN 图（默认 loop=False）
+edge_g = ops_gnn.radius_graph(x, 0.8)     # 构建半径邻居图（默认不含自环）
 ```
 
 **实现架构：**
