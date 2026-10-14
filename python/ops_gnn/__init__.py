@@ -70,9 +70,15 @@ else:
     )
     from .radius import radius, radius_graph
     from .nearest import nearest
+    from .torch_sparse_utils import (
+        non_diag_mask, torch_sparse_random_walk, torch_sparse_random_walk_with_rand,
+    )
     from .typing import Tensor, OptTensor
 
     __all__ = [
+        'non_diag_mask',
+        'torch_sparse_random_walk',
+        'torch_sparse_random_walk_with_rand',
         'gather_csr',
         'graclus_cluster',
         'gather_coo',

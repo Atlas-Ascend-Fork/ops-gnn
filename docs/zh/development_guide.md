@@ -464,3 +464,42 @@ COO 测量预热后的调用，包含边权重排和 SpMM；首次转换不计�
 - **[AscendC 编程指南](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/910beta1/developerguide/ascendcdev/ascendcdev_0001.html)**
 - **[PyTorch C++ Extensions](https://pytorch.org/tutorials/advanced/cpp_extension.html)**
 - **[CANN 社区版文档](https://www.hiascend.com/document)**
+
+## torch_sparse 工具接口
+
+### 构建与启用
+
+本模块面向 Ascend 950（`dav-3510`），使用仓库统一的 CMake 构建、`ops_gnn._pybind` 扩展和 `libopsgnn_npu_kernel.so`。在已加载 CANN 环境且安装匹配的 PyTorch、torch_npu 后，从仓库根目录安装：
+
+```bash
+NPU_ARCH=dav-3510 python3 -m pip install . --no-build-isolation
+```
+
+安装 `torch_sparse` 可启用其 `SparseTensor` 前端；导入 ops_gnn 安装 NPU 实现：
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+row = torch.tensor([0, 0, 1], dtype=torch.int64, device="npu")
+col = torch.tensor([0, 1, 1], dtype=torch.int64, device="npu")
+mask = ops_gnn.non_diag_mask(row, col, 2, 2, 0)
+```
+
+没有独立的 `_C.so` 或额外构建脚本。工具算子的随机游走合同与 `ops_gnn.random_walk` 的 node2vec/p/q 接口分别维护；后者的现有接口不变。950 以外架构不提供本模块的内核。
+
+
+### 测试
+
+`test/torch_sparse_utils/arch35/` 仅保留功能、精度测试 `test_torch_sparse_utils.py`、`test_functional.py` 和独立 CPU 参考 `golden.py`。用例覆盖关键精度、元数据拦截、死端、共享随机数游走、原生 RNG 重复性、替换值合同、公开关键字参数、空起点、孤立图、CSR 转换和空稀疏输入；依赖 PyTorch、torch_npu 和仓内扩展，不要求第三方 torch_sparse 包。通过 `NPU_DEVICE_ID` 选择设备。
+
+```bash
+NPU_DEVICE_ID=0 python -m pytest test/torch_sparse_utils/arch35 -q
+```
+
+性能看护由后续流水线执行，产品测试目录不包含性能脚本。任务书完整性能矩阵及既有逐例记录保留在独立验收材料中。
+
+任务全量 fixtures、GPU 基线、400 项功能/性能工具、profiler 和可选上游兼容测试保存在 PR 验证附件。fixed2 是 mask200/walk200 的子集，性能唯一用例为 400 项而非 402 项；功能400使用另一套生成矩阵，不能把公共多邻居游走称为跨后端逐元素 EXACT。复现附件时保留原任务计时/内存口径、完整分母、失败/跳过及源码/二进制身份。
+
+[返回 API 参考](api_reference.md)

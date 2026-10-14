@@ -975,3 +975,49 @@ sentinels use the reduction length; indices are zero when that length is zero.
 
 - **[Back to README](../../README_en.md)**
 - **[Development Guide](development_guide.md)**
+
+## torch_sparse utility interfaces
+
+### non_diag_mask
+
+```text
+non_diag_mask(row, col, M, N, k) -> Tensor
+```
+
+`row` and `col` are equal-length one-dimensional int64 COO indices on the same NPU. M and N are nonnegative dimensions; k is a signed diagonal offset. Noncontiguous inputs are accepted and copied to contiguous storage on their original device.
+
+Every entry must satisfy `0 <= row[i] < M` and `0 <= col[i] < N`. If either dimension is zero, the input must have no entries. Indices need not be sorted and duplicates are permitted. The Host checks metadata immediately; index contents are checked on the NPU, so an out-of-range entry raises an asynchronous device error at a synchronization point such as `torch.npu.synchronize()`. A returned Tensor before synchronization is not evidence that invalid input succeeded. Do not consume results or reuse the failing context for measurements.
+
+The bool output has length `E + num_diag`. For `k >= 0`, `num_diag = max(0, min(M, N-k))`; otherwise it is `max(0, min(M+k, N))`. The first E entries are `col-row != k`; the remaining `num_diag` entries are False.
+
+This public layout follows the task contract. The NPU adapters for `SparseTensor.set_diag/fill_diag` separately sort COO entries and rebuild CSR caches; they do not use this layout as upstream sorted-insertion scatter indices. CPU/CUDA frontend implementations remain unchanged.
+
+### Optional SparseTensor replacement values
+
+For a weighted input, `values` may be None, a Python numeric scalar, or a Tensor broadcastable to `[num_diag, *value.shape[1:]]`. Tensor values must share the stored value's exact device, including its device index. Multi-element and empty Tensors must also have the same dtype; a one-element Tensor retains PyTorch scalar conversion, including zero-dimensional and `[1,1]` shapes. Unsupported conversions and incompatible broadcasting raise framework errors. Type, device and dtype checks run before the native mask call, including an empty diagonal.
+
+For an unweighted input, supplied values are ignored and the output remains unweighted. None fills weighted diagonal features with ones; this is the existing NPU feature-valued behavior and is not a claim of equivalence to every upstream broadcasting corner case. The tensor computation is independently testable without installing the optional SparseTensor package.
+
+
+### torch_sparse_random_walk
+
+```text
+torch_sparse_random_walk(rowptr, col, start, walk_length) -> Tensor
+torch_sparse_random_walk_with_rand(rowptr, col, start, walk_length, rand) -> Tensor
+```
+
+The first three arguments are one-dimensional int64 tensors on the same NPU: CSR pointers, column indices and starting nodes. `walk_length` is nonnegative. The int64 output has shape `[S, walk_length+1]`, with starting nodes in its first column. Each step selects a neighbor uniformly. A valid zero-degree node terminates the walk and leaves the remaining entries at -1. Invalid CSR content, indices or starting nodes raise errors rather than being treated as valid dead ends.
+
+The public operation obtains state from the NPU generator and runs Philox on the device. `torch_sparse_random_walk_with_rand` takes a same-device float32 `[S, walk_length]` tensor for comparisons with shared random inputs. Values must be finite and in `[0, 1)`. If float32 multiplication rounds a sampled index up to degree, the index is limited to degree-1.
+
+Equal seeds do not imply equal random sequences across backends. Single-neighbor graphs and paths using shared rand tensors support elementwise comparisons. Cross-backend equality for the public multi-neighbor operation requires matching both the RNG algorithm and its consumption order.
+
+
+### Implementation and errors
+
+- Host code validates dtype, dimensions, devices, sizes and output-length overflow. Kernels incorporate content bounds checks. Outputs and contiguous copies stay on the NPU.
+- Kernels use the caller's current NPU stream. Metadata errors are immediate; device content errors surface at synchronization. Run negative cases in separate processes with explicit synchronization and do not reuse their device context for timing.
+- Kernels reside in `csrc/npu/non_diag_mask` and `csrc/npu/torch_sparse_random_walk`, avoiding collisions with the existing random_walk implementation and build objects.
+- Public Host/Kernel C++ interfaces use `opsgnn`. The utility walk parameters are named `TorchSparseRandomWalkLaunchParams`, distinct from the existing node2vec operator's parameter type. Dispatcher namespaces remain independent of C++ namespaces.
+- The compatibility frontend resides in `python/ops_gnn/torch_sparse_utils.py`. Dispatcher registration retains the `torch_sparse` and auxiliary `ops_gnn` interfaces without CPU compute fallback.
+- Kernels allocate no algorithm workspace. Random inputs, outputs, contiguous copies and SparseTensor frontend temporaries still consume memory; the complete call is not a zero-extra-memory operation.

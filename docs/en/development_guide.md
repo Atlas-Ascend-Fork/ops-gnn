@@ -475,3 +475,40 @@ attachment.
 - **[AscendC Programming Guide](https://www.hiascend.com/document)**
 - **[PyTorch C++ Extensions](https://pytorch.org/tutorials/advanced/cpp_extension.html)**
 - **[CANN Community Edition Docs](https://www.hiascend.com/document)**
+
+## torch_sparse utility interfaces
+
+### Build and activation
+
+This module targets Ascend 950 (`dav-3510`). It uses the repository CMake build, the `ops_gnn._pybind` extension and `libopsgnn_npu_kernel.so`. After loading CANN and installing compatible PyTorch and torch_npu packages, install from the repository root:
+
+```bash
+NPU_ARCH=dav-3510 python3 -m pip install . --no-build-isolation
+```
+
+Install `torch_sparse` to use its `SparseTensor` frontend. Import ops_gnn to activate NPU implementations:
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+row = torch.tensor([0, 0, 1], dtype=torch.int64, device="npu")
+col = torch.tensor([0, 1, 1], dtype=torch.int64, device="npu")
+mask = ops_gnn.non_diag_mask(row, col, 2, 2, 0)
+```
+
+There is no separate `_C.so` or standalone build script. The utility operator maintains a separate random-walk contract from the existing `ops_gnn.random_walk` node2vec/p/q interface, which remains unchanged. These kernels are unavailable on other architectures.
+
+
+### Tests
+
+`test/torch_sparse_utils/arch35/` contains only functional and accuracy tests in `test_torch_sparse_utils.py`, `test_functional.py`, and independent CPU `golden.py`. Coverage includes exact values, metadata errors, dead ends, shared-random walks, native RNG reproducibility, replacement-value contracts, public keyword arguments, empty starts, isolated graphs, CSR conversions, and empty sparse inputs. Tests require PyTorch, torch_npu and this repository's extension, without requiring the third-party torch_sparse package. Set `NPU_DEVICE_ID` to choose the device.
+
+```bash
+NPU_DEVICE_ID=0 python -m pytest test/torch_sparse_utils/arch35 -q
+```
+
+Performance monitoring belongs to the future pipeline; no performance script is included in the product test directory. The complete task-book performance matrix and existing per-case records remain in the separate acceptance evidence.
+
+Full task fixtures, GPU baselines, 400-case functional/performance tools, profiler and optional upstream compatibility tests are retained in the PR validation attachment. Its fixed2 group overlaps mask200/walk200: there are 400 unique performance cases, not402. Functional400 uses a different generated matrix; public multi-neighbor walks are not claimed as cross-backend EXACT. Preserve the original task timing/memory criteria, complete case sets, failures/skips and source/binary identities when reproducing that evidence.

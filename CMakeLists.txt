@@ -395,6 +395,7 @@ if(NPU_ASC_FILES)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${OUTPUT_KERNEL_DIR}
         COMMAND ${CMAKE_ASC_COMPILER}
         ARGS -shared -fPIC -o ${NPU_KERNEL_LIB}
+            -Wl,-soname,lib${NPU_KERNEL_LIB_NAME}.so
             ${NPU_KERNEL_OBJECTS}
             ${ASC_LINK_FLAGS}
         DEPENDS ${NPU_KERNEL_OBJECTS}

@@ -9,7 +9,12 @@
  */
 
 #include <torch/extension.h>
+#include <torch/library.h>
+#include <ATen/core/dispatch/Dispatcher.h>
+#include <c10/core/DispatchKey.h>
 #include <pybind11/pybind11.h>
+
+#include <string>
 #ifdef OPSGNN_DAV_2201
 #include "spmm_max/op_host/spmm_max.h"
 #include "spmm_min/op_host/spmm_min.h"
@@ -27,14 +32,35 @@
 #include "ptr2ind/op_host/ptr2ind.h"
 #include "scatter/op_host/scatter.h"
 #include "torch_sparse_spmm/op_host/torch_sparse_spmm.h"
+#include "non_diag_mask/op_host/non_diag_mask.h"
+#include "torch_sparse_random_walk/op_host/torch_sparse_random_walk.h"
 #include "segment_coo/op_host/segment_coo.h"
 #endif
 
 namespace py = pybind11;
 
+namespace opsgnn {
+bool HasPrivateUse1Kernel(const std::string& opName)
+{
+    const auto op = c10::Dispatcher::singleton().findOp(c10::OperatorName(opName, ""));
+    return op.has_value() && op->hasKernelForDispatchKey(c10::DispatchKey::PrivateUse1);
+}
+}  // namespace opsgnn
+
 namespace {
 
 #ifndef OPSGNN_DAV_2201
+void RegisterTorchSparseCompat(py::module_& module)
+{
+    module.def("non_diag_mask", &opsgnn::non_diag_mask_npu,
+               py::arg("row"), py::arg("col"), py::arg("M"), py::arg("N"), py::arg("k"));
+    module.def("torch_sparse_random_walk", &opsgnn::torch_sparse_random_walk_npu,
+               py::arg("rowptr"), py::arg("col"), py::arg("start"), py::arg("walk_length"));
+    module.def("torch_sparse_random_walk_with_rand", &opsgnn::torch_sparse_random_walk_with_rand_npu,
+               py::arg("rowptr"), py::arg("col"), py::arg("start"), py::arg("walk_length"),
+               py::arg("rand"));
+}
+
 void RegisterSegmentCsr(py::module_& module)
 {
     module.def(
@@ -142,9 +168,35 @@ void BindArch35(py::module_& m)
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
     m.doc() = "ops_gnn: NPU extension";
+    m.def("has_private_use1_kernel", &opsgnn::HasPrivateUse1Kernel, py::arg("op_name"),
+          "True if the operator already has a PrivateUse1 (NPU) kernel, e.g. a pre-existing "
+          "third-party registration");
 #ifdef OPSGNN_DAV_2201
     BindArch22(m);
 #else
     BindArch35(m);
+    RegisterTorchSparseCompat(m);
 #endif
 }
+
+#ifndef OPSGNN_DAV_2201
+// Keep these direct operators available even when upstream torch_sparse is not
+// installed. The upstream namespace is implementation-only: torch_sparse
+// remains responsible for defining its own schemas during import.
+TORCH_LIBRARY_FRAGMENT(ops_gnn, m) {
+    m.def("non_diag_mask(Tensor row, Tensor col, int M, int N, int k) -> Tensor");
+    m.def("torch_sparse_random_walk(Tensor rowptr, Tensor col, Tensor start, int walk_length) -> Tensor");
+    m.def("torch_sparse_random_walk_with_rand(Tensor rowptr, Tensor col, Tensor start, int walk_length, Tensor rand) -> Tensor");
+}
+
+TORCH_LIBRARY_IMPL(ops_gnn, PrivateUse1, m) {
+    m.impl("non_diag_mask", &opsgnn::non_diag_mask_npu);
+    m.impl("torch_sparse_random_walk", &opsgnn::torch_sparse_random_walk_npu);
+    m.impl("torch_sparse_random_walk_with_rand", &opsgnn::torch_sparse_random_walk_with_rand_npu);
+}
+
+TORCH_LIBRARY_IMPL(torch_sparse, PrivateUse1, m) {
+    m.impl("non_diag_mask", &opsgnn::non_diag_mask_npu);
+    m.impl("random_walk", &opsgnn::torch_sparse_random_walk_npu);
+}
+#endif

@@ -956,3 +956,49 @@ values = ops_gnn.segment_coo(src, index, dim_size=4, reduce="sum")
 
 - **[返回 README](../../README.md)**
 - **[查看开发指导](development_guide.md)**
+
+## torch_sparse 工具接口
+
+### non_diag_mask
+
+```text
+non_diag_mask(row, col, M, N, k) -> Tensor
+```
+
+`row`、`col` 为同一 NPU 上长度相同的一维 int64 COO 索引，M、N 为非负矩阵尺寸，k 为有符号对角偏移。允许非连续输入，Host 在原设备上生成连续副本。
+
+每个元素须满足 `0 <= row[i] < M`、`0 <= col[i] < N`。任一维度为零时输入必须没有元素；索引无需排序，可重复。Host 即时检查元数据，索引内容在 NPU 上检查，因此越界错误可能在 `torch.npu.synchronize()` 等同步点才以设备异常暴露。同步前返回 Tensor 不代表非法输入成功；发生错误后不能继续使用结果或复用该上下文计时。
+
+输出为 bool 张量，长度为 `E + num_diag`。当 `k >= 0` 时，`num_diag = max(0, min(M, N-k))`；否则为 `max(0, min(M+k, N))`。前 E 个元素为 `col-row != k`，尾部补 `num_diag` 个 False。
+
+这是任务定义的公共掩码排列。`SparseTensor.set_diag/fill_diag` 的 NPU 适配器另外完成 COO 排序与 CSR 缓存重建，不将该排列直接当作上游有序插入的散布索引。CPU/CUDA 前端保持原实现。
+
+### 可选 SparseTensor 前端的替换值
+
+有权输入的 `values` 可为 None、Python 数值标量，或能广播至 `[num_diag, *value.shape[1:]]` 的 Tensor。Tensor 必须与原权重处于同一设备（包括设备编号）；多元素及空 Tensor 的 dtype 也必须相同。单元素 Tensor 保留 PyTorch 标量转换，包含零维及 `[1,1]` 等形状；不能表示的转换或不兼容广播由框架报错。类型、设备和 dtype 检查发生在 native mask 调用之前，空对角线也不绕过检查。
+
+无权输入忽略传入 values，输出继续无权。对于有权输入，None 将各对角 feature 填为 1；这是既有 NPU 扩展行为，不声称与上游所有广播边界完全等价。底层 Tensor 计算可在不安装可选 SparseTensor 包时独立测试。
+
+
+### torch_sparse_random_walk
+
+```text
+torch_sparse_random_walk(rowptr, col, start, walk_length) -> Tensor
+torch_sparse_random_walk_with_rand(rowptr, col, start, walk_length, rand) -> Tensor
+```
+
+前三个参数为同一 NPU 上的一维 int64 张量，分别为 CSR 指针、列索引和起点。`walk_length` 非负；输出 int64 `[S, walk_length+1]`，首列为起点。每一步均匀选择当前节点的邻居；遇到合法零度节点则终止，该行后续元素为 -1。非法 CSR、越界索引或非法起点会报错，不按合法死端处理。
+
+公共入口从 NPU 生成器取得随机状态，在设备上执行 Philox。`torch_sparse_random_walk_with_rand` 接受同设备 float32 `[S, walk_length]` 随机数，供共享随机输入的数值对照。随机值须有限且处于 `[0, 1)`；索引乘法的 float32 舍入可能得到 degree，此时限制为 degree-1。
+
+相同 seed 不意味着不同后端的随机序列一致。单邻居图和共享 rand 的路径可做逐元素对照；公共多邻居接口的跨后端一致性需同时对齐 RNG 算法及消费顺序。
+
+
+### 实现与错误处理
+
+- Host 校验 dtype、维度、设备、尺寸和输出长度溢出；内核融合内容范围检查，输出与连续副本始终留在 NPU。
+- 内核提交到调用者当前 NPU stream。元信息错误立即抛出；设备内容错误通过设备异常在同步点暴露。负例应在独立进程中运行并显式同步，不能将异常后的设备上下文继续用作后续计时环境。
+- 内核分别位于 `csrc/npu/non_diag_mask` 和 `csrc/npu/torch_sparse_random_walk`，避免与已有 random_walk 内核和构建对象重名。
+- 公开 Host/Kernel C++ 接口统一处于 `opsgnn`；工具类游走参数命名为 `TorchSparseRandomWalkLaunchParams`，与原 node2vec 算子的参数类型区分。Dispatcher 命名空间与 C++ 命名空间分别维护。
+- 兼容前端位于 `python/ops_gnn/torch_sparse_utils.py`。dispatcher 注册保留 `torch_sparse` 和辅助 `ops_gnn` 接口，不提供 CPU 计算回退。
+- 内核不申请算法 workspace；随机输入、输出、连续副本及 SparseTensor 前端临时张量仍占用内存，不能据此称全调用零额外内存。
