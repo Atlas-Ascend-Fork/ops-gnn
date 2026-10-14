@@ -180,6 +180,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `segment_max_csr` | CSR 格式的分段最大值运算 | NPU | [segment_max_csr — CSR 分段最大值](docs/zh/api_reference.md#segment_max_csr--csr-分段最大值) |
 | `radius` / `radius_graph` | 半径内邻居搜索（torch_cluster 兼容，Ascend 950PR） | NPU | [radius / radius_graph — 半径内邻居搜索](docs/zh/api_reference.md#radius--radius_graph--半径内邻居搜索) |
 | `nearest` | 同batch最近y点的全局索引 | NPU（950，arch35） | [nearest](docs/zh/api_reference.md) |
+| `grid_cluster` | 将点坐标映射为规则网格的线性 int64 ID（torch_cluster 兼容） | NPU（950，arch35） | [grid_cluster — 规则网格聚类](docs/zh/api_reference.md) |
 | `graclus_cluster` | 图贪心聚类 | NPU / CPU float64 回退 | [graclus_cluster — 图贪心聚类](docs/zh/api_reference.md#graclus_cluster--图贪心聚类) |
 | `ind2ptr` | 有序行索引转 CSR 行指针（对齐 torch_sparse） | NPU | [ind2ptr — 行索引转 CSR 行指针](docs/zh/api_reference.md#ind2ptr--行索引转-csr-行指针) |
 | `ptr2ind` | CSR 行指针转行索引（对齐 torch_sparse） | NPU | [ptr2ind — CSR 行指针转行索引](docs/zh/api_reference.md#ptr2ind--csr-行指针转行索引) |

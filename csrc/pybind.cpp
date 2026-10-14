@@ -23,6 +23,7 @@
 #else
 #include "gather_coo/op_host/gather_coo.h"
 #include "gather_csr/op_host/gather_csr.h"
+#include "grid_cluster/op_host/grid_cluster.h"
 #include "random_walk/op_host/random_walk.h"
 #include "segment_max_csr/op_host/segment_max_csr.h"
 #include "segment_csr/op_host/segment_csr.h"
@@ -119,6 +120,9 @@ void BindSegmentCoo(py::module_& m)
 void BindArch35(py::module_& m)
 {
     m.attr("npu_arch") = "dav-3510";
+    m.def("grid_cluster", &opsgnn::grid_cluster_npu,
+          py::arg("pos"), py::arg("size"), py::arg("start") = py::none(),
+          py::arg("end") = py::none(), "Regular grid clustering on NPU");
     BindTorchSparseSpmm(m);
     BindSegmentCoo(m);
     m.def("random_walk", &opsgnn::random_walk_npu,

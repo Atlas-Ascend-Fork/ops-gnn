@@ -820,6 +820,50 @@ y = bspmm(ptr, idx, node_features, rhs=edge_features,
 # y: [M, 2, 3, 4]
 ```
 
+### 2.11 grid_cluster — Regular Grid Clustering
+
+Map `[N,D]` point coordinates to linear regular-grid IDs. Points in the same cell receive the same ID. The interface is compatible with `torch_cluster.grid_cluster`.
+
+**Signature:**
+
+```python
+def grid_cluster(
+    pos: torch.Tensor,
+    size: torch.Tensor,
+    start: Optional[torch.Tensor] = None,
+    end: Optional[torch.Tensor] = None,
+) -> torch.Tensor: ...
+```
+
+**Arguments:**
+
+| Argument | Shape | Description |
+| --- | --- | --- |
+| `pos` | `[N,D]` | Point coordinates on an NPU; `N >= 0`, `D > 0`. Supports float16, bfloat16, float32, int8, uint8, int16, and int32. |
+| `size` | `[D]` | Cell size in each dimension. All values must be positive and finite. |
+| `start` | `[D]` or `None` | Optional grid origin; defaults to the per-dimension minimum of `pos`. |
+| `end` | `[D]` or `None` | Optional grid bound; defaults to the per-dimension maximum of `pos`. |
+
+All inputs must be on the same NPU, and supplied vectors must have length `D`. Noncontiguous inputs are accepted. Mixed dtypes follow PyTorch type promotion.
+
+**Returns:** A `torch.int64` tensor of shape `[N]` on the same NPU. Empty `pos` returns an empty tensor.
+
+**Example:**
+
+```python
+import torch
+import ops_gnn
+
+pos = torch.tensor([[0., 0.], [0.4, 0.4], [1.2, 0.]], device="npu")
+size = torch.tensor([1., 1.], device="npu")
+cluster = ops_gnn.grid_cluster(pos, size)
+# tensor([0, 0, 1], device='npu:0')
+```
+
+**Semantics and limits:** Each grid coordinate is computed by truncating `(pos - start) / size` toward zero, then linearized with stride one in dimension 0. Explicit `start/end` values do not clip points outside the grid. Final IDs use `int64` and follow the CPU reference's overflow behavior. Autograd is not provided.
+
+---
+
 
 ### torch_sparse_spmm
 

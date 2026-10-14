@@ -803,6 +803,50 @@ y = bspmm(ptr, idx, node_features, rhs=edge_features,
 ```
 
 
+### 2.11 grid_cluster — 规则网格聚类
+
+将 `[N,D]` 点坐标映射为规则网格的线性 ID；落在同一网格单元的点得到相同 ID。接口兼容 `torch_cluster.grid_cluster`。
+
+**函数签名：**
+
+```python
+def grid_cluster(
+    pos: torch.Tensor,
+    size: torch.Tensor,
+    start: Optional[torch.Tensor] = None,
+    end: Optional[torch.Tensor] = None,
+) -> torch.Tensor: ...
+```
+
+**参数：**
+
+| 参数 | 形状 | 说明 |
+| --- | --- | --- |
+| `pos` | `[N,D]` | NPU 上的点坐标；`N >= 0`、`D > 0`，支持 float16、bfloat16、float32、int8、uint8、int16、int32。 |
+| `size` | `[D]` | 各维网格大小，所有元素必须为正有限值。 |
+| `start` | `[D]` 或 `None` | 可选网格起点，默认取 `pos` 逐维最小值。 |
+| `end` | `[D]` 或 `None` | 可选网格终点，默认取 `pos` 逐维最大值。 |
+
+所有输入须在同一 NPU；提供的向量长度须等于 `D`。允许非连续输入；混合 dtype 按 PyTorch 类型提升规则计算。
+
+**返回值：**同一 NPU 上形状为 `[N]` 的 `torch.int64` Tensor。空 `pos` 返回空 Tensor。
+
+**示例：**
+
+```python
+import torch
+import ops_gnn
+
+pos = torch.tensor([[0., 0.], [0.4, 0.4], [1.2, 0.]], device="npu")
+size = torch.tensor([1., 1.], device="npu")
+cluster = ops_gnn.grid_cluster(pos, size)
+# tensor([0, 0, 1], device='npu:0')
+```
+
+**语义与限制：**各维坐标由 `(pos - start) / size` 向零截断得到，再按第 0 维步长为 1 的顺序线性化。显式 `start/end` 不裁剪范围外的点。最终 ID 使用 `int64`，遵循 CPU 参考实现的溢出语义；不提供梯度计算。
+
+---
+
 ### torch_sparse_spmm
 
 为 torch_sparse COO/CSR 稀疏矩阵乘稠密矩阵提供 NPU 实现，支持 CSR

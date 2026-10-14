@@ -42,6 +42,7 @@ else:
     from .gather_csr import gather_csr
     from .graclus_cluster import graclus_cluster
     from .gather_coo import gather_coo
+    from .grid_cluster import grid_cluster
     from .ind2ptr import ind2ptr
     from .ptr2ind import ptr2ind
     from .random_walk import random_walk
@@ -82,6 +83,7 @@ else:
         'gather_csr',
         'graclus_cluster',
         'gather_coo',
+        'grid_cluster',
         'random_walk',
         'scatter',
         'scatter_sum',

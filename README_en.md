@@ -182,6 +182,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `segment_max_csr` | Segmented max reduction on CSR format | NPU | [segment_max_csr — CSR Segmented Max](docs/en/api_reference.md#segment_max_csr--csr-segmented-max) |
 | `radius` / `radius_graph` | Radius neighbor search (torch_cluster compatible, Ascend 950PR) | NPU | [radius / radius_graph — Radius Neighbor Search](docs/en/api_reference.md#radius--radius_graph--radius-neighbor-search) |
 | `nearest` | Global index of the nearest y point in the same batch | NPU (950, arch35) | [nearest](docs/en/api_reference.md) |
+| `grid_cluster` | Map point coordinates to linear int64 regular-grid IDs (torch_cluster compatible) | NPU (950, arch35) | [grid_cluster — Regular Grid Clustering](docs/en/api_reference.md) |
 | `graclus_cluster` | Greedy graph clustering | NPU / CPU fallback for float64 | [graclus_cluster — Greedy Graph Clustering](docs/en/api_reference.md#graclus_cluster--greedy-graph-clustering) |
 | `ind2ptr` | Sorted row indices to CSR row pointer (torch_sparse-aligned) | NPU | [ind2ptr — Sorted Row Indices to CSR Row Pointer](docs/en/api_reference.md#ind2ptr--sorted-row-indices-to-csr-row-pointer) |
 | `ptr2ind` | CSR row pointer to row indices (torch_sparse-aligned) | NPU | [ptr2ind — CSR Row Pointer to Row Indices](docs/en/api_reference.md#ptr2ind--csr-row-pointer-to-row-indices) |
