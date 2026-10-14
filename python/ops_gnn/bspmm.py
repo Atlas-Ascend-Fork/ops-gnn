@@ -18,8 +18,8 @@ def bspmm(indptr: torch.Tensor, indices: torch.Tensor,
           x: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
     """Run generalized batched CSR aggregation.
 
-    Node and edge features have rank three or higher. Their trailing feature
-    dimensions follow item-axis broadcasting rules, with missing dimensions
+    At least one node or edge feature tensor has rank three or higher. Trailing
+    feature dimensions follow item-axis broadcasting rules, with missing dimensions
     inserted immediately after the item axis. The supported message
     operations and reductions are the same as :func:`ops_gnn.spmm`.
     """
