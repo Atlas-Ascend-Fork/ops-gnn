@@ -207,7 +207,7 @@ class BinaryDistribution(Distribution):
 setup(
     name='ops-gnn',
     version=f'{__version__}+cann.{CANN_TARGET}',
-    license='MIT',
+    license='CANN Open Software License Agreement Version 2.0',
     url=URL,
     download_url=f'{URL}/archive/{__version__}.tar.gz',
     python_requires='>=3.9',
