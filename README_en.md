@@ -181,6 +181,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `random_walk` | Uniform or node2vec-biased random walks on COO graphs | NPU | [random_walk — NPU Random Walk](docs/en/api_reference.md#random_walk--npu-random-walk) |
 | `segment_max_csr` | Segmented max reduction on CSR format | NPU | [segment_max_csr — CSR Segmented Max](docs/en/api_reference.md#segment_max_csr--csr-segmented-max) |
 | `radius` / `radius_graph` | Radius neighbor search (torch_cluster compatible, Ascend 950PR) | NPU | [radius / radius_graph — Radius Neighbor Search](docs/en/api_reference.md#radius--radius_graph--radius-neighbor-search) |
+| `knn` / `knn_graph` | Exact neighbor search and graph construction (Ascend 950PR) | NPU | [knn / knn_graph — Exact Neighbor Search](docs/en/api_reference.md#knn--knn_graph--exact-neighbor-search) |
 | `nearest` | Global index of the nearest y point in the same batch | NPU (950, arch35) | [nearest](docs/en/api_reference.md) |
 | `grid_cluster` | Map point coordinates to linear int64 regular-grid IDs (torch_cluster compatible) | NPU (950, arch35) | [grid_cluster — Regular Grid Clustering](docs/en/api_reference.md) |
 | `graclus_cluster` | Greedy graph clustering | NPU / CPU fallback for float64 | [graclus_cluster — Greedy Graph Clustering](docs/en/api_reference.md#graclus_cluster--greedy-graph-clustering) |
@@ -206,3 +207,6 @@ Here, `<op>` is the operator name, and `<arch>` is `arch35` (950) or `arch22` (A
 ## License
 
 CANN Open Software License Agreement Version 2.0
+
+Third-party copyrights and complete licenses are retained in [LICENSE](LICENSE).
+KNN adaptation scope is documented in the [API reference](docs/en/api_reference.md#knn-third-party-sources).

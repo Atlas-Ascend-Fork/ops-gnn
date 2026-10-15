@@ -928,6 +928,180 @@ with torch.no_grad():
   validation_cache_info returns an immutable snapshot. coo_to_csr profiles a fresh
   conversion on inputs satisfying its documented preconditions.
 
+### knn / knn_graph — Exact Neighbor Search
+
+This operator performs exact candidate scanning and Top-K selection with
+Ascend C SIMT. It exposes `ops_gnn.knn` and the composed Python API
+`ops_gnn.knn_graph`.
+
+#### Interfaces
+
+```python
+knn(x, y, k, batch_x=None, batch_y=None, cosine=False,
+    num_workers=1, batch_size=None)
+knn_graph(x, k, batch=None, loop=False, flow='source_to_target',
+          cosine=False, num_workers=1, batch_size=None)
+```
+
+- `x[N,F]` and `y[M,F]` must share the NPU device, feature dimension and
+  FP16/FP32 dtype. One-dimensional inputs become `[N,1]`. Noncontiguous
+  inputs are made contiguous within the call.
+- The result is an NPU int64 tensor `[2,M*k]`: query indices in row 0 and
+  source indices in row 1. An input with `numel()==0` produces `[2,0]`.
+- Batch vectors are sorted int64. `bucketize` constructs pointers for
+  multiple batches; candidates never cross the query's batch boundary.
+- Cosine distance executes on NPU. A zero-norm pair has distance 1.
+- `knn_graph(loop=False)` requests `k+1` neighbors and removes self-loops.
+  Both flow directions are supported. `num_workers` is accepted but ignored.
+
+#### Boundaries and numerical semantics
+
+Require `1 <= k <= N` within each query's batch. Fixed-capacity local
+state handles `k<=64`; larger K uses dynamic Top-K state. The reference
+GPU's `k<=100` limit is not imposed. Regression cases cover
+65/100/101/128/129/257, `k=N`, and graph calls across dispatch boundaries.
+Without self-loops, graph calls require `k+1<=N`. Batches must be sorted.
+NaN/Inf ordering is not part of the validated contract.
+
+L2 follows CPU torch_cluster's nanoflann L2_Adaptor: squared differences
+are added left-associatively in groups of four features, then added to the
+distance accumulator. Remaining features are processed sequentially.
+FP16 explicitly rounds subtraction, multiplication and each addition to
+FP16; it does not accumulate in FP32. FP32 preserves the same grouping
+in source and uses the repository's default compiler settings.
+L2 ties follow CPU tree-query order using metadata built on NPU. Cosine
+uses FP32 dot products and norms, breaking ties by smaller source index.
+
+Numerical compatibility targets genuine CPU torch_cluster 1.6.3. Other
+references with sequential FP16 accumulation can select different neighbor
+sets and are not substitutes for the grouped-four arithmetic above.
+
+#### Implementation
+
+| File | Responsibility |
+| --- | --- |
+| `csrc/npu/knn/op_host/knn.cpp` | Argument and batch validation, output allocation, current-stream launch |
+| `csrc/npu/knn/op_kernel/arch35/knn_kernel.cpp` | Query partitioning, distances, ordered Top-K |
+| `csrc/npu/knn/op_kernel/arch35/knn_tree.h` | NPU partitioning, leaf order and tie traversal; see [third-party sources](#knn-third-party-sources) |
+| `python/ops_gnn/knn.py` (repository root) | Input preparation, bucketize, graph composition |
+
+Each AIV runs 256 SIMT threads. A thread scans all candidates for each
+assigned query. Small K dispatches capacities 1/4/8/16/32/64; F=3/16/32
+with capacity at most 32 caches query coordinates. Large K allocates
+M-by-K FP32 distance state and stores indices directly in output columns.
+Queries own disjoint state slices. No extra M-by-N distance table is
+materialized. Tree metadata costs O(N) for FP16 and O(N*F) for FP32 and
+is included in full API timing.
+
+One block builds each batch's tree. All 256 threads cooperate on the
+first 7 FIFO nodes, increasing to 31 for batchN>=8192 and 63 for
+batchN>=16384 when effective tree dimensions are at most 3. FP16 uses
+only the first coordinate for tree construction. Remaining disjoint
+subtrees are processed in parallel frontiers. An 8 KiB UB holds block
+min/max reductions, counts and prefix offsets. FP32 reuses the selected
+axis range; temporary swap positions reuse unallocated node storage and
+are discarded before that storage is reused.
+
+For `k=N`, Top-K state naturally reaches the full-table order of size.
+There is no cross-call answer cache, CPU distance computation or
+approximate search.
+
+#### KNN Third-Party Sources
+
+The repository-root [LICENSE](../../LICENSE) retains the original copyrights
+and complete MIT and BSD licenses once, without duplicating license text in
+translated documentation. The [CANN license](../../LICENSE) for new local
+portions is unchanged; it does not replace the third-party terms.
+
+##### Python interfaces
+
+Argument preparation and graph composition in `python/ops_gnn/knn.py`
+follow [`torch_cluster/knn.py` from pytorch_cluster 1.6.3](https://github.com/rusty1s/pytorch_cluster/blob/1.6.3/torch_cluster/knn.py)
+by Matthias Fey (MIT). The adapted scope comprises both public APIs'
+parameter names/defaults and the empty-input, shape/contiguity, batch-size
+and bucketize preparation in `_knn_impl`. `_knn_graph_impl` retains k+1,
+self-loop removal and flow semantics. Argument records, `Signature.bind`
+and NPU PyBind dispatch are local adaptations.
+
+No torch_cluster CPU/CUDA search source or binaries are bundled. Tests use
+the independent PyTorch CPU reference in `test/knn/arch35/golden.py`;
+neither testing nor the NPU runtime requires the torch_cluster package.
+
+##### nanoflann rules
+
+The tree partition, traversal-order and distance-arithmetic rules adapt
+the [nanoflann header bundled in pytorch_cluster](https://github.com/rusty1s/pytorch_cluster/blob/e9a855c284b45edcbf0282cf70ac09bee0ce4e49/csrc/cpu/utils/nanoflann.hpp)
+at commit `e9a855c284b45edcbf0282cf70ac09bee0ce4e49`
+(`csrc/cpu/utils/nanoflann.hpp`, BSD, Jose Luis Blanco).
+
+| Local file and functions | Upstream rules |
+| --- | --- |
+| `csrc/npu/knn/op_kernel/arch35/knn_tree.h`: `SelectSplit`, `SerialPartition`, `CooperativePartition` | `middleSplit_` and `planeSplit`: axis, thresholds and two-pointer permutation |
+| `csrc/npu/knn/op_kernel/arch35/knn_tree.h`: tree construction and `Earlier` | `divideTree` and `searchLevel`: bounds, leaf order and traversal |
+| `csrc/npu/knn/op_kernel/arch35/knn_kernel.cpp`: `L2Distance`, `SquaredDifference` | `L2_Adaptor::evalMetric`: grouped-four arithmetic |
+| `test/knn/arch35/golden.py`: `_TieOrder` | Independently implemented CPU partition/traversal rules for equal-distance ordering |
+
+These are NPU adaptations, not a copy of the complete nanoflann header.
+NPU layouts, cooperative reductions/scans, kernel dispatch and streaming
+Top-K are implemented here. Three production files contain adapted
+interfaces/rules: `knn.py`, `knn_tree.h` and `knn_kernel.cpp`; this does not
+attribute the whole project to a third party. SCA similarity percentages
+do not define the adaptation scope. MIT and BSD cover different sources
+and are not interchangeable. Attribution remains in each affected source.
+
+#### Build and test
+
+Validated: Ascend950PR (`dav-3510`), CANN 9.1.0, PyTorch 2.7.1,
+torch_npu 2.7.1.post8 and Python 3.12.13. Other platforms are not claimed
+as validated. From the repository root in the configured environment:
+
+```bash
+source /usr/local/Ascend/cann/set_env.sh
+cmake -S . -B build/cmake_python -DWITH_PYTHON=ON \
+      -DCMAKE_BUILD_TYPE=Release -DNPU_ARCH=dav-3510
+cmake --build build/cmake_python -j 4
+export PYTHONPATH="$PWD/python"
+NPU_DEVICE_ID=0 python -m pytest test/knn/arch35 -v --maxfail=1
+python test/knn/arch35/benchmark_knn.py --warmup 20 --iters 100 \
+       --json-output /path/to/new-run/benchmark.json
+```
+
+The test directory contains functional tests, API contracts, the independent
+CPU reference, CPU-only reference self-tests and a performance script.
+`golden.py` exhaustively evaluates every candidate in blocks of at most 32
+queries, preserving grouped-four FP16/FP32 arithmetic and L2 tree tie order;
+tree metadata only determines equal-distance ordering, never search pruning.
+It imports neither `ops_gnn`, `torch_npu` nor `torch_cluster`. Run the reference
+self-tests are included in the single `test_knn.py` test entry point. Without
+an NPU or its extensions, select only these tests and bypass the shared
+device-architecture conftest:
+
+```bash
+python -m pytest test/knn/arch35/test_knn.py \
+       --confcutdir=test/knn/arch35 -k test_golden_ -q
+```
+
+Functional tests still compare complete neighbor-edge multisets; cosine uses
+a CPU double reference. The benchmark covers 32 shapes in both dtypes,
+requiring `reference_ms / measured_ms >= 0.45` for each case. `--quick`
+is diagnostic only. Store reports outside the source tree and attach
+validation results to the PR rather than committing them as source files.
+
+#### Example
+
+```python
+import torch
+import torch_npu
+from ops_gnn import knn, knn_graph
+
+torch.npu.set_device(0)
+x = torch.randn(128, 3, device="npu", dtype=torch.float32)
+y = torch.randn(32, 3, device="npu", dtype=torch.float32)
+edge = knn(x, y, k=8)           # [2, 256]: y indices, x indices
+graph = knn_graph(x, k=8)       # No self-loops, source_to_target
+torch.npu.synchronize()
+```
+
 ## Testing Guide
 
 ### Running Tests

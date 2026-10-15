@@ -905,6 +905,159 @@ with torch.no_grad():
 - `clear_validation_cache()` 清理缓存，`validation_cache_info()` 返回只读统计。
   `coo_to_csr` 用于独立转换计时，输入必须符合其文档约束。
 
+### knn / knn_graph — 精确近邻搜索
+
+本算子在 Ascend C SIMT 中执行精确候选点扫描与 Top-K，提供
+`ops_gnn.knn` 和 Python 组合接口 `ops_gnn.knn_graph`。
+
+#### 接口
+
+```python
+knn(x, y, k, batch_x=None, batch_y=None, cosine=False,
+    num_workers=1, batch_size=None)
+knn_graph(x, k, batch=None, loop=False, flow='source_to_target',
+          cosine=False, num_workers=1, batch_size=None)
+```
+
+- `x[N,F]`、`y[M,F]`：同一 NPU、相同特征维和 dtype，支持 FP16/FP32；
+  一维输入转为 `[N,1]`，非连续输入在调用中转为连续布局。
+- 输出为 NPU int64 `[2,M*k]`，第一行是查询 y 的索引，第二行是候选 x
+  的索引；若任一输入 `numel()==0`，输出 `[2,0]`。
+- batch 为排序后的 int64 向量；多 batch 经 `bucketize` 生成指针，
+  kernel 只扫描查询所在 batch，不允许跨 batch。
+- `cosine=True` 在 NPU 上执行；零范数点对距离定义为 1。
+- `knn_graph(loop=False)` 调用 `k+1` 后删除自环；支持两个 flow 方向。
+  `num_workers` 保留但 NPU 路径忽略。
+
+#### 当前边界与数值口径
+
+要求 `1 <= k <= N`（查询所在 batch 的候选数）。k≤64 使用固定容量
+局部状态，k>64 使用动态 Top-K 状态，不再施加参考 GPU 的 k≤100 上限。
+当前 CPU 标杆定向回归覆盖 k=65/100/101/128/129/257、k=N 及图接口跨分派边界。
+`loop=False` 的图接口须满足 `k+1 <= N`。
+batch 必须 sorted；NaN/Inf 的排序行为不作为已验证接口承诺。
+
+欧氏距离与 CPU torch_cluster 的 nanoflann L2_Adaptor 对齐：每四个
+特征的平方差先按左结合求和，再加入距离累加器，尾部逐特征处理。FP16
+在减法、平方及每个加法后显式舍入回 FP16，不是 FP32 累加。FP32
+保留相同分组顺序，使用仓库默认编译参数。L2 等距点按
+CPU 树查询顺序取舍，树元数据在 NPU 构建；cosine 使用 FP32 点积和
+范数，等距按较小索引优先。
+
+数值兼容目标为真实 CPU torch_cluster 1.6.3。按特征逐次 FP16 累加的
+其他参考实现可能产生不同近邻集合，不能替代上述四项分组运算。
+
+#### 实现组织
+
+| 文件 | 职责 |
+|---|---|
+| `csrc/npu/knn/op_host/knn.cpp` | 参数检查、batch 指针校验、输出分配、当前 stream 启动 |
+| `csrc/npu/knn/op_kernel/arch35/knn_kernel.cpp` | 查询分核、距离计算、稳定有序 Top-K |
+| `csrc/npu/knn/op_kernel/arch35/knn_tree.h` | NPU 树分区、叶子次序和等距查询顺序；BSD 来源见[第三方来源](#knn-第三方来源) |
+| `python/ops_gnn/knn.py`（仓库根目录相对路径） | 一维/连续化、bucketize、图接口组合 |
+
+每 AIV 启动 256 个 SIMT 线程，每线程独立处理查询，串行扫描该 batch
+全部候选。小 k 按 1/4/8/16/32/64 容量模板分派，F=3/16/32 且
+容量不超过 32 时缓存查询值。大 k 分配 M×k FP32 距离状态，索引状态
+直接存于输出 col；每个查询的存储切片互不重叠。不额外物化 M×N 候选
+距离表；另分配 FP16 O(N)、FP32 O(N*F) 树元数据，计入完整 API 耗时。
+每 batch 一个线程块。通常前 7 个 FIFO 节点由 256 线程协作；有效
+建树维度不超过 3 时，batchN>=8192 用 31 节点，>=16384 用 63 节点。
+FP16 建树只用第一维。其余不相交子树按前沿并行。8 KiB UB 用于块内
+并行 min/max、整数归约和前缀计数；FP32 复用选中切分维已计算的范围，
+临时交换索引复用尚未分配的节点空间，之后不再使用该临时列表。
+k=N 时 Top-K 状态自然与全表同阶。没有跨调用答案缓存、CPU
+距离计算或近似检索。
+
+#### KNN 第三方来源
+
+原作者版权及 MIT、BSD 许可全文统一保留在根目录 [LICENSE](../../LICENSE)，
+中英文文档不重复嵌入许可全文。本仓新增部分的 [CANN 许可](../../LICENSE)
+保持不变，不替代第三方许可条款。
+
+##### Python 接口
+
+`python/ops_gnn/knn.py` 的参数准备与图接口组合遵循 Matthias Fey 的
+[pytorch_cluster 1.6.3 `torch_cluster/knn.py`](https://github.com/rusty1s/pytorch_cluster/blob/1.6.3/torch_cluster/knn.py)
+（MIT）。改编范围为两个公共接口的参数名与默认值，以及 `_knn_impl`
+中的空输入、一维/连续化、batch_size 推断和 bucketize 指针准备；
+`_knn_graph_impl` 保留 k+1、去自环及 flow 语义。参数记录、
+`Signature.bind` 和 NPU PyBind 派发是本仓适配。
+
+未捆绑 torch_cluster 的 CPU/CUDA 检索源码或二进制。
+测试使用 `test/knn/arch35/golden.py` 中的独立 PyTorch CPU 参考实现，
+测试和 NPU 运行时都不需要安装 torch_cluster 包。
+
+##### nanoflann 规则
+
+树分区、遍历顺序和距离算术规则改编自
+[pytorch_cluster 所附 nanoflann 头文件](https://github.com/rusty1s/pytorch_cluster/blob/e9a855c284b45edcbf0282cf70ac09bee0ce4e49/csrc/cpu/utils/nanoflann.hpp)，
+原始提交为 `e9a855c284b45edcbf0282cf70ac09bee0ce4e49`，
+路径为 `csrc/cpu/utils/nanoflann.hpp`（BSD，Jose Luis Blanco）。
+
+| 本地文件和函数 | 上游对应规则 |
+| --- | --- |
+| `csrc/npu/knn/op_kernel/arch35/knn_tree.h` 的 `SelectSplit`、`SerialPartition`、`CooperativePartition` | `middleSplit_`、`planeSplit` 的选轴、切分阈值和双指针置换 |
+| `csrc/npu/knn/op_kernel/arch35/knn_tree.h` 的建树函数和 `Earlier` | `divideTree`、`searchLevel` 的包围盒、叶子排列和访问顺序 |
+| `csrc/npu/knn/op_kernel/arch35/knn_kernel.cpp` 的 `L2Distance`、`SquaredDifference` | `L2_Adaptor::evalMetric` 的四项分组算术 |
+| `test/knn/arch35/golden.py` 的 `_TieOrder` | 独立实现的 CPU 分区和遍历规则，仅用于等距点顺序 |
+
+上述为面向 NPU 的改编，未复制整个 nanoflann 头文件。NPU 内存布局、
+协作归约/前缀、kernel 派发和流式 Top-K 在本实现中完成。
+涉及第三方接口/规则的生产文件共三个：`knn.py`、`knn_tree.h` 和
+`knn_kernel.cpp`，不是对整个项目作第三方归属声明。
+不按 SCA 文本相似度推断改编范围；MIT 和 BSD 分别对应两个来源，不能
+互相替代。涉及的源文件均保留原作者声明。
+
+#### 构建与测试
+
+实测环境：Ascend950PR (`dav-3510`)、CANN 9.1.0、PyTorch 2.7.1、
+torch_npu 2.7.1.post8、Python 3.12.13。其他平台不记为已验证。
+从仓库根目录、已配置的 Python 环境执行：
+
+```bash
+source /usr/local/Ascend/cann/set_env.sh
+cmake -S . -B build/cmake_python -DWITH_PYTHON=ON \
+      -DCMAKE_BUILD_TYPE=Release -DNPU_ARCH=dav-3510
+cmake --build build/cmake_python -j 4
+export PYTHONPATH="$PWD/python"
+NPU_DEVICE_ID=0 python -m pytest test/knn/arch35 -v --maxfail=1
+python test/knn/arch35/benchmark_knn.py --warmup 20 --iters 100 \
+       --json-output /path/to/new-run/benchmark.json
+```
+
+测试目录包含功能测试、接口契约、独立 CPU 标杆、CPU 标杆自测和性能脚本。
+`golden.py` 每次处理至多 32 条查询，穷举全部候选点，保留 FP16/FP32
+四项分组舍入和 L2 树遍历等距顺序；树元数据仅用于等距排序，不剪枝。
+实现不导入 `ops_gnn`、`torch_npu` 或 `torch_cluster`。
+标杆自测已合入唯一测试入口 `test_knn.py`。无 NPU 及其扩展时，只选择
+这些自测并绕过共享的设备架构 conftest：
+
+```bash
+python -m pytest test/knn/arch35/test_knn.py \
+       --confcutdir=test/knn/arch35 -k test_golden_ -q
+```
+
+功能测试严格比较全部近邻边的多重集合；余弦距离使用 CPU double 标杆。
+性能脚本覆盖 32 个形状、两种 dtype，每项要求
+`reference_ms / measured_ms >= 0.45`。`--quick` 只用于诊断。
+请将报告输出到仓库外的独立目录；运行结果随 PR 提供，不存放在源码树中。
+
+#### 调用示例
+
+```python
+import torch
+import torch_npu
+from ops_gnn import knn, knn_graph
+
+torch.npu.set_device(0)
+x = torch.randn(128, 3, device="npu", dtype=torch.float32)
+y = torch.randn(32, 3, device="npu", dtype=torch.float32)
+edge = knn(x, y, k=8)           # [2, 256]，row 为 y，col 为 x
+graph = knn_graph(x, k=8)       # 无自环，source_to_target
+torch.npu.synchronize()
+```
+
 ## 三、测试指南
 
 ### 运行测试

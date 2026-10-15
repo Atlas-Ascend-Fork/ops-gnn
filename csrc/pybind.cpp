@@ -36,6 +36,7 @@
 #include "non_diag_mask/op_host/non_diag_mask.h"
 #include "torch_sparse_random_walk/op_host/torch_sparse_random_walk.h"
 #include "segment_coo/op_host/segment_coo.h"
+#include "knn/op_host/knn.h"
 #endif
 
 namespace py = pybind11;
@@ -75,6 +76,15 @@ void RegisterSegmentCsr(py::module_& module)
         },
         py::arg("src"), py::arg("indptr"), py::arg("out") = py::none(), py::arg("reduce") = "sum",
         "Reduce CSR segments with int64 pointers on the current NPU stream");
+}
+
+void RegisterKnn(py::module_& m)
+{
+    m.def("knn", &opsgnn::knn_npu, py::arg("x"), py::arg("y"),
+          py::arg("ptr_x") = py::none(), py::arg("ptr_y") = py::none(),
+          py::arg("k"), py::arg("cosine") = false,
+          py::arg("num_workers") = 1, py::arg("stream_handle") = 0,
+          "Exact K-nearest-neighbor search on NPU");
 }
 #endif
 #ifdef OPSGNN_DAV_2201
@@ -141,6 +151,7 @@ void BindArch35(py::module_& m)
           py::arg("num_workers"), py::arg("ignore_same_index") = false,
           py::arg("stream_handle") = 0,
           "Radius neighbor search on NPU");
+    RegisterKnn(m);
     m.def("graclus_cluster_npu", &opsgnn::graclus_cluster_npu, py::arg("rowptr"), py::arg("col"),
           py::arg("weight"), py::arg("node_perm"), py::arg("num_nodes"), py::arg("has_weight"),
           py::arg("weight_mode"), "Graclus greedy clustering core(NPU)");

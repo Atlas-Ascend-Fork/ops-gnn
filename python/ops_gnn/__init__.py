@@ -70,6 +70,7 @@ else:
         segment_mean_coo, segment_min_coo, segment_max_coo,
     )
     from .radius import radius, radius_graph
+    from .knn import knn, knn_graph
     from .nearest import nearest
     from .torch_sparse_utils import (
         non_diag_mask, torch_sparse_random_walk, torch_sparse_random_walk_with_rand,
@@ -110,6 +111,8 @@ else:
         'ptr2ind',
         'radius',
         'radius_graph',
+        'knn',
+        'knn_graph',
         'nearest',
         'Tensor',
         'OptTensor',
