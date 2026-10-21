@@ -171,13 +171,26 @@ def _reduce_messages(indptr: torch.Tensor, messages: torch.Tensor,
         rows = torch.repeat_interleave(
             torch.arange(row_count, dtype=torch.int64, device=indptr.device),
             counts.to(torch.int64))
-        result = messages.new_zeros(shape).index_add(0, rows, messages)
+        host_half_mean = (
+            reduce == "mean" and messages.dtype == torch.float16
+            and messages.device.type == "cpu"
+        )
+        accumulator_dtype = torch.float64 if host_half_mean else torch.float32
+        values = (
+            messages.to(accumulator_dtype)
+            if reduce == "mean" and messages.dtype == torch.float16
+            else messages
+        )
+        result = values.new_zeros(shape).index_add(0, rows, values)
         if reduce == "mean":
             # Keep the count in FP32: FP16 cannot represent row degrees above
             # 65504, so converting a larger count can produce infinity.
-            divisor = counts.clamp(min=1).to(torch.float32)
+            # CPU FP16 means keep wide sums through division: a long row of
+            # maximum finite values can round to infinity after FP32 summation.
+            mean_values = result if host_half_mean else result.to(torch.float32)
+            divisor = counts.clamp(min=1).to(mean_values.dtype)
             divisor = divisor.reshape((row_count,) + (1,) * (messages.dim() - 1))
-            result = (result.to(torch.float32) / divisor).to(messages.dtype)
+            result = (mean_values / divisor).to(messages.dtype)
         return result
 
     if row_count == 0:

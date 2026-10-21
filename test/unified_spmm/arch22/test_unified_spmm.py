@@ -10,6 +10,7 @@
 
 The copy_rhs interface receives edge features already stored in CSR order.
 """
+import ast
 import os
 import runpy
 from pathlib import Path
@@ -497,3 +498,69 @@ def test_bspmm_high_rank_autograd(bop):
     result.backward(gradient)
     assert lhs.grad is not None and lhs.grad.shape == lhs.shape
     assert rhs.grad is not None and rhs.grad.shape == rhs.shape
+
+
+@pytest.fixture
+def host_reduce_messages():
+    path = Path(__file__).resolve().parents[3] / "python/ops_gnn/spmm.py"
+    node = next(
+        node for node in ast.parse(path.read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_reduce_messages"
+    )
+    namespace = {"torch": torch}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
+    reduce_messages = namespace.get("_reduce_messages")
+    assert callable(reduce_messages)
+    return reduce_messages
+
+
+def test_half_mean_accumulates_before_converting_back(host_reduce_messages):
+    count = 70_000
+    messages = torch.ones(count, 2, dtype=torch.float16)
+    result = host_reduce_messages(torch.tensor([0, count, count]), messages, "mean")
+    assert result.dtype == messages.dtype
+    assert torch.equal(
+        result, torch.tensor([[1.0, 1.0], [0.0, 0.0]], dtype=messages.dtype)
+    )
+
+
+def test_half_mean_preserves_cancellation(host_reduce_messages):
+    messages = torch.cat(
+        [torch.full((400, 1), 1000.0), torch.full((400, 1), -1000.0)]
+    ).to(torch.float16)
+    result = host_reduce_messages(torch.tensor([0, 800]), messages, "mean")
+    assert torch.equal(result, torch.zeros(1, 1, dtype=torch.float16))
+
+
+def test_small_mean_keeps_dtype_and_gradients(host_reduce_messages):
+    messages = torch.tensor(
+        [[1.0], [2.0], [3.0]], dtype=torch.float16, requires_grad=True
+    )
+    result = host_reduce_messages(torch.tensor([0, 2, 3]), messages, "mean")
+    assert torch.equal(result, torch.tensor([[1.5], [3.0]], dtype=messages.dtype))
+    result.sum().backward()
+    assert torch.equal(
+        messages.grad, torch.tensor([[0.5], [0.5], [1.0]], dtype=messages.dtype)
+    )
+
+
+def test_sum_and_float32_mean_keep_existing_results(host_reduce_messages):
+    messages = torch.tensor([[1.0], [2.0], [3.0]], dtype=torch.float32)
+    ptr = torch.tensor([0, 2, 3])
+    assert torch.equal(
+        host_reduce_messages(ptr, messages, "mean"), torch.tensor([[1.5], [3.0]])
+    )
+    assert torch.equal(
+        host_reduce_messages(ptr, messages.to(torch.float16), "sum"),
+        torch.tensor([[3.0], [3.0]], dtype=torch.float16),
+    )
+
+
+@pytest.mark.parametrize("value", [65504.0, -65504.0])
+def test_half_mean_keeps_maximum_finite_values(host_reduce_messages, value):
+    count = 70_000
+    messages = torch.full((count, 2), value, dtype=torch.float16)
+    result = host_reduce_messages(torch.tensor([0, count, count]), messages, "mean")
+    assert torch.equal(
+        result, torch.tensor([[value, value], [0.0, 0.0]], dtype=torch.float16)
+    )
