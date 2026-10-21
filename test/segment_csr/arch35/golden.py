@@ -16,6 +16,22 @@ baseline), plus a first-occurrence arg reference for min/max.
 import torch
 
 
+def _mean_from_typed_sum(total, counts):
+    """Preserve reference count conversion and wrapped integer division."""
+    if total.is_floating_point():
+        # Keep the floating reference's count conversion semantics.
+        mean = total.float() / counts.to(total.dtype).float()
+    else:
+        # Match the native mean contract: wrap count to source dtype.
+        count = counts.to(total.dtype)
+        valid_count = count != 0
+        mean = torch.zeros_like(total)
+        mean[valid_count] = torch.div(
+            total[valid_count], count[valid_count], rounding_mode="trunc"
+        )
+    return mean
+
+
 def segment_csr_cpu(src, indptr, reduce="sum"):
     sc = src.cpu()
     ipc = indptr.cpu().long()
@@ -32,7 +48,7 @@ def segment_csr_cpu(src, indptr, reduce="sum"):
     sc_m = sc.movedim(dim, -1).contiguous().reshape(-1, seg)
     oc_m = sc.new_zeros(out_size).movedim(dim, -1).contiguous()
     oc_flat = oc_m.reshape(-1, ns)
-    cnt_m = sc.new_zeros(oc_m.shape) if reduce == "mean" else None
+    cnt_m = torch.zeros(oc_m.shape, dtype=torch.int64) if reduce == "mean" else None
     cnt_flat = cnt_m.reshape(-1, ns) if cnt_m is not None else None
     ipf = ipc.reshape(-1, ipc.size(-1))
 
@@ -59,8 +75,7 @@ def segment_csr_cpu(src, indptr, reduce="sum"):
                 oc_flat[b, sgm] = vals.max()
     if reduce == "mean" and cnt_flat is not None:
         nz = cnt_flat > 0
-        mean = oc_flat[nz].float() / cnt_flat[nz].float()
-        oc_flat[nz] = mean.to(sc.dtype)
+        oc_flat[nz] = _mean_from_typed_sum(oc_flat[nz], cnt_flat[nz]).to(sc.dtype)
     return oc_m.movedim(-1, dim).contiguous()
 
 
@@ -69,7 +84,7 @@ def segment_argminmax_cpu(src, indptr, reduce):
 
     Each index refers to the original input reduction dimension.
     """
-    if not (reduce in ("min", "max")):
+    if reduce not in ("min", "max"):
         raise AssertionError("Validation condition failed")
     sc = src.cpu()
     dim = indptr.dim() - 1
