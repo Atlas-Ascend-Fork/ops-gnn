@@ -32,13 +32,23 @@ except (ImportError, OSError) as exc:
     ) from exc
 
 if _pybind.npu_arch == 'dav-2201':
+    from .segment_coo import (
+        segment_coo, segment_sum_coo, segment_add_coo,
+        segment_mean_coo, segment_min_coo, segment_max_coo,
+    )
     from .bspmm import bspmm
     from .spmm import spmm
     __all__ = [
         'spmm',
         'bspmm',
+        'segment_coo', 'segment_sum_coo', 'segment_add_coo',
+        'segment_mean_coo', 'segment_min_coo', 'segment_max_coo',
     ]
 else:
+    from .segment_coo import (
+        segment_coo, segment_sum_coo, segment_add_coo,
+        segment_mean_coo, segment_min_coo, segment_max_coo,
+    )
     from .gather_csr import gather_csr
     from .graclus_cluster import graclus_cluster
     from .gather_coo import gather_coo
@@ -64,10 +74,6 @@ else:
         segment_mean_csr,
         segment_min_csr,
         segment_max_csr,
-    )
-    from .segment_coo import (
-        segment_coo, segment_sum_coo, segment_add_coo,
-        segment_mean_coo, segment_min_coo, segment_max_coo,
     )
     from .radius import radius, radius_graph
     from .knn import knn, knn_graph

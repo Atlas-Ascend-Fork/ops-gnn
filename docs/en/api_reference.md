@@ -1184,10 +1184,27 @@ Strided inputs and outputs are supported. Alignment temporaries are copied
 back to the caller's original out. An out buffer determines the segment count;
 otherwise dim_size or the maximum index plus one is used. mul is unsupported.
 
-sum/add overwrite out; mean includes its initial value, while min/max compare
-against it. Empty segments are zero without out; mean/min/max retain supplied
-empty segments. Extrema ties select the later source position. Empty arg
-sentinels use the reduction length; indices are zero when that length is zero.
+A2 forward semantics: all reductions use supplied initial values. Sum/add
+accumulate them, mean divides the accumulated numerator, and min/max update
+only on strict improvement. Each batch's first nonempty segment uses out[0],
+even when its label is nonzero; subsequent segments use their own seeds.
+Empty segments and empty inputs preserve supplied out. Ordinary extrema ties
+retain the first position. Each feature's argument state starts at zero and
+carries across nonempty segments and batches; empty segments emit the reduction
+length sentinel without changing that state. Without out, extrema start at
+finite dtype identities and results still equal to the identity become zero.
+Source NaNs do not update extrema; all-NaN nonempty segments retain prior arg
+state. INT8/UINT8 mean explicitly returns zero when a nonempty count narrows to
+zero, without executing device division by zero. These are forward rules only;
+no backward implementation or gradient guarantee for special arg states is provided.
+
+A2 also broadcasts a length-one index along the reduction dimension. Noncontiguous
+out values/args are checked against a contiguous CPU copy with the same seed;
+NPU writeback preserves the original out object and storage outside the view.
+This does not assert identical behavior to the original noncontiguous CPU out API.
+
+Ascend 950 retains its existing overwrite sum/add, last-tie and mathematical
+byte-mean zero-divisor conventions. This A2 change does not alter that backend.
 
 ## Back to Main
 

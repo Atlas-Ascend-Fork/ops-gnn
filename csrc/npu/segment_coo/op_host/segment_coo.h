@@ -8,11 +8,15 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 #pragma once
+#ifdef OPSGNN_DAV_2201
+#include "segment_coo/op_kernel/arch22/segment_coo_tiling.h"
+#else
 #include "segment_coo/op_kernel/arch35/segment_coo_tiling.h"
+#endif
 #include <torch/extension.h>
 #include <optional>
 #include <tuple>
 std::tuple<torch::Tensor, torch::Tensor> segment_coo_forward(torch::Tensor src, torch::Tensor index,
                                                              std::optional<torch::Tensor> out,
-                                                             std::optional<int64_t> dim_size,
-                                                             int64_t reduce, bool return_arg);
+                                                             std::optional<int64_t> dim_size, int64_t reduce,
+                                                             bool return_arg);

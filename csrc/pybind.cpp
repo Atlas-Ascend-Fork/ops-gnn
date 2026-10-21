@@ -13,8 +13,8 @@
 #include <ATen/core/dispatch/Dispatcher.h>
 #include <c10/core/DispatchKey.h>
 #include <pybind11/pybind11.h>
-
 #include <string>
+#include "segment_coo/op_host/segment_coo.h"
 #ifdef OPSGNN_DAV_2201
 #include "spmm_max/op_host/spmm_max.h"
 #include "spmm_min/op_host/spmm_min.h"
@@ -35,7 +35,6 @@
 #include "torch_sparse_spmm/op_host/torch_sparse_spmm.h"
 #include "non_diag_mask/op_host/non_diag_mask.h"
 #include "torch_sparse_random_walk/op_host/torch_sparse_random_walk.h"
-#include "segment_coo/op_host/segment_coo.h"
 #include "knn/op_host/knn.h"
 #endif
 
@@ -50,6 +49,17 @@ bool HasPrivateUse1Kernel(const std::string& opName)
 }  // namespace opsgnn
 
 namespace {
+
+void BindSegmentCoo(py::module_& m)
+{
+    m.attr("SEGMENT_COO_SUM") = static_cast<int32_t>(SEGMENT_COO_SUM);
+    m.attr("SEGMENT_COO_MEAN") = static_cast<int32_t>(SEGMENT_COO_MEAN);
+    m.attr("SEGMENT_COO_MIN") = static_cast<int32_t>(SEGMENT_COO_MIN);
+    m.attr("SEGMENT_COO_MAX") = static_cast<int32_t>(SEGMENT_COO_MAX);
+    m.def("segment_coo_forward", &segment_coo_forward, py::arg("src"), py::arg("index"),
+          py::arg("out"), py::arg("dim_size"), py::arg("reduce"), py::arg("return_arg") = true,
+          py::call_guard<py::gil_scoped_release>());
+}
 
 #ifndef OPSGNN_DAV_2201
 void RegisterTorchSparseCompat(py::module_& module)
@@ -91,6 +101,14 @@ void RegisterKnn(py::module_& m)
 void BindArch22(py::module_& m)
 {
     m.attr("npu_arch") = "dav-2201";
+    BindSegmentCoo(m);
+    m.def("segment_coo_value",
+          [](torch::Tensor src, torch::Tensor index, std::optional<torch::Tensor> out,
+             std::optional<int64_t> dimSize, int64_t reduce) {
+              return std::get<0>(segment_coo_forward(std::move(src), std::move(index),
+                                   std::move(out), dimSize, reduce, false));
+          }, py::arg("src"), py::arg("index"), py::arg("out"), py::arg("dim_size"),
+          py::arg("reduce"), py::call_guard<py::gil_scoped_release>());
     m.def("spmm_max_csr", &opsgnn::SpmmMaxCsr, py::arg("indptr"), py::arg("indices"),
           py::arg("x"), py::arg("out") = py::none(), "CSR SpMM max on Ascend NPU");
     m.def("spmm_min_csr", &opsgnn::SpmmMinCsr, py::arg("indptr"), py::arg("indices"),
@@ -116,16 +134,6 @@ void BindTorchSparseSpmm(py::module_& m)
     torch_sparse_spmm.def("tensor_version", &opsgnn::TorchSparseSpmmTensorVersion, py::arg("tensor"));
 }
 
-void BindSegmentCoo(py::module_& m)
-{
-    m.attr("SEGMENT_COO_SUM") = static_cast<int32_t>(SEGMENT_COO_SUM);
-    m.attr("SEGMENT_COO_MEAN") = static_cast<int32_t>(SEGMENT_COO_MEAN);
-    m.attr("SEGMENT_COO_MIN") = static_cast<int32_t>(SEGMENT_COO_MIN);
-    m.attr("SEGMENT_COO_MAX") = static_cast<int32_t>(SEGMENT_COO_MAX);
-    m.def("segment_coo_forward", &segment_coo_forward, py::arg("src"), py::arg("index"),
-          py::arg("out"), py::arg("dim_size"), py::arg("reduce"), py::arg("return_arg") = true,
-          py::call_guard<py::gil_scoped_release>());
-}
 
 void BindArch35(py::module_& m)
 {

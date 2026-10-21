@@ -1138,9 +1138,21 @@ src rank 为 1–8，支持 float16/float32/bfloat16/int8/uint8/int32/int64。
 支持非连续输入和 out；对齐暂存的结果写回原 out。提供 out 时由它确定
 输出段数，否则使用 dim_size 或最大 index 加一。mul 不支持。
 
-sum/add 覆盖 out；mean 使用 out 初值，min/max 与初值比较。无 out 的
-空段返回零，有 out 时 mean/min/max 保留空段初值。极值平局选择较后位置；
-空段索引为归约维长度；归约维长度为零时，极值索引为零。
+A2 前向语义：所有 reduce 都使用已有 out 初值；sum/add 累加，mean 在累加后
+按段内计数计算，min/max 仅在严格改善时更新 value/arg。每个 batch 的首个非空段
+使用 out[0]，即使其标签不为 0；后续段使用对应初值。空段和空输入保留已有 out。
+普通极值平局保留首次位置；每个 feature 的 arg 状态初始为 0，跨非空段及 batch
+延续，空段输出归约维长度哨兵且不改变状态。无 out 时用 dtype 有限极值初始化，
+最终仍等于初始化值的结果置零，源 NaN 不更新极值；全 NaN 非空段的 arg 延续
+之前的状态。INT8/UINT8 mean 的非空计数收窄为零时显式返回零，不执行设备除零。
+这些规则只描述 NPU 前向，不提供反向传播或特殊 arg 的梯度正确性保证。
+
+A2 同时允许 index 在归约维长度为 1 时广播。非连续 out 对照相同初值的连续 CPU
+副本验证数值和 arg，并检查原视图写回、返回原 out 及视图外存储不变；这不声明
+与 CPU 原始非连续 out API 的异常行为相同。
+
+Ascend 950 保留原有行为：sum/add 覆盖 out、极值末次平局，以及 byte mean
+零除数时的数学均值约定；本次 A2 修改不改变该后端。
 
 ```python
 src = torch.tensor([[1., 2.], [3., 4.], [5., 6.]], device="npu")

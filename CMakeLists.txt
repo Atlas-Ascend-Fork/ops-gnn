@@ -13,7 +13,6 @@ cmake_minimum_required(VERSION 3.18)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O2")
 
 set(OPSGNN_VERSION 0.1.0)
 
@@ -133,6 +132,16 @@ find_package(ASC REQUIRED)
 
 project(opsgnn LANGUAGES CXX ASC)
 
+# ASC's fwk_modules/config.cmake clears the normal CXX DEBUG/RELEASE flags.
+# Restore the compiler/user cache values after language initialization so a
+# Release wheel really optimizes the PyTorch Host and bindings. Device kernels
+# retain their explicit ASC flags below.
+foreach(OPSGNN_HOST_CONFIG DEBUG RELEASE)
+    get_property(OPSGNN_HOST_CONFIG_FLAGS CACHE CMAKE_CXX_FLAGS_${OPSGNN_HOST_CONFIG} PROPERTY VALUE)
+    set(CMAKE_CXX_FLAGS_${OPSGNN_HOST_CONFIG} "${OPSGNN_HOST_CONFIG_FLAGS}")
+endforeach()
+string(APPEND CMAKE_CXX_FLAGS_RELEASE " -O2")
+
 set(ASCEND_INCLUDE_DIRS
     ${ASCEND_HOME_PATH}/include/ascendc/basic_api
     ${ASCEND_HOME_PATH}/include/ascendc
@@ -203,6 +212,20 @@ if(WITH_PYTHON)
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
     set(Python3_LIBRARIES "${Python3_LIBDIR}/${Python3_LDLIBRARY}")
+    # Some Conda Python builds retain a removed static LDLIBRARY in sysconfig.
+    # Resolve the installed shared runtime before creating the imported target.
+    if(NOT EXISTS "${Python3_LIBRARIES}" OR Python3_LDLIBRARY MATCHES "\\.a$")
+        execute_process(
+            COMMAND "${Python3_ROOT_DIR}/bin/python3" -c
+                "import sysconfig; print(sysconfig.get_config_var('LDVERSION'))"
+            OUTPUT_VARIABLE Python3_LDVERSION
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        find_library(OPSGNN_PYTHON_SHARED_LIBRARY
+            NAMES "python${Python3_LDVERSION}"
+            PATHS "${Python3_LIBDIR}" NO_DEFAULT_PATH REQUIRED)
+        set(Python3_LIBRARIES "${OPSGNN_PYTHON_SHARED_LIBRARY}")
+    endif()
     set(Python3_FOUND TRUE)
     set(OPSGNN_PYTHON_EXECUTABLE "${Python3_ROOT_DIR}/bin/python3")
 
