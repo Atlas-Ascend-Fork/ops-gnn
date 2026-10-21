@@ -8,35 +8,32 @@
 
 """CPU reference implementation for segment_max_csr."""
 
+from math import prod
+
 import torch
 
 
 def segment_max_csr_cpu(src, indptr):
     """Compute the segment_max_csr reference result on CPU."""
-    indptr_dim = indptr.dim()
+    segment_dim = indptr.dim() - 1
     n_segments = indptr.shape[-1] - 1
     result_shape = list(src.shape)
-    result_shape[indptr_dim - 1] = n_segments
-    result = torch.empty(result_shape, dtype=src.dtype)
-
-    src_cpu = src.cpu()
-    indptr_cpu = indptr.cpu()
-    fill_values = {
-        torch.float32: float("-inf"),
-        torch.float16: -65504,
-        torch.int32: -2147483648,
-        torch.int16: -32768,
-    }
-    fill_value = fill_values.get(src.dtype, -32768)
-
-    for batch_idx in range(src.shape[0]):
+    result_shape[segment_dim] = n_segments
+    result = torch.zeros(result_shape, dtype=src.dtype, device="cpu")
+    outer = prod(src.shape[:segment_dim])
+    feature_dim = segment_dim + 1
+    inner = prod(src.shape[feature_dim:])
+    source_rows = src.cpu().reshape(outer, src.shape[segment_dim], inner)
+    result_rows = result.reshape(outer, n_segments, inner)
+    pointer_count = prod(indptr.shape[:-1])
+    pointer_rows = indptr.cpu().reshape(pointer_count, n_segments + 1)
+    for batch_idx in range(outer):
+        row_idx = batch_idx if pointer_count == outer else 0
         for seg in range(n_segments):
-            start = int(indptr_cpu[0, seg]) if indptr_dim > 1 else int(indptr_cpu[seg])
-            end = int(indptr_cpu[0, seg + 1]) if indptr_dim > 1 else int(indptr_cpu[seg + 1])
-            if start >= end:
-                result[batch_idx, seg] = fill_value
-            elif indptr_dim == 1:
-                result[seg] = src_cpu[start:end].max(dim=0).values
-            else:
-                result[batch_idx, seg] = src_cpu[batch_idx, start:end].max(dim=0).values
+            start = int(pointer_rows[row_idx, seg])
+            end = int(pointer_rows[row_idx, seg + 1])
+            if start < end:
+                result_rows[batch_idx, seg] = (
+                    source_rows[batch_idx, start:end].max(dim=0).values
+                )
     return result

@@ -11,6 +11,7 @@ See LICENSE in the root of the software repository for the full text of the Lice
 import os
 from pathlib import Path
 import runpy
+import unittest
 import pytest
 import torch
 import ops_gnn
@@ -226,6 +227,122 @@ def test_segment_max_csr_zero_k_returns_empty():
     result = ops_gnn.segment_max_csr(src, indptr)
     assert result.shape == (2, 0)
     assert result.numel() == 0
+
+
+DTYPES = (torch.float32, torch.float16, torch.int32, torch.int16)
+
+
+
+class SegmentMaxCsrCpuTest(unittest.TestCase):
+    def test_empty_segment_is_zero(self):
+        for dtype in DTYPES:
+            with self.subTest(dtype=dtype):
+                source = torch.tensor([[1, 2]], dtype=dtype)
+                pointers = torch.tensor([[0, 0, 2]], dtype=torch.int32)
+                expected = torch.tensor([[0, 2]], dtype=dtype)
+                torch.testing.assert_close(segment_max_csr_cpu(source, pointers), expected)
+
+    def test_one_dimensional_empty_and_nonempty_segments(self):
+        for dtype in DTYPES:
+            with self.subTest(dtype=dtype):
+                source = torch.tensor([1, 3, 2, 5, 4], dtype=dtype)
+                pointers = torch.tensor([0, 0, 2, 2, 5, 5], dtype=torch.int32)
+                expected = torch.tensor(
+                    [0, 3, 0, 5, 0],
+                    dtype=dtype,
+                )
+                torch.testing.assert_close(segment_max_csr_cpu(source, pointers), expected)
+
+    def test_dim_zero_empty_segment_preserves_feature_rows(self):
+        for dtype in DTYPES:
+            with self.subTest(dtype=dtype):
+                source = torch.tensor([[1, 2], [3, 4], [5, 6], [7, 8]], dtype=dtype)
+                pointers = torch.tensor([0, 0, 2, 4], dtype=torch.int32)
+                empty = 0
+                expected = torch.tensor([[empty, empty], [3, 4], [7, 8]], dtype=dtype)
+                torch.testing.assert_close(segment_max_csr_cpu(source, pointers), expected)
+
+    def test_each_batch_uses_its_own_pointer_row(self):
+        for dtype in DTYPES:
+            with self.subTest(dtype=dtype):
+                source = torch.tensor([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=dtype)
+                pointers = torch.tensor([[0, 2, 4], [0, 1, 3]], dtype=torch.int32)
+                expected = torch.tensor([[2, 4], [5, 7]], dtype=dtype)
+                torch.testing.assert_close(segment_max_csr_cpu(source, pointers), expected)
+
+    def test_shared_pointer_row_and_trailing_features(self):
+        for dtype in DTYPES:
+            with self.subTest(dtype=dtype):
+                source = torch.arange(1, 17, dtype=dtype).reshape(2, 4, 2)
+                pointers = torch.tensor([[0, 2, 4]], dtype=torch.int32)
+                expected = torch.tensor(
+                    [[[3, 4], [7, 8]], [[11, 12], [15, 16]]], dtype=dtype
+                )
+                torch.testing.assert_close(segment_max_csr_cpu(source, pointers), expected)
+
+    def test_multiple_leading_batch_dimensions(self):
+        for dtype in DTYPES:
+            with self.subTest(dtype=dtype):
+                source = torch.arange(1, 17, dtype=dtype).reshape(2, 2, 4)
+                pointers = torch.tensor(
+                    [[[0, 2, 4], [0, 1, 3]], [[0, 0, 4], [0, 3, 4]]],
+                    dtype=torch.int32,
+                )
+                expected = torch.tensor(
+                    [[[2, 4], [5, 7]], [[0, 12], [15, 16]]],
+                    dtype=dtype,
+                )
+                torch.testing.assert_close(segment_max_csr_cpu(source, pointers), expected)
+
+    def test_empty_source_is_filled_for_each_declared_segment(self):
+        for dtype in DTYPES:
+            with self.subTest(dtype=dtype):
+                source = torch.empty((0, 2), dtype=dtype)
+                pointers = torch.tensor([0, 0, 0], dtype=torch.int32)
+                expected = torch.full((2, 2), 0, dtype=dtype)
+                torch.testing.assert_close(segment_max_csr_cpu(source, pointers), expected)
+
+    def test_zero_segments_and_zero_trailing_features(self):
+        for dtype in DTYPES:
+            cases = [
+                (torch.tensor([1, 2], dtype=dtype), [0], (0,)),
+                (torch.empty((4, 0), dtype=dtype), [0, 2, 4], (2, 0)),
+            ]
+            for source, pointer_values, shape in cases:
+                with self.subTest(dtype=dtype, shape=shape):
+                    pointers = torch.tensor(pointer_values, dtype=torch.int32)
+                    result = segment_max_csr_cpu(source, pointers)
+                    self.assertEqual(tuple(result.shape), shape)
+                    self.assertEqual(result.dtype, dtype)
+                    self.assertEqual(result.device.type, "cpu")
+                    self.assertEqual(result.numel(), 0)
+
+    def test_noncontiguous_source_keeps_logical_feature_order(self):
+        for dtype in DTYPES:
+            with self.subTest(dtype=dtype):
+                source = torch.arange(1, 25, dtype=dtype).reshape(4, 6)[:, ::2]
+                self.assertFalse(source.is_contiguous())
+                pointers = torch.tensor([0, 2, 4], dtype=torch.int32)
+                expected = torch.tensor([[7, 9, 11], [19, 21, 23]], dtype=dtype)
+                torch.testing.assert_close(segment_max_csr_cpu(source, pointers), expected)
+
+    def test_negative_nonempty_segments_are_not_clamped_to_zero(self):
+        for dtype in DTYPES:
+            with self.subTest(dtype=dtype):
+                source = torch.tensor([-4, -2, -8, -3], dtype=dtype)
+                pointers = torch.tensor([0, 0, 2, 4], dtype=torch.int32)
+                expected = torch.tensor([0, -2, -3], dtype=dtype)
+                torch.testing.assert_close(segment_max_csr_cpu(source, pointers), expected)
+
+    def test_nonempty_nonfinite_values_keep_reduction_semantics(self):
+        for dtype in (torch.float32, torch.float16):
+            with self.subTest(dtype=dtype):
+                source = torch.tensor([float("nan"), float("-inf")], dtype=dtype)
+                pointers = torch.tensor([0, 0, 1, 2], dtype=torch.int32)
+                expected = torch.tensor([0, float("nan"), float("-inf")], dtype=dtype)
+                torch.testing.assert_close(
+                    segment_max_csr_cpu(source, pointers), expected, equal_nan=True
+                )
 
 
 if __name__ == '__main__':
