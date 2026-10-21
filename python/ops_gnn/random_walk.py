@@ -93,16 +93,22 @@ def _sort_coo(row: Tensor, col: Tensor, num_nodes: int) -> Tuple[Tensor, Tensor]
     return row[permutation], col[permutation]
 
 
-def _tensor_version(tensor: Tensor) -> int:
-    """Return the mutation token without exposing a protected attribute to lint."""
-    return int(getattr(tensor, "_version", 0))
+def _tensor_version(tensor: Tensor) -> Optional[int]:
+    """Return the mutation token, or disable caching for inference tensors."""
+    try:
+        return int(getattr(tensor, "_version", 0))
+    except RuntimeError:
+        return None
 
 
-def _cache_key(row: Tensor, col: Tensor, num_nodes: int) -> tuple:
+def _cache_key(row: Tensor, col: Tensor, num_nodes: int) -> Optional[tuple]:
+    row_version, col_version = _tensor_version(row), _tensor_version(col)
+    if row_version is None or col_version is None:
+        return None
     return (
         row.data_ptr(),
         col.data_ptr(),
-        (_tensor_version(row), _tensor_version(col), row.numel(), num_nodes, row.device),
+        (row_version, col_version, row.numel(), num_nodes, row.device),
     )
 
 
@@ -131,12 +137,13 @@ def _get_cached_csr(row: Tensor, col: Tensor, num_nodes: int) -> Optional[Tuple[
 
 def _prepare_csr(row: Tensor, col: Tensor, num_nodes: int, coalesced: bool) -> Tuple[Tensor, Tensor]:
     global _COALESCED_CSR_CACHE
-    if coalesced:
+    cacheable = coalesced and _cache_key(row, col, num_nodes) is not None
+    if cacheable:
         cached = _get_cached_csr(row, col, num_nodes)
         if cached is not None:
             return cached
     rowptr, col_work = _build_csr(row, col, num_nodes, coalesced)
-    if coalesced:
+    if cacheable:
         if _COALESCED_CSR_CACHE is not None:
             torch.npu.synchronize(row.device)
         _COALESCED_CSR_CACHE = (

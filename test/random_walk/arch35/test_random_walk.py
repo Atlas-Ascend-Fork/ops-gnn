@@ -18,6 +18,9 @@ from typing import Tuple
 import pytest
 import torch
 
+# Assigned only by the existing NPU fixture; Host tests do not import NPU bindings.
+ops_gnn = None
+
 _SPEC = spec_from_file_location("random_walk_golden", Path(__file__).with_name("golden.py"))
 _GOLDEN = module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = _GOLDEN
@@ -144,15 +147,17 @@ def test_extreme_finite_bias_does_not_overflow_normalization():
     result = random_walk_golden(value, value, value, 2, p=5e-324, q=1e308)
     assert result.tolist() == [[0, 0, 0]]
 
-pytest.importorskip("torch_npu")
-ops_gnn = pytest.importorskip("ops_gnn")
-if not hasattr(ops_gnn, "random_walk"):
-    pytest.skip("ops_gnn.random_walk is not built", allow_module_level=True)
 
 
-@pytest.fixture(scope="module", autouse=True)
+
+@pytest.fixture(scope="module")
 def _select_npu_device():
     """Run the module on the card selected by ``NPU_DEVICE_ID``."""
+    global ops_gnn
+    pytest.importorskip("torch_npu")
+    ops_gnn = pytest.importorskip("ops_gnn")
+    if not hasattr(ops_gnn, "random_walk"):
+        pytest.skip("ops_gnn.random_walk is not built", allow_module_level=True)
     torch.npu.set_device(int(os.environ.get("NPU_DEVICE_ID", "0")))
     if not torch.npu.is_available():
         pytest.skip("Ascend NPU is unavailable")
@@ -229,6 +234,7 @@ def _run_and_check(edge_count: int, walk_length: int, starts: int):
     _assert_legal_walk(row, col, result, num_nodes)
 
 
+@pytest.mark.usefixtures("_select_npu_device")
 class TestRandomWalk:
     @staticmethod
     @pytest.mark.parametrize("edge_count,walk_length,starts", TEST_CONFIGS)
@@ -360,3 +366,50 @@ class TestRandomWalk:
         result = ops_gnn.random_walk(row.npu(), col.npu(), start.npu(), 8)
         _assert_result_contract(result, start, 8)
         _assert_legal_walk(row, col, result, num_nodes)
+
+
+@pytest.fixture
+def csr_prepare(monkeypatch):
+    # The Host-only cache path never calls the compiled random-walk binding.
+    # Isolate its import dependency without changing the production import.
+    from types import ModuleType
+
+    path = Path(__file__).resolve().parents[3] / "python/ops_gnn/random_walk.py"
+    package_name = "ops_gnn_host_cache_test"
+    package = ModuleType(package_name)
+    package.__path__ = [str(path.parent)]
+    bindings_name = package_name + "._pybind"
+    bindings = ModuleType(bindings_name)
+    monkeypatch.setitem(sys.modules, package_name, package)
+    monkeypatch.setitem(sys.modules, bindings_name, bindings)
+    spec = spec_from_file_location(package_name + ".random_walk", path)
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, "_prepare_csr")
+
+
+@pytest.mark.parametrize("has_edges", [False, True])
+def test_inference_graphs_build_csr_and_observe_mutation(csr_prepare, has_edges):
+    prepare = csr_prepare
+    with torch.inference_mode():
+        row = torch.tensor([1, 0] if has_edges else [], dtype=torch.int64)
+        col = torch.tensor([0, 1] if has_edges else [], dtype=torch.int64)
+        ptr, sorted_col = prepare(row, col, 2, True)
+        assert torch.equal(ptr, torch.tensor([0, 1, 2] if has_edges else [0, 0, 0]))
+        assert torch.equal(
+            sorted_col, torch.tensor([1, 0] if has_edges else [], dtype=torch.int64)
+        )
+        if has_edges:
+            row.fill_(0)
+            ptr, sorted_col = prepare(row, col, 2, True)
+            assert torch.equal(ptr, torch.tensor([0, 2, 2]))
+            assert torch.equal(sorted_col, torch.tensor([0, 1]))
+
+
+def test_regular_graphs_keep_reusable_csr(csr_prepare):
+    row, col = torch.tensor([1, 0]), torch.tensor([0, 1])
+    prepare = csr_prepare
+    first = prepare(row, col, 2, True)
+    second = prepare(row, col, 2, True)
+    assert torch.equal(first[0], second[0])
+    assert torch.equal(first[1], second[1])
