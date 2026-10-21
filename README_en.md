@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-ops-gnn is an operator library for Graph Neural Networks (GNNs) in the Ascend ecosystem, designed to accelerate GNN computation on NPUs.
+ops-gnn is an operator library for Graph Neural Networks (GNNs) in the Huawei Ascend ecosystem, designed to accelerate GNN computation on NPUs.
 
 ## Project Structure
 
