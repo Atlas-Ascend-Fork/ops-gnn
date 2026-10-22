@@ -55,6 +55,8 @@ ops-gnn depends on the following components:
 
 The supported platforms are Ascend 950 (arch35) and A2/A3 (910B/910C, arch22); other platforms are not supported.
 
+glibc 2.41 is not supported.
+
 ```sh
 # System toolchain
 sudo apt install build-essential cmake

@@ -39,6 +39,7 @@ Each operator directory under `csrc/npu` contains `op_host` and `op_kernel/<arch
 - CANN Toolkit (AscendC compiler)
 - C++17 or later compiler
 - Supported platform: Ascend 950 (arch35) and A2/A3 (arch22); other platforms are not supported
+- glibc 2.41 is not supported
 
 ### CANN Environment Setup
 

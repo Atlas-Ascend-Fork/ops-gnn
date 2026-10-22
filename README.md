@@ -39,6 +39,7 @@ ops-gnn/
 - CANN Toolkit (AscendC 编译器)
 - C++17 或更高版本编译器
 - 支持平台：Ascend 950（arch35）与 A2/A3（arch22）；其他平台不支持
+- glibc 2.41 版本暂不支持
 
 ### CANN 环境配置
 

@@ -55,6 +55,8 @@ ops-gnn 依赖以下组件：
 
 支持平台为 Ascend 950（arch35）与 A2/A3（910B/910C，arch22），其他平台不支持。
 
+glibc 2.41 版本暂不支持。
+
 ```sh
 # 系统工具链
 sudo apt install build-essential cmake
