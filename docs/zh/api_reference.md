@@ -46,14 +46,14 @@ indices = ops_gnn.nearest(x, y)  # tensor([0, 1], device='npu:0')
 
 NPU使用独立Ascend C内核，通过torch.ops.torch_cluster.nearest分派；无CPU/scipy回退或梯度。N、M、F各不超过INT32_MAX，实际规模受内存限制。公共API校验包含同步，内核使用当前NPU stream；已安装torch_cluster时应先导入该包，由其提供schema。
 
-精度参考固定为SciPy 1.18.0 / OpenBLAS 0.3.31.dev SkylakeX。不同CPU、BLAS或矩阵切分可能改变极近候选的整数标杆；极大FP32坐标导致中间距离溢出的精度不作保证。
+精度参考固定为SciPy 1.18.0 / OpenBLAS 0.3.31.dev SkylakeX（该 SciPy 版本要求 Python ≥3.12）。不同CPU、BLAS或矩阵切分可能改变极近候选的整数标杆；极大FP32坐标导致中间距离溢出的精度不作保证。
 
 测试位于`test/nearest/arch35/`，分为两项，共用参考辅助文件`golden.py`：
 
 - 功能测试：`test_nearest.py`，共338项，包含任务书附件的42项用例，以及功能、FP16、验收日志重建、108项数值压力和4项参考语义回归等296项补充用例。沿用本PR现有的参考计算和断言；最初9项失败场景由任务形状及跨1024平局用例覆盖。
 - 性能测试：`benchmark_nearest.py`，18组形状×2 dtype，每点预热20次、计时100次，覆盖完整Python接口，要求标杆耗时/NPU耗时不低于0.45，并严格比较全部输出下标。
 
-完成仓库构建并激活CANN和Python环境后，在仓库根目录执行：
+完成仓库构建并激活CANN和Python环境后，在仓库根目录执行（安装参考依赖 `scipy==1.18.0` 需要 Python ≥3.12）：
 
 ```bash
 python -m pip install scipy==1.18.0 pytest

@@ -46,14 +46,14 @@ indices = ops_gnn.nearest(x, y)  # tensor([0, 1], device='npu:0')
 
 Computation uses an Ascend C kernel registered at torch.ops.torch_cluster.nearest. No CPU/scipy fallback or gradients are provided. N, M and F must not exceed INT32_MAX and are limited by available memory. Public API validation includes synchronization; the kernel uses the current NPU stream. If torch_cluster is installed, import it first to provide the schema.
 
-The fixed precision reference is SciPy 1.18.0 / OpenBLAS 0.3.31.dev SkylakeX. A different CPU, BLAS or matrix partition may change integer reference indices for nearly tied candidates. Accuracy is not guaranteed for extreme FP32 coordinates that overflow intermediate distances.
+The fixed precision reference is SciPy 1.18.0 / OpenBLAS 0.3.31.dev SkylakeX (this SciPy release requires Python ≥3.12). A different CPU, BLAS or matrix partition may change integer reference indices for nearly tied candidates. Accuracy is not guaranteed for extreme FP32 coordinates that overflow intermediate distances.
 
 Tests in `test/nearest/arch35/` have two entry points and share the reference helper `golden.py`:
 
 - Functional tests: `test_nearest.py` contains 338 cases: the 42 task-attachment cases and 296 supplemental cases covering functionality, FP16, reconstructed acceptance logs, 108 numerical stress cases and four reference-semantics cases. The reference calculation and assertions remain unchanged. Task shapes and cross-1024 ties cover the original nine failure scenarios.
 - Performance tests: `benchmark_nearest.py` covers 18 shapes and two dtypes, with 20 warmups and 100 timed calls per point. It measures the full Python API, requires reference/NPU latency of at least 0.45 and compares all output indices exactly.
 
-After building the repository and activating the CANN and Python environments, run from the repository root:
+After building the repository and activating the CANN and Python environments, run from the repository root (installing the reference dependency `scipy==1.18.0` requires Python ≥3.12):
 
 ```bash
 python -m pip install scipy==1.18.0 pytest
