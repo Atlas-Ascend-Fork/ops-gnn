@@ -65,7 +65,7 @@ sudo apt install build-essential cmake
 pip install pytest pytest-cov
 ```
 
-### Install ops-gnn
+## Install ops-gnn
 
 ```sh
 # Method 1: pip development mode
@@ -240,7 +240,7 @@ pytest test/segment_max_csr/arch35/test_segment_max_csr.py::test_func -v  # Sing
 
 > Note: `pytest test/` only collects the directory matching the local chip model — on 950 only `arch35` runs (`arch22` is ignored), on A2/A3 only `arch22` runs (`arch35` is ignored).
 
-### Running Performance Tests
+## Running Performance Tests
 
 ```sh
 NPU_DEVICE_ID=<device_id> python test/<op>/<arch>/benchmark_<op>.py

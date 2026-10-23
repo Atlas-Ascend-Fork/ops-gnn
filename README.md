@@ -63,7 +63,7 @@ source ${install_path}/ascend-toolkit/set_env.sh
 python3 -m pip install --no-build-isolation --no-deps -e .
 ```
 
-### 方法2：使用构建脚本
+## 方法2：使用构建脚本
 
 ```bash
 cd scripts
@@ -73,7 +73,7 @@ cd scripts
 cd ..
 ```
 
-### 方法3：使用CMake（Linux）
+## 方法3：使用CMake（Linux）
 
 ```bash
 mkdir -p build_cmake

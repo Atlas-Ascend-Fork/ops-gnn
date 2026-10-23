@@ -230,7 +230,7 @@ result = ops_gnn.segment_max_csr(src, indptr)
 
 ---
 
-### segment_csr — int64 CSR Segment Reductions
+## segment_csr — int64 CSR Segment Reductions
 
 On Ascend 950 / arch35, reduce CSR segments deterministically with `sum`,
 `add`, `mean`, `min`, or `max`. The reduction axis is `indptr.dim() - 1`, and
@@ -418,7 +418,7 @@ assert returned.data_ptr() == provided.data_ptr()
 
 ---
 
-### ind2ptr — Sorted Row Indices to CSR Row Pointer
+## ind2ptr — Sorted Row Indices to CSR Row Pointer
 
 **Function signature:**
 
@@ -463,7 +463,7 @@ rowptr = ops_gnn.ind2ptr(row, 8)
 
 ---
 
-### ptr2ind — CSR Row Pointer to Row Indices
+## ptr2ind — CSR Row Pointer to Row Indices
 
 **Function signature:**
 
@@ -508,7 +508,7 @@ row = ops_gnn.ptr2ind(rowptr, 6)
 
 ---
 
-### random_walk — NPU Random Walk
+## random_walk — NPU Random Walk
 
 **Function Signature:**
 
@@ -696,7 +696,7 @@ python test/gather_csr/arch35/benchmark_gather_csr.py --warmup 20 --iterations 1
 
 ---
 
-### scatter — Scatter Reductions
+## scatter — Scatter Reductions
 
 The Scatter family follows the forward semantics of `torch_scatter` 2.1.2:
 
@@ -714,7 +714,7 @@ ops_gnn.scatter_max(src, index, dim=-1, out=None, dim_size=None)
 return `out`. `scatter_add` and `scatter_sum` have identical reduction
 semantics.
 
-#### Arguments
+### Arguments
 
 - `src`: input Tensor with rank 1 through 8.
 - `index`: INT64 Tensor broadcastable to `src` under `torch_scatter` rules.
@@ -755,7 +755,7 @@ values, arg = ops_gnn.scatter_max(src, index)
 # arg:    tensor([2, 3], device='npu:0')
 ```
 
-### spmm — General CSR Aggregation
+## spmm — General CSR Aggregation
 
 ```python
 ops_gnn.spmm(
@@ -820,7 +820,7 @@ y = bspmm(ptr, idx, node_features, rhs=edge_features,
 # y: [M, 2, 3, 4]
 ```
 
-### 2.11 grid_cluster — Regular Grid Clustering
+## 2.11 grid_cluster — Regular Grid Clustering
 
 Map `[N,D]` point coordinates to linear regular-grid IDs. Points in the same cell receive the same ID. The interface is compatible with `torch_cluster.grid_cluster`.
 
@@ -865,7 +865,7 @@ cluster = ops_gnn.grid_cluster(pos, size)
 ---
 
 
-### torch_sparse_spmm
+## torch_sparse_spmm
 
 NPU sparse-dense multiplication for torch_sparse, integrated into the ops_gnn
 build and package. COO supports sum; CSR supports sum/add/mean/min/max, optional
@@ -873,7 +873,7 @@ weights, batching and floating-point sum/mean first-order gradients.
 
 See the [development guide](development_guide.md#torch_sparse_spmm) for building/testing and the [design document](../experiment/design/torch_sparse_spmm/torch_sparse_spmm设计文档_en.md) for implementation details.
 
-#### Usage
+### Usage
 
 Import the adapter before importing torch_sparse/PyG frontend aliases:
 
@@ -1144,7 +1144,7 @@ python test/radius/arch35/benchmark_radius.py
 pytest test/segment_max_csr/arch35/test_segment_max_csr.py::test_segment_max_csr_basic -v
 ```
 
-### Test Writing Template
+## Test Writing Template
 
 ```python
 import pytest
