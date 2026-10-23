@@ -224,7 +224,7 @@ class TestSegmentCsr:
     @pytest.mark.parametrize("reduce", REDUCES)
     @pytest.mark.parametrize("dtype", SUPPORTED_DTYPES)
     @pytest.mark.filterwarnings(
-        "error:Cannot create tensor with interal format:UserWarning"
+        "error:Cannot create tensor with internal format:UserWarning"
     )
     def test_non_contiguous_src(self, reduce, dtype):
         device_id = int(os.environ.get("NPU_DEVICE_ID", 0))
@@ -252,7 +252,7 @@ class TestSegmentCsr:
     @pytest.mark.parametrize("reduce", REDUCES)
     @pytest.mark.parametrize("dtype", SUPPORTED_DTYPES)
     @pytest.mark.filterwarnings(
-        "error:Cannot create tensor with interal format:UserWarning"
+        "error:Cannot create tensor with internal format:UserWarning"
     )
     def test_non_contiguous_src_2d(self, reduce, dtype):
         device_id = int(os.environ.get("NPU_DEVICE_ID", 0))
