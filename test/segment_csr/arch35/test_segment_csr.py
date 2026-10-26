@@ -867,3 +867,61 @@ def test_uniform_validation_checks_every_internal_pointer(dtype, reduce):
         result, arg = result
         _assert_equal(arg, expected_arg)
     _assert_equal(result, expected)
+
+
+class TestSegmentCsrGoldenLayout:
+    @staticmethod
+    @pytest.mark.parametrize("reduce", ["sum", "min", "max"])
+    def test_batched_pointer_rows_are_shared_by_feature_channels(reduce):
+        src = torch.tensor(
+            [
+                [[1.0, 10.0], [2.0, 20.0], [3.0, 30.0], [4.0, 40.0]],
+                [[5.0, 50.0], [6.0, 60.0], [7.0, 70.0], [8.0, 80.0]],
+            ]
+        )
+        ptr = torch.tensor([[0, 2, 4], [0, 1, 4]])
+        expected = {
+            "sum": [[[3.0, 30.0], [7.0, 70.0]], [[5.0, 50.0], [21.0, 210.0]]],
+            "min": [[[1.0, 10.0], [3.0, 30.0]], [[5.0, 50.0], [6.0, 60.0]]],
+            "max": [[[2.0, 20.0], [4.0, 40.0]], [[5.0, 50.0], [8.0, 80.0]]],
+        }.get(reduce)
+        assert torch.equal(segment_csr_cpu(src, ptr, reduce), torch.tensor(expected))
+
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        "reduce,expected",
+        [
+            ("min", [[[0, 0], [2, 2]], [[0, 0], [1, 1]]]),
+            ("max", [[[1, 1], [3, 3]], [[0, 0], [3, 3]]]),
+        ],
+    )
+    def test_batched_extremum_indices_keep_input_positions(reduce, expected):
+        src = torch.tensor(
+            [
+                [[1.0, 10.0], [2.0, 20.0], [3.0, 30.0], [4.0, 40.0]],
+                [[5.0, 50.0], [6.0, 60.0], [7.0, 70.0], [8.0, 80.0]],
+            ]
+        )
+        ptr = torch.tensor([[0, 2, 4], [0, 1, 4]])
+        assert torch.equal(
+            segment_argminmax_cpu(src, ptr, reduce), torch.tensor(expected)
+        )
+
+
+    @staticmethod
+    def test_empty_source_retains_declared_segments():
+        actual = segment_csr_cpu(torch.empty(0, 2), torch.tensor([0, 0, 0]))
+        assert actual.shape == (2, 2)
+        assert torch.equal(actual, torch.zeros(2, 2))
+
+
+    @staticmethod
+    def test_shared_pointer_broadcast_and_scalar_control():
+        src = torch.tensor([[[1.0, 10.0], [2.0, 20.0]], [[3.0, 30.0], [4.0, 40.0]]])
+        ptr = torch.tensor([[0, 1, 2]])
+        assert torch.equal(segment_csr_cpu(src, ptr), src)
+        assert torch.equal(
+            segment_csr_cpu(torch.tensor([2.0, 4.0]), torch.tensor([0, 2]), "mean"),
+            torch.tensor([3.0]),
+        )

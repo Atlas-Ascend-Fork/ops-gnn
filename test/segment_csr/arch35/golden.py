@@ -13,6 +13,8 @@ implementation shipped with the official test suite (the acceptance
 baseline), plus a first-occurrence arg reference for min/max.
 """
 
+import math
+
 import torch
 
 
@@ -32,76 +34,70 @@ def _mean_from_typed_sum(total, counts):
     return mean
 
 
-def segment_csr_cpu(src, indptr, reduce="sum"):
+def _csr_views(src, indptr):
     sc = src.cpu()
     ipc = indptr.cpu().long()
     dim = ipc.dim() - 1
-    sizes = list(ipc.shape)
-    for i in range(dim):
-        sizes[i] = sc.size(i)
-    ipc = ipc.expand(sizes)
+    pointer_shape = list(sc.shape[:dim]) + [ipc.size(-1)]
+    ipc = ipc.expand(pointer_shape).contiguous()
+    batch_count = math.prod(sc.shape[:dim])
+    feature_count = math.prod(sc.shape[dim + 1:])
+    segments = ipc.size(-1) - 1
+    output_shape = list(sc.shape)
+    output_shape[dim] = segments
+    values = sc.contiguous().reshape(batch_count, sc.size(dim), feature_count)
+    pointers = ipc.reshape(batch_count, segments + 1)
+    return sc, dim, output_shape, values, pointers
 
-    ns = ipc.size(dim) - 1
-    seg = sc.size(dim)
-    out_size = list(sc.shape)
-    out_size[dim] = ns
-    sc_m = sc.movedim(dim, -1).contiguous().reshape(-1, seg)
-    oc_m = sc.new_zeros(out_size).movedim(dim, -1).contiguous()
-    oc_flat = oc_m.reshape(-1, ns)
-    cnt_m = torch.zeros(oc_m.shape, dtype=torch.int64) if reduce == "mean" else None
-    cnt_flat = cnt_m.reshape(-1, ns) if cnt_m is not None else None
-    ipf = ipc.reshape(-1, ipc.size(-1))
 
-    for b in range(sc_m.size(0)):
-        bi = min(b, ipf.size(0) - 1)
-        ip = ipf[bi]
-        for sgm in range(ns):
-            s = int(ip[sgm].item())
-            e = int(ip[sgm + 1].item())
-            if s >= e or s >= seg:
+def _reduce_segment(selected, reduce):
+    if reduce in ("sum", "add", "mean"):
+        total = selected.sum(dim=0).to(selected.dtype)
+        if reduce == "mean":
+            counts = torch.full_like(total, selected.size(0), dtype=torch.int64)
+            total = _mean_from_typed_sum(total, counts).to(selected.dtype)
+        return total
+    if reduce == "min":
+        return selected.min(dim=0).values
+    if reduce == "max":
+        return selected.max(dim=0).values
+    return None
+
+
+def segment_csr_cpu(src, indptr, reduce="sum"):
+    sc, dim, output_shape, values, pointers = _csr_views(src, indptr)
+    batch_count, length, feature_count = values.shape
+    segments = pointers.size(1) - 1
+    out = sc.new_zeros(output_shape)
+    output = out.reshape(batch_count, segments, feature_count)
+    for batch in range(batch_count):
+        for segment in range(segments):
+            start = int(pointers[batch, segment])
+            end = min(int(pointers[batch, segment + 1]), length)
+            if start >= end:
                 continue
-            e = min(e, seg)
-            vals = sc_m[b, s:e]
-            if vals.numel() == 0:
-                continue
-            if reduce in ("sum", "add"):
-                oc_flat[b, sgm] += vals.sum()
-            elif reduce == "mean":
-                oc_flat[b, sgm] += vals.sum()
-                cnt_flat[b, sgm] = e - s
-            elif reduce == "min":
-                oc_flat[b, sgm] = vals.min()
-            elif reduce == "max":
-                oc_flat[b, sgm] = vals.max()
-    if reduce == "mean" and cnt_flat is not None:
-        nz = cnt_flat > 0
-        oc_flat[nz] = _mean_from_typed_sum(oc_flat[nz], cnt_flat[nz]).to(sc.dtype)
-    return oc_m.movedim(-1, dim).contiguous()
+            result = _reduce_segment(values[batch, start:end], reduce)
+            if result is not None:
+                output[batch, segment] = result
+    return out
 
 
 def segment_argminmax_cpu(src, indptr, reduce):
-    """Return first-occurrence extremum indices in the output tensor shape.
-
-    Each index refers to the original input reduction dimension.
-    """
+    """Return first-occurrence indices, including broadcast batched pointers."""
     if reduce not in ("min", "max"):
         raise AssertionError("Validation condition failed")
-    sc = src.cpu()
-    dim = indptr.dim() - 1
-    ns = indptr.numel() - 1
-    m = sc.size(dim)
-    moved = sc.movedim(dim, 0).contiguous()
-    rest_shape = list(moved.shape[1:])
-    rest_num = int(torch.tensor(rest_shape).prod().item()) if rest_shape else 1
-    flat = moved.reshape(m, rest_num)
-    argflat = torch.full((ns, rest_num), m, dtype=torch.long)
-    for s in range(ns):
-        lo = int(indptr[s].item())
-        hi = min(int(indptr[s + 1].item()), m)
-        if lo >= hi:
-            continue
-        vals = flat[lo:hi]
-        v = vals.min(0).values if reduce == "min" else vals.max(0).values
-        first = (vals == v.unsqueeze(0)).to(torch.long).argmax(0)
-        argflat[s] = lo + first
-    return argflat.reshape([ns] + rest_shape).movedim(0, dim)
+    sc, dim, output_shape, values, pointers = _csr_views(src, indptr)
+    batch_count, length, feature_count = values.shape
+    segments = pointers.size(1) - 1
+    arg = torch.full(output_shape, length, dtype=torch.long)
+    output = arg.reshape(batch_count, segments, feature_count)
+    for batch in range(batch_count):
+        for segment in range(segments):
+            start = int(pointers[batch, segment])
+            end = min(int(pointers[batch, segment + 1]), length)
+            if start >= end:
+                continue
+            selected = values[batch, start:end]
+            reduction = selected.min(dim=0) if reduce == "min" else selected.max(dim=0)
+            output[batch, segment] = start + reduction.indices
+    return arg
