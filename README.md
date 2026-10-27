@@ -177,6 +177,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 |------|------|----------|----------|
 | `gather_coo` | 按有序 COO 索引扩展源行 | NPU | [gather_coo — COO 行扩展](docs/zh/api_reference.md#gather_coo--coo-行扩展) |
 | `gather_csr` | 按 CSR 指针展开 segment 特征 | NPU | [gather_csr - CSR 分段展开](docs/zh/api_reference.md#gather_csr---csr-分段展开) |
+| `fps` | 与 torch_cluster 对齐的最远点采样 | NPU（Ascend 950） | [fps — 最远点采样](docs/zh/api_reference.md#fps--最远点采样) |
 | `random_walk` | COO 图上的均匀或 node2vec 偏置随机游走 | NPU | [random_walk — NPU 随机游走](docs/zh/api_reference.md#random_walk--npu-随机游走) |
 | `segment_max_csr` | CSR 格式的分段最大值运算 | NPU | [segment_max_csr — CSR 分段最大值](docs/zh/api_reference.md#segment_max_csr--csr-分段最大值) |
 | `radius` / `radius_graph` | 半径内邻居搜索（torch_cluster 兼容，Ascend 950PR） | NPU | [radius / radius_graph — 半径内邻居搜索](docs/zh/api_reference.md#radius--radius_graph--半径内邻居搜索) |

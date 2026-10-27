@@ -27,6 +27,7 @@
 #include "grid_cluster/op_host/grid_cluster.h"
 #include "random_walk/op_host/random_walk.h"
 #include "segment_max_csr/op_host/segment_max_csr.h"
+#include "fps/op_host/fps.h"
 #include "radius/op_host/radius.h"
 #include "graclus_cluster/op_host/graclus_cluster.h"
 #include "ind2ptr/op_host/ind2ptr.h"
@@ -47,6 +48,22 @@ bool HasPrivateUse1Kernel(const std::string& opName)
     return op.has_value() && op->hasKernelForDispatchKey(c10::DispatchKey::PrivateUse1);
 }
 }  // namespace opsgnn
+
+#ifndef OPSGNN_DAV_2201
+TORCH_LIBRARY_FRAGMENT(ops_gnn, m) {
+    m.def("fps_single(Tensor src, int out_size, int start_index) -> Tensor",
+          TORCH_FN(fps_npu_single));
+    m.def("fps_batch(Tensor src, Tensor ptr, Tensor out_ptr, Tensor start) -> Tensor",
+          TORCH_FN(fps_npu_batch));
+    // This op consumes libc's process-global rand() state.  Conservative
+    // alias analysis prevents TorchScript from CSE/reordering identical calls
+    // without pretending that the degree tensor itself is mutated.
+    m.def(torch::schema(
+              "fps_random_start(Tensor degree) -> Tensor",
+              c10::AliasAnalysisKind::CONSERVATIVE),
+          TORCH_FN(fps_random_start));
+}
+#endif
 
 namespace {
 // Public ops_gnn kernels may write through independent storage aliases without
@@ -82,6 +99,16 @@ void RegisterTorchSparseCompat(py::module_& module)
                py::arg("rand"));
 }
 
+void RegisterFps(py::module_& m)
+{
+    m.def("fps_single", &fps_npu_single, py::arg("src"), py::arg("out_size"),
+          py::arg("start_index"), "Single-batch farthest point sampling on NPU");
+    m.def("fps_batch", &fps_npu_batch, py::arg("src"), py::arg("ptr"),
+          py::arg("out_ptr"), py::arg("start"),
+          "Batched farthest point sampling on NPU");
+    m.def("fps_random_start", &fps_random_start, py::arg("degree"),
+          "Generate torch_cluster CPU-compatible random FPS starts");
+}
 #endif
 
 void RegisterSegmentCsr(py::module_& module)
@@ -164,6 +191,7 @@ void BindArch35(py::module_& m)
           py::arg("out") = py::none(), "Gather CSR (NPU)");
     m.def("segment_max_csr", &opsgnn::segment_max_csr, py::arg("src"), py::arg("indptr"),
           py::arg("optional_out") = torch::Tensor(), "Segment max csr(NPU)");
+    RegisterFps(m);
     m.def("radius", &opsgnn::radius_npu, py::arg("x"), py::arg("y"),
           py::arg("ptr_x") = py::none(), py::arg("ptr_y") = py::none(),
           py::arg("r"), py::arg("max_num_neighbors"),

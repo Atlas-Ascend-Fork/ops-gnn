@@ -213,7 +213,8 @@ if(WITH_PYTHON)
     )
     set(Python3_LIBRARIES "${Python3_LIBDIR}/${Python3_LDLIBRARY}")
     # Some Conda Python builds retain a removed static LDLIBRARY in sysconfig.
-    # Resolve the installed shared runtime before creating the imported target.
+    # Relocatable builds may also retain their original LIBDIR. Search both
+    # locations for the shared runtime before creating the imported target.
     if(NOT EXISTS "${Python3_LIBRARIES}" OR Python3_LDLIBRARY MATCHES "\\.a$")
         execute_process(
             COMMAND "${Python3_ROOT_DIR}/bin/python3" -c
@@ -221,9 +222,18 @@ if(WITH_PYTHON)
             OUTPUT_VARIABLE Python3_LDVERSION
             OUTPUT_STRIP_TRAILING_WHITESPACE
         )
+        execute_process(
+            COMMAND "${Python3_ROOT_DIR}/bin/python3" -c "import sys; print(sys.base_prefix)"
+            OUTPUT_VARIABLE Python3_BASE_PREFIX
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        set(OPSGNN_SAVED_LIBRARY_SUFFIXES "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+        set(CMAKE_FIND_LIBRARY_SUFFIXES "${CMAKE_SHARED_LIBRARY_SUFFIX}")
         find_library(OPSGNN_PYTHON_SHARED_LIBRARY
             NAMES "python${Python3_LDVERSION}"
-            PATHS "${Python3_LIBDIR}" NO_DEFAULT_PATH REQUIRED)
+            PATHS "${Python3_LIBDIR}" "${Python3_BASE_PREFIX}/lib"
+            NO_DEFAULT_PATH REQUIRED)
+        set(CMAKE_FIND_LIBRARY_SUFFIXES "${OPSGNN_SAVED_LIBRARY_SUFFIXES}")
         set(Python3_LIBRARIES "${OPSGNN_PYTHON_SHARED_LIBRARY}")
     endif()
     set(Python3_FOUND TRUE)

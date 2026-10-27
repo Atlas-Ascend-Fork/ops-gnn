@@ -1064,6 +1064,130 @@ graph = knn_graph(x, k=8)       # 无自环，source_to_target
 torch.npu.synchronize()
 ```
 
+### fps — 最远点采样
+
+#### 产品支持情况
+
+| 产品 | 是否支持 |
+| --- | :---: |
+| Ascend 950PR / Ascend 950DT（arch35） | √ |
+| Atlas A2/A3 系列产品（arch22） | × |
+
+#### 功能说明
+
+FPS（Farthest Point Sampling，最远点采样）在每个 batch 内迭代选择距离已选点集最远的点。第一个点由 `random_start` 决定，后续每轮计算各候选点到已选点集的最小平方欧氏距离，并选择该距离最大的点。
+
+对于点集 $X=\{x_i\}_{i=0}^{N-1}$，第 $t$ 轮维护：
+
+$$
+d_i^{(t)}=\min\left(d_i^{(t-1)},\lVert x_i-x_{s_{t-1}}\rVert_2^2\right),
+\qquad
+s_t=\operatorname*{argmax}_i d_i^{(t)}.
+$$
+
+每个 batch 的采样数按 torch_cluster 1.6.3 CPU 路径计算：Python 标量 ratio 先转为 `src.dtype` Tensor，Tensor ratio 保留输入 dtype，再用 float32 degree 与 ratio 相乘并 ceil。输出为输入 `src` 中的全局 `int64` 下标。
+
+#### Python 接口
+
+```python
+def fps(
+    src: torch.Tensor,
+    batch: Optional[Tensor] = None,
+    ratio: Optional[Union[Tensor, float]] = None,
+    random_start: bool = True,
+    batch_size: Optional[int] = None,
+    ptr: Optional[Union[Tensor, List[int]]] = None,
+) -> torch.Tensor
+```
+
+##### 参数说明
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `src` | `float16`/`float32` Tensor `[N, *]` | 点特征；在 NPU 上执行，内部展平为 `[N, F]`。 |
+| `batch` | 可选 `int64` Tensor `[N]` | batch 归属，默认单 batch；batch 中的点应连续排列。 |
+| `ratio` | 可选 float 或浮点 Tensor | 范围 `(0, 1]`；可为标量或每个 batch 一个值，默认 `0.5`。 |
+| `random_start` | bool | `False` 时每段从局部下标 0 开始；`True` 时与 torch_cluster 1.6.3 CPU 一致，使用进程全局 `libc rand() % degree`。 |
+| `batch_size` | 可选 int | 给定 `batch` 时的 batch 数；默认 `max(batch) + 1`。 |
+| `ptr` | 可选 `int64` Tensor 或 `List[int]` | CSR 分段边界；给定时优先于 `batch`。 |
+| 返回值 | `int64` Tensor `[K]` | NPU 上的全局采样下标。 |
+
+#### 约束说明
+
+- `src` 必须位于 NPU，支持 `float16` 和 `float32`。
+- `ratio` 中每个值必须满足 `0 < ratio <= 1`。
+- `ptr` 必须单调非降，首项为 0，末项为 `N`。
+- 空输入返回 NPU 上的空 `int64` Tensor。
+- 距离和平局按真实 torch_cluster CPU 表达式 `(x - x[idx]).pow_(2).sum(1)` 与 `argmax` 首索引语义；相同最大距离选择最低绝对 index。
+- `float16` 减法与平方保留 fp16 舍入，CPU `sum` 使用 fp32 中间累加并将距离结果舍回 fp16；最小距离状态保持 fp16。
+- `random_start=True` 消费进程全局 libc RNG；`torch.manual_seed` 不控制它。精确对拍需在 CPU/NPU 调用前分别重置相同的 `libc srand`，多 batch CPU 对拍固定单线程。
+
+#### 实现说明
+
+- Host 层完成参数检查、输出长度计算、当前 stream 获取和 UB 容量规划。
+- eager 模式使用低开销 pybind 入口；TorchScript 模式通过注册的 `torch.ops.ops_gnn.fps_batch` Dispatcher 入口调用同一 Host/Kernel 实现，四种 overload 均可编译执行。
+- 常用性能形状在一个 AIV 核内使用 SoA 数据排布和向量指令，在 UB 中维护最小距离并完成最大值归约，减少每轮 GM 往返。
+- 超过 16384 点或不适合向量 UB 路径的高维场景使用 256 线程 SIMT 回退；距离计算、跨 lane 合并和平局比较保持当前 CPU 合同。
+- 单 batch、标量 ratio 且 `random_start=False` 时走低开销入口，避免无关的小 Tensor 元数据搬运。
+
+#### 使用示例
+
+```python
+import torch
+from ops_gnn import fps
+
+src = torch.randn(4096, 4, dtype=torch.float16, device="npu")
+index = fps(src, ratio=0.5, random_start=False)
+sampled = src[index]
+```
+
+#### 构建与验证
+
+在仓库根目录执行：
+
+```bash
+source /usr/local/Ascend/cann-9.1.0/set_env.sh
+cmake -S . -B build/cmake_python_dav-3510 \
+  -DNPU_ARCH=dav-3510 -DWITH_PYTHON=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build/cmake_python_dav-3510 -j4
+export PYTHONPATH=$PWD/python
+NPU_DEVICE_ID=0 /usr/local/python3.12.13/bin/python3 -m pytest test/fps/arch35/test_fps.py -k npu_torchscript
+NPU_DEVICE_ID=0 /usr/local/python3.12.13/bin/python3 -m pytest \
+  test/fps/arch35/test_fps.py -v
+NPU_DEVICE_ID=0 /usr/local/python3.12.13/bin/python3 test/fps/arch35/benchmark_fps.py \
+  --warmup 20 --iter 100 --device npu
+```
+
+
+#### 测试方法
+
+按照仓库说明，使用配套的 CANN、PyTorch 和 torch_npu 构建扩展，
+然后在仓库根目录运行：
+
+```bash
+python -m pytest test/fps/arch35/test_fps.py -v
+python -m pytest test/fps/arch35/test_fps.py -k npu_torchscript -v
+python test/fps/arch35/benchmark_fps.py --help
+```
+
+功能测试调用公开的 `ops_gnn.fps()`。`golden.py` 仅依赖 PyTorch，
+提供 CPU 贪心选点结果生成器，以及独立的逐步 CPU 序列检查。
+正式 FPS 测试不导入 torch_cluster。标量 ratio 先存为输入 dtype，
+再与 float32 的分段长度相乘并取 ceil；距离相同时选择首个索引。
+返回值为全局 int64 索引，ptr 和 batch 分段分别测试。
+
+随机首点场景需固定 seed，并向 CPU 参考提供各分段的明确起点。
+原生 CPU 标杆使用 libc RNG，与 PyTorch RNG 独立；随机首点对拍
+因此需要同时控制实际标杆的 RNG seed 和 PyTorch seed。
+
+没有 NPU 扩展时，NPU 测试会跳过。CPU 计数和 TorchScript 元数据
+测试不能证明 NPU 功能或性能通过。性能入口保留任务书的 42 个
+dtype/shape 点及 0.45 性能比例门限。
+
+对拍工具、历史附件和自测报告保留在独立验收材料中，不提交到
+正式产品仓库。
+
+
 ## 三、测试指南
 
 ### 运行测试

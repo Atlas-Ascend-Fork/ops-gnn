@@ -179,6 +179,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 |----------|-------------|----------------|---------------|
 | `gather_coo` | Expand source rows by sorted COO indices | NPU | [gather_coo — COO Row Expansion](docs/en/api_reference.md#gather_coo--coo-row-expansion) |
 | `gather_csr` | Expands segment features using CSR pointers | NPU | [gather_csr - CSR Segment Expansion](docs/en/api_reference.md#gather_csr---csr-segment-expansion) |
+| `fps` | torch_cluster-compatible farthest point sampling | NPU (Ascend 950) | [fps — Farthest Point Sampling](docs/en/api_reference.md#fps--farthest-point-sampling) |
 | `random_walk` | Uniform or node2vec-biased random walks on COO graphs | NPU | [random_walk — NPU Random Walk](docs/en/api_reference.md#random_walk--npu-random-walk) |
 | `segment_max_csr` | Segmented max reduction on CSR format | NPU | [segment_max_csr — CSR Segmented Max](docs/en/api_reference.md#segment_max_csr--csr-segmented-max) |
 | `radius` / `radius_graph` | Radius neighbor search (torch_cluster compatible, Ascend 950PR) | NPU | [radius / radius_graph — Radius Neighbor Search](docs/en/api_reference.md#radius--radius_graph--radius-neighbor-search) |

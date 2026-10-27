@@ -1112,6 +1112,131 @@ graph = knn_graph(x, k=8)       # No self-loops, source_to_target
 torch.npu.synchronize()
 ```
 
+### fps — Farthest Point Sampling
+
+#### Supported Products
+
+| Product | Supported |
+| --- | :---: |
+| Ascend 950PR / Ascend 950DT (arch35) | √ |
+| Atlas A2/A3 series products (arch22) | × |
+
+#### Function
+
+FPS (Farthest Point Sampling) iteratively selects the point farthest from the already selected set within each batch. `random_start` determines the first point. Each subsequent iteration computes every candidate's minimum squared Euclidean distance to the selected set and selects the point with the greatest such distance.
+
+For a point set $X=\{x_i\}_{i=0}^{N-1}$, iteration $t$ maintains:
+
+$$
+d_i^{(t)}=\min\left(d_i^{(t-1)},\lVert x_i-x_{s_{t-1}}\rVert_2^2\right),
+\qquad
+s_t=\operatorname*{argmax}_i d_i^{(t)}.
+$$
+
+The sample count of each batch follows the `torch_cluster` 1.6.3 CPU path: a Python scalar `ratio` is first converted into a Tensor of `src.dtype`, a Tensor `ratio` retains its input dtype, and float32 `degree` is then multiplied by `ratio` and rounded with `ceil`. The output contains global `int64` indices into the input `src`.
+
+#### Python Interface
+
+```python
+def fps(
+    src: torch.Tensor,
+    batch: Optional[Tensor] = None,
+    ratio: Optional[Union[Tensor, float]] = None,
+    random_start: bool = True,
+    batch_size: Optional[int] = None,
+    ptr: Optional[Union[Tensor, List[int]]] = None,
+) -> torch.Tensor
+```
+
+##### Parameters
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `src` | `float16`/`float32` Tensor `[N, *]` | Point features; execution occurs on the NPU, with an internal flattening to `[N, F]`. |
+| `batch` | Optional `int64` Tensor `[N]` | Batch assignment; defaults to one batch. Points belonging to a batch must be contiguous. |
+| `ratio` | Optional float or floating-point Tensor | Range `(0, 1]`; either a scalar or one value per batch. Defaults to `0.5`. |
+| `random_start` | bool | With `False`, each segment starts at local index 0. With `True`, it matches `torch_cluster` 1.6.3 CPU and uses the process-global `libc rand() % degree`. |
+| `batch_size` | Optional int | Number of batches when `batch` is provided; defaults to `max(batch) + 1`. |
+| `ptr` | Optional `int64` Tensor or `List[int]` | CSR segment boundaries; takes precedence over `batch` when provided. |
+| Return value | `int64` Tensor `[K]` | Global sampled indices on the NPU. |
+
+#### Constraints
+
+- `src` must reside on the NPU; `float16` and `float32` are supported.
+- Every value in `ratio` must satisfy `0 < ratio <= 1`.
+- `ptr` must be nondecreasing, start with 0, and end with `N`.
+- An empty input returns an empty `int64` Tensor on the NPU.
+- Distances and ties follow the actual `torch_cluster` CPU expression `(x - x[idx]).pow_(2).sum(1)` and first-index `argmax` semantics: equal maximum distances select the lowest absolute index.
+- `float16` subtraction and squaring preserve fp16 rounding. CPU `sum` accumulates internally in fp32 and rounds the resulting distance back to fp16; the minimum-distance state remains fp16.
+- `random_start=True` consumes the process-global libc RNG, which `torch.manual_seed` does not control. Exact CPU/NPU comparisons must reset the same `libc srand` value separately before each call. Multi-batch CPU comparisons use a fixed single thread.
+
+#### Implementation
+
+- The Host layer validates parameters, computes the output length, obtains the current stream, and plans UB capacity.
+- Eager mode uses the low-overhead pybind entry. TorchScript mode invokes the same Host/Kernel implementation through the registered `torch.ops.ops_gnn.fps_batch` Dispatcher entry; all four overloads can be compiled and executed.
+- Common performance shapes use SoA layout and vector instructions within one AIV core. The implementation retains minimum distances and performs the maximum reduction in UB, reducing GM round trips during each iteration.
+- Inputs with more than 16384 points, or high-dimensional shapes unsuitable for the vector UB path, use a 256-thread SIMT fallback. Distance computation, cross-lane combination, and tie comparison preserve the current CPU contract.
+- A single batch with a scalar `ratio` and `random_start=False` uses the low-overhead entry, avoiding transfers of unrelated small Tensor metadata.
+
+#### Example
+
+```python
+import torch
+from ops_gnn import fps
+
+src = torch.randn(4096, 4, dtype=torch.float16, device="npu")
+index = fps(src, ratio=0.5, random_start=False)
+sampled = src[index]
+```
+
+#### Build and Validation
+
+Run the following commands from the repository root:
+
+```bash
+source /usr/local/Ascend/cann-9.1.0/set_env.sh
+cmake -S . -B build/cmake_python_dav-3510 \
+  -DNPU_ARCH=dav-3510 -DWITH_PYTHON=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build/cmake_python_dav-3510 -j4
+export PYTHONPATH=$PWD/python
+NPU_DEVICE_ID=0 /usr/local/python3.12.13/bin/python3 -m pytest test/fps/arch35/test_fps.py -k npu_torchscript
+NPU_DEVICE_ID=0 /usr/local/python3.12.13/bin/python3 -m pytest \
+  test/fps/arch35/test_fps.py -v
+NPU_DEVICE_ID=0 /usr/local/python3.12.13/bin/python3 test/fps/arch35/benchmark_fps.py \
+  --warmup 20 --iter 100 --device npu
+```
+
+
+#### Test commands
+
+Build the extension with the repository instructions and matching CANN,
+PyTorch and torch_npu versions, then run from the repository root:
+
+```bash
+python -m pytest test/fps/arch35/test_fps.py -v
+python -m pytest test/fps/arch35/test_fps.py -k npu_torchscript -v
+python test/fps/arch35/benchmark_fps.py --help
+```
+
+The functional tests exercise the public `ops_gnn.fps()` entry point.
+`golden.py` implements a CPU greedy FPS generator and an independent
+step-by-step CPU sequence checker using PyTorch only. No formal test imports
+torch_cluster. Scalar ratios are represented in the source dtype before
+float32-degree multiplication and ceil; distance ties choose the first index.
+The output uses global int64 indices, with ptr/batch boundaries tested separately.
+
+For random starts, set the seed and supply the exact per-segment start indices
+to the CPU reference. The native CPU oracle uses libc RNG, which is independent
+of the PyTorch RNG. Random-start equivalence must therefore be checked with
+the actual oracle seed as well as the PyTorch seed.
+
+NPU tests are skipped when the NPU extension is unavailable. CPU count and
+TorchScript metadata tests do not prove NPU correctness or performance.
+Benchmarks retain the 42 taskbook dtype/shape points and the 0.45 ratio threshold.
+Comparison tools, historical attachments and self-test reports belong to the
+separate acceptance materials, not the production repository.
+
+
 ## Testing Guide
 
 ### Running Tests

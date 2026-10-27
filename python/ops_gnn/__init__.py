@@ -60,6 +60,7 @@ else:
         segment_mean_coo, segment_min_coo, segment_max_coo,
     )
     from .gather_csr import gather_csr
+    from .fps import fps
     from .graclus_cluster import graclus_cluster
     from .gather_coo import gather_coo
     from .grid_cluster import grid_cluster
@@ -90,6 +91,7 @@ else:
         'torch_sparse_random_walk',
         'torch_sparse_random_walk_with_rand',
         'gather_csr',
+        'fps',
         'graclus_cluster',
         'gather_coo',
         'grid_cluster',
