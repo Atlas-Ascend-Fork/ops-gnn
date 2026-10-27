@@ -22,11 +22,18 @@
 
 namespace ops_gnn {
 
+// Private C++ module initializer; registers only CPU-side observation on arch22.
+// Not a Python API and a no-op on arch35.
+void initialize_segment_csr_proof_observer();
+
+// Internal boundary for other ops_gnn kernels that bypass the ATen dispatcher.
+void invalidate_segment_csr_proofs();
+
 // torch_scatter-compatible segment_csr forward on NPU.
 // reduce: "sum" | "add" | "mean" | "min" | "max".
 // Returns {out} for sum/add/mean and {out, arg_out} for min/max.
 std::vector<torch::Tensor> segment_csr(
-    torch::Tensor src, torch::Tensor indptr, c10::optional<torch::Tensor> out, const std::string& reduce);
+    torch::Tensor src, torch::Tensor indptr, c10::optional<torch::Tensor> out, const std::string& reduce, bool returnArg = true);
 
 } // namespace ops_gnn
 

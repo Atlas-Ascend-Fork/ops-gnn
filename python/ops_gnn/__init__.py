@@ -32,6 +32,10 @@ except (ImportError, OSError) as exc:
     ) from exc
 
 if _pybind.npu_arch == 'dav-2201':
+    from .segment_csr import (
+        segment_csr, segment_sum_csr, segment_add_csr,
+        segment_mean_csr, segment_min_csr, segment_max_csr,
+    )
     from .segment_coo import (
         segment_coo, segment_sum_coo, segment_add_coo,
         segment_mean_coo, segment_min_coo, segment_max_coo,
@@ -41,10 +45,16 @@ if _pybind.npu_arch == 'dav-2201':
     __all__ = [
         'spmm',
         'bspmm',
+        'segment_csr', 'segment_sum_csr', 'segment_add_csr',
+        'segment_mean_csr', 'segment_min_csr', 'segment_max_csr',
         'segment_coo', 'segment_sum_coo', 'segment_add_coo',
         'segment_mean_coo', 'segment_min_coo', 'segment_max_coo',
     ]
 else:
+    from .segment_csr import (
+        segment_csr, segment_sum_csr, segment_add_csr,
+        segment_mean_csr, segment_min_csr, segment_max_csr,
+    )
     from .segment_coo import (
         segment_coo, segment_sum_coo, segment_add_coo,
         segment_mean_coo, segment_min_coo, segment_max_coo,
@@ -67,14 +77,6 @@ else:
         scatter_sum,
     )
     from .segment_max_csr import segment_max_csr as segment_max_csr_legacy
-    from .segment_csr import (
-        segment_csr,
-        segment_sum_csr,
-        segment_add_csr,
-        segment_mean_csr,
-        segment_min_csr,
-        segment_max_csr,
-    )
     from .radius import radius, radius_graph
     from .knn import knn, knn_graph
     from .nearest import nearest

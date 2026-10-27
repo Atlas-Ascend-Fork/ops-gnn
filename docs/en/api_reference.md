@@ -232,7 +232,7 @@ result = ops_gnn.segment_max_csr(src, indptr)
 
 ## segment_csr — int64 CSR Segment Reductions
 
-On Ascend 950 / arch35, reduce CSR segments deterministically with `sum`,
+On Ascend A2 / arch22 and Ascend 950 / arch35, reduce CSR segments deterministically with `sum`,
 `add`, `mean`, `min`, or `max`. The reduction axis is `indptr.dim() - 1`, and
 its output size is `indptr.size(-1) - 1`. Each output has one writer; no global
 atomic accumulation is used.
@@ -258,8 +258,18 @@ the input reduction axis. Empty segments yield zero values and an index equal
 to the input reduction-axis length. Empty `src` preserves a supplied `out`.
 Integer `mean` casts the sum and segment length to the source dtype before
 division toward zero; floating `mean` preserves the sum and count rounding
-order. An int8/uint8 count that casts to zero yields zero. Invalid pointers
-and NaN extrema propagation are outside this interface's extended contract.
+order. An int8/uint8 count that casts to zero yields zero.
+A2 floating `mean` uses the full uint64 segment length above `INT32_MAX`,
+avoiding the CPU count truncation and fallback to one. FP16/BF16 retain
+source-type rounding and overflow behavior.
+On A2, invalid pointers are rejected before reduction, nonempty src overwrites out,
+and noncontiguous out is written back to the original object. Extrema start at
+finite working-type limits and update positions only on strict improvement;
+NaN does not update them. Nonempty segments without improvement retain the
+initializer value and argument state carried across segments/batches, initially
+zero. Zero-segment output and byte zero divisors follow explicit project
+contracts. Functional and accuracy tests use a standalone PyTorch golden and
+require no torch_scatter installation.
 
 ```python
 import torch
@@ -272,8 +282,8 @@ summed = ops_gnn.segment_csr(src, indptr, reduce="sum")
 values, indices = ops_gnn.segment_max_csr(src, indptr)
 ```
 
-For an `int32` pointer, `segment_max_csr` retains the existing value-only
-path. The historical `optional_out=` keyword remains available through
+In Ascend 950 builds exposing the legacy entry, an `int32` pointer selects
+the existing value-only `segment_max_csr` path. The historical `optional_out=` keyword remains available through
 `segment_max_csr_legacy`.
 
 ---

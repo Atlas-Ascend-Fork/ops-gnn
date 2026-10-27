@@ -214,3 +214,113 @@ Validation has four parts:
 Reports record source and loaded binary hashes, device, software, timing
 settings, and each case outcome. Only a complete matrix for the current build
 supports a final validation claim.
+
+## Ascend A2 backend design
+
+### 1. Interfaces and data model
+
+The `arch22` backend provides `segment_csr` and sum/add/mean/min/max interfaces
+for FLOAT16, FLOAT32, BFLOAT16, INT8, UINT8, INT32 and INT64. Pointers and
+extremum positions use INT64. The generic API returns values; dedicated
+min/max APIs return `(value, arg)`.
+
+Source rank is 1–8. The reduction axis is `indptr.dim() - 1`. Contiguous input
+is viewed as `[B, M, K]`: leading batch product, reduction length and trailing
+feature product. There are S=`indptr.size(-1) - 1` output segments, each reading
+`[indptr[s], indptr[s+1])` directly. Leading pointer dimensions may broadcast;
+partial intervals, repeated boundaries and noncontiguous inputs are supported.
+
+### 2. CPU numerical rules
+
+Reduction order, working types and writes follow CPU `torch_scatter` CSR.
+
+| Item | Rule |
+| --- | --- |
+| out | Nonempty src overwrites existing values; entirely empty src preserves supplied out or produces zeros when out is omitted |
+| Empty segments | Value is zero and arg is M; a zero-segment request returns the inferred empty shape |
+| sum/add | Start from zero; half and BF16 use FP32 working values |
+| mean | Narrow the accumulated numerator to source type; retain the full uint64 count for floating division before source-type conversion; integer division retains native count narrowing and truncates toward zero |
+| Byte mean | A nonzero count narrowed to zero explicitly produces zero without undefined integer division |
+| min/max | Initialize with the finite working-type maximum/minimum; update only on strict improvement, retaining the first tie |
+| Argument carry | State starts at zero and survives segments and batches without improvement; empty segments output M without clearing the state |
+| NaN/Inf | NaN cannot improve an extremum; a nonempty segment without improvement retains the narrowed working-type initializer and carried argument |
+
+CSR does not clear initializer-valued nonempty extrema at the end. Noncontiguous
+out is written back and the original object is returned. Numerical rules match
+CPU; restrictions of the native CPU wrapper for noncontiguous out are recorded
+separately.
+
+A2 floating mean divides by the full segment length above `INT32_MAX`, rather
+than reproducing count truncation in CPU `Reducer::write(int count)`. With
+`rows=2^31+1` and a sum of 8, the tested CPU extension returns 8; A2 returns
+approximately `3.7252903e-9` in FLOAT32. FP16/BF16 still round the numerator and
+denominator to source type, so low-precision overflow remains possible. Integer
+paths retain their existing CPU numerical rules. The independent golden uses
+full floating counts; ordinary CPU parity and this declared boundary difference
+are validated separately.
+
+### 3. Host flow
+
+The Host validates device, layout, type, dimensions and output shape, derives
+B/M/K/S, and prepares contiguous aligned buffers. Pointer order and bounds are
+validated on the current NPU stream before reduction. Internally overlapping
+outputs are rejected; legal interleaved storage has an exact address check.
+Inputs that alias the supplied output are protected before writes.
+
+Plans depend on shape, type, device capacity, argument demand and proven segment
+properties. NPU validation checks all pointers for uniformity and every source
+value when a range proof is needed. Caches retain predicates and geometry only.
+Reuse checks tensor identity, version, address, layout and mutation generation.
+Inference tensors and mutations that cannot be reliably tracked bypass proof
+reuse. Framework writes and external writes by public operators invalidate
+proofs; raw storage writes outside the framework require caller synchronization.
+
+Submission captures fixed addresses and their Storage owners to protect the
+asynchronous lifetime of inputs, outputs and temporaries. Small working sets use
+the framework queue; larger ones launch directly after draining current-stream
+Host submissions. Working outputs are copied back to noncontiguous views.
+
+### 4. Kernel organization and tiling
+
+`segment_csr.h` declares launch interfaces and `segment_csr_tiling.h` defines
+the Host/Kernel protocol. `segment_csr_common.h` shares synchronization and
+INT64 input transfers. `segment_csr.cpp` implements general reductions,
+input validation and argument carry. `segment_csr_uniform.cpp` contains proven
+uniform-segment paths and launch-plan dispatch.
+
+Tasks partition segment groups and feature tiles. Each physical output block
+has one writer, without global atomic accumulation. The general path handles
+unequal segments, partial intervals and empty segments. UB planning includes
+input, cast, accumulator, output, argument, mask and alignment buffers. Queue
+prefetch overlaps transfers with computation; tails write valid elements only.
+
+### 5. Type-specific implementation
+
+| Type or path | Implementation |
+| --- | --- |
+| FLOAT16 / FLOAT32 / BFLOAT16 | General sum/mean accumulate in FP32 in CPU row order, retaining cross-tile order and source-type narrowing |
+| Short FLOAT16 segments | Suitable uniform power-of-two lengths up to 16 use a fixed tree only after every source value is proven finite with magnitude ≤6; results use the official mixed tolerance |
+| INT8 / UINT8 / INT32 | Integer addition, comparison and division preserve source-width wraparound; uniform segments use trees and pipelines |
+| INT64 | Full-width algorithms preserve exact integers; complete range proofs permit exact narrowing, with full-width fallback |
+| min/max | Dedicated interfaces maintain first strict improvements and repair argument state across segments/batches; generic calls omit argument computation |
+
+The FP16 tree also narrows the mean numerator before division. Each path has a
+fixed operation order and repeated results are identical byte for byte. Empty
+zero-segment output and byte zero divisors are explicit contracts tested in
+isolation from ordinary CPU parity.
+
+### 6. Validation design
+
+Three scripts provide independent reference calculations, functional/accuracy
+assertions, and public-interface timing. `golden.py` depends only on PyTorch,
+implements CPU CSR values/arguments, and supplies the official mixed-tolerance
+comparator. Separate validation processes invoke the real CPU extension with
+zero relative and absolute tolerances and matching NaN positions; integers and
+arguments compare exactly. Comparator checks cover zero, subnormals, the ULP
+hard limit and narrowing from higher-precision references.
+
+Functional cases cover seven types, five reductions, broadcasting, layouts,
+out, empty inputs/segments, extremum state, overflow, special values, aliases,
+proof invalidation, determinism and nondefault streams. Timing covers 29 shapes
+× 4 types × 4 reductions with out=None and value-only generic min/max calls,
+20 warmups, 100 iterations and synchronization before and after timing.

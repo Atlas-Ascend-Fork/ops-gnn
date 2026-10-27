@@ -231,7 +231,7 @@ result = ops_gnn.segment_max_csr(src, indptr)
 
 ### segment_csr — int64 CSR 分段归约算子族
 
-Ascend 950 / arch35 上按 CSR 行指针做确定性分段归约，支持 `sum`、`add`、
+Ascend A2 / arch22 与 Ascend 950 / arch35 上按 CSR 行指针做确定性分段归约，支持 `sum`、`add`、
 `mean`、`min`、`max`。归约维度为 `indptr.dim() - 1`，输出该维长度为
 `indptr.size(-1) - 1`。每个输出由一个处理单元写回，不使用全局原子累加。
 
@@ -255,7 +255,13 @@ segment_max_csr(src, indptr, out=None)            # int64 indptr: (values, indic
 索引为输入归约维长度。空 `src` 且提供 `out` 时保留已有输出。
 整数 `mean` 先按源 dtype 转换和及段长，再向零截断整数除法；浮点
 `mean` 保留和及段长的舍入顺序。`int8/uint8` 段长转换为零时返回零。
-非法指针和 NaN 极值传播不在此接口的扩展承诺内。
+A2 浮点 `mean` 使用完整 uint64 段长，超过 `INT32_MAX` 时不会复现 CPU
+计数截断后回退为 1 的行为；FP16/BF16 仍保留源类型舍入及溢出规则。
+A2 在归约前拒绝非法指针；非空 src 覆盖 out，非连续 out 写回原视图并返回同一对象。
+A2 极值按 CPU 工作类型的有限极值初始化，仅严格改善时更新位置；NaN 不触发更新，
+没有改善的非空段保留初始化值并沿用跨段/batch 的 arg 状态（初始为 0）。
+非空 src 配合零段输出返回空张量；byte 零除数显式返回零，这两种情况按项目约定验证。
+功能与精度测试使用独立 PyTorch golden，不依赖 torch_scatter。
 
 ```python
 import torch
@@ -268,7 +274,7 @@ summed = ops_gnn.segment_csr(src, indptr, reduce="sum")
 values, indices = ops_gnn.segment_max_csr(src, indptr)
 ```
 
-`segment_max_csr` 遇到 `int32` 指针时仍走原有的仅返回值路径；历史
+在提供旧入口的 Ascend 950 构建中，`segment_max_csr` 遇到 `int32` 指针时仍走原有的仅返回值路径；历史
 `optional_out=` 关键字可通过 `segment_max_csr_legacy` 使用。
 
 ---

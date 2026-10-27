@@ -15,6 +15,7 @@
 #include <pybind11/pybind11.h>
 #include <string>
 #include "segment_coo/op_host/segment_coo.h"
+#include "segment_csr/op_host/segment_csr.h"
 #ifdef OPSGNN_DAV_2201
 #include "spmm_max/op_host/spmm_max.h"
 #include "spmm_min/op_host/spmm_min.h"
@@ -26,7 +27,6 @@
 #include "grid_cluster/op_host/grid_cluster.h"
 #include "random_walk/op_host/random_walk.h"
 #include "segment_max_csr/op_host/segment_max_csr.h"
-#include "segment_csr/op_host/segment_csr.h"
 #include "radius/op_host/radius.h"
 #include "graclus_cluster/op_host/graclus_cluster.h"
 #include "ind2ptr/op_host/ind2ptr.h"
@@ -49,6 +49,15 @@ bool HasPrivateUse1Kernel(const std::string& opName)
 }  // namespace opsgnn
 
 namespace {
+// Public ops_gnn kernels may write through independent storage aliases without
+// going through an ATen dispatcher operation. Invalidate CSR proof generations
+// at their boundaries, including exceptional exits. CSR itself manages its
+// internal writes and must retain proof reuse across ordinary repeated calls.
+struct ExternalCsrProofBoundary {
+    ExternalCsrProofBoundary() { ops_gnn::invalidate_segment_csr_proofs(); }
+    ~ExternalCsrProofBoundary() { ops_gnn::invalidate_segment_csr_proofs(); }
+};
+
 
 void BindSegmentCoo(py::module_& m)
 {
@@ -58,7 +67,7 @@ void BindSegmentCoo(py::module_& m)
     m.attr("SEGMENT_COO_MAX") = static_cast<int32_t>(SEGMENT_COO_MAX);
     m.def("segment_coo_forward", &segment_coo_forward, py::arg("src"), py::arg("index"),
           py::arg("out"), py::arg("dim_size"), py::arg("reduce"), py::arg("return_arg") = true,
-          py::call_guard<py::gil_scoped_release>());
+          py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary>());
 }
 
 #ifndef OPSGNN_DAV_2201
@@ -73,21 +82,24 @@ void RegisterTorchSparseCompat(py::module_& module)
                py::arg("rand"));
 }
 
+#endif
+
 void RegisterSegmentCsr(py::module_& module)
 {
-    module.def(
-        "segment_csr",
-        [](torch::Tensor src, torch::Tensor indptr, py::object outObject, const std::string& reduce) {
-            c10::optional<torch::Tensor> out = c10::nullopt;
-            if (!outObject.is_none()) {
-                out = outObject.cast<torch::Tensor>();
-            }
-            return ops_gnn::segment_csr(src, indptr, out, reduce);
-        },
-        py::arg("src"), py::arg("indptr"), py::arg("out") = py::none(), py::arg("reduce") = "sum",
-        "Reduce CSR segments with int64 pointers on the current NPU stream");
+    module.def("segment_csr", &ops_gnn::segment_csr,
+        py::arg("src"), py::arg("indptr"), py::arg("out") = py::none(),
+        py::arg("reduce") = "sum", py::arg("return_arg") = true,
+        py::call_guard<py::gil_scoped_release>());
+    module.def("segment_csr_value",
+        [](torch::Tensor src, torch::Tensor indptr,
+           c10::optional<torch::Tensor> out, const std::string& reduce) {
+            return ops_gnn::segment_csr(std::move(src), std::move(indptr),
+                                       std::move(out), reduce, false)[0];
+        }, py::arg("src"), py::arg("indptr"), py::arg("out") = py::none(),
+        py::arg("reduce") = "sum", py::call_guard<py::gil_scoped_release>());
 }
 
+#ifndef OPSGNN_DAV_2201
 void RegisterKnn(py::module_& m)
 {
     m.def("knn", &opsgnn::knn_npu, py::arg("x"), py::arg("y"),
@@ -108,16 +120,16 @@ void BindArch22(py::module_& m)
               return std::get<0>(segment_coo_forward(std::move(src), std::move(index),
                                    std::move(out), dimSize, reduce, false));
           }, py::arg("src"), py::arg("index"), py::arg("out"), py::arg("dim_size"),
-          py::arg("reduce"), py::call_guard<py::gil_scoped_release>());
+          py::arg("reduce"), py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary>());
     m.def("spmm_max_csr", &opsgnn::SpmmMaxCsr, py::arg("indptr"), py::arg("indices"),
-          py::arg("x"), py::arg("out") = py::none(), "CSR SpMM max on Ascend NPU");
+          py::arg("x"), py::arg("out") = py::none(), "CSR SpMM max on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
     m.def("spmm_min_csr", &opsgnn::SpmmMinCsr, py::arg("indptr"), py::arg("indices"),
-          py::arg("x"), py::arg("out") = py::none(), "CSR SpMM min on Ascend NPU");
+          py::arg("x"), py::arg("out") = py::none(), "CSR SpMM min on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
     m.def("spmm_sum_csr", &opsgnn::SpmmSumCsr, py::arg("indptr"), py::arg("indices"),
-          py::arg("x"), py::arg("out") = py::none(), "CSR SpMM sum on Ascend NPU");
+          py::arg("x"), py::arg("out") = py::none(), "CSR SpMM sum on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
     m.def("unified_spmm_csr", &opsgnn::UnifiedSpmmCsr, py::arg("indptr"), py::arg("indices"),
           py::arg("x"), py::arg("op") = "copy_lhs", py::arg("reduce") = "sum",
-          py::arg("out") = py::none(), "Unified two-dimensional CSR SpMM on Ascend NPU");
+          py::arg("out") = py::none(), "Unified two-dimensional CSR SpMM on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
 }
 #else
 void BindTorchSparseSpmm(py::module_& m)
@@ -152,7 +164,6 @@ void BindArch35(py::module_& m)
           py::arg("out") = py::none(), "Gather CSR (NPU)");
     m.def("segment_max_csr", &opsgnn::segment_max_csr, py::arg("src"), py::arg("indptr"),
           py::arg("optional_out") = torch::Tensor(), "Segment max csr(NPU)");
-    RegisterSegmentCsr(m);
     m.def("radius", &opsgnn::radius_npu, py::arg("x"), py::arg("y"),
           py::arg("ptr_x") = py::none(), py::arg("ptr_y") = py::none(),
           py::arg("r"), py::arg("max_num_neighbors"),
@@ -194,6 +205,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("has_private_use1_kernel", &opsgnn::HasPrivateUse1Kernel, py::arg("op_name"),
           "True if the operator already has a PrivateUse1 (NPU) kernel, e.g. a pre-existing "
           "third-party registration");
+#ifdef OPSGNN_DAV_2201
+    ops_gnn::initialize_segment_csr_proof_observer();
+#endif
+    RegisterSegmentCsr(m);
 #ifdef OPSGNN_DAV_2201
     BindArch22(m);
 #else

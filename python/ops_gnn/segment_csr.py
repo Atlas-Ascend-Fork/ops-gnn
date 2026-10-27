@@ -18,7 +18,8 @@ from typing import Optional, Tuple
 import torch
 
 from . import _pybind
-from .segment_max_csr import segment_max_csr as segment_max_csr_legacy
+if hasattr(_pybind, "segment_max_csr"):
+    from .segment_max_csr import segment_max_csr as segment_max_csr_legacy
 
 _REDUCE_OPS = ("sum", "add", "mean", "min", "max")
 
@@ -35,21 +36,21 @@ def segment_sum_csr(
     src: torch.Tensor, indptr: torch.Tensor, out: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     _check_reduce("sum")
-    return _pybind.segment_csr(src, indptr, out, "sum")[0]
+    return _pybind.segment_csr_value(src, indptr, out, "sum")
 
 
 def segment_add_csr(
     src: torch.Tensor, indptr: torch.Tensor, out: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     _check_reduce("add")
-    return _pybind.segment_csr(src, indptr, out, "add")[0]
+    return _pybind.segment_csr_value(src, indptr, out, "add")
 
 
 def segment_mean_csr(
     src: torch.Tensor, indptr: torch.Tensor, out: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     _check_reduce("mean")
-    return _pybind.segment_csr(src, indptr, out, "mean")[0]
+    return _pybind.segment_csr_value(src, indptr, out, "mean")
 
 
 def segment_min_csr(
@@ -70,7 +71,7 @@ def segment_max_csr(
     ``optional_out`` keyword is available through ``segment_max_csr_legacy``.
     """
     _check_reduce("max")
-    if indptr.dtype == torch.int32:
+    if indptr.dtype == torch.int32 and hasattr(_pybind, "segment_max_csr"):
         return segment_max_csr_legacy(src, indptr, out)
     result = _pybind.segment_csr(src, indptr, out, "max")
     return result[0], result[1]
@@ -87,4 +88,4 @@ def segment_csr(
     Return only values; min/max indices are provided by the sub-operators.
     """
     _check_reduce(reduce)
-    return _pybind.segment_csr(src, indptr, out, reduce)[0]
+    return _pybind.segment_csr_value(src, indptr, out, reduce)
