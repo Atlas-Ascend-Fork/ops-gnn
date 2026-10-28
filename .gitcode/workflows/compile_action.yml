@@ -65,8 +65,8 @@ jobs:
         if: ${{ inputs.package_name != '' }}
         run: |
           if [[ "${{ inputs.package_name }}" == *.so ]]; then
-            mv ${{ steps.process_checkout.outputs.path }}/output/kernel/${{ inputs.package_name }} ${{ steps.process_checkout.outputs.path }}/output/${{ inputs.package_name }}           
-            echo "mv: ${{ steps.process_checkout.outputs.path }}/output/kernel/${{ inputs.package_name }} -> ${{ steps.process_checkout.outputs.path }}/output/${{ inputs.package_name }}"
+            mv "${{ steps.process_checkout.outputs.path }}/output/kernel/"${{ inputs.package_name }} "${{ steps.process_checkout.outputs.path }}/output/"
+            echo "mv: ${{ steps.process_checkout.outputs.path }}/output/kernel/${{ inputs.package_name }} -> ${{ steps.process_checkout.outputs.path }}/output/"
           fi
           if [[ "${{ inputs.package_name }}" == *.whl ]]; then
             mv ${{ steps.process_checkout.outputs.path }}/output/whl/ops_gnn*.whl ${{ steps.process_checkout.outputs.path }}/output/${{ inputs.package_name }}

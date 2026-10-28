@@ -67,7 +67,7 @@ stages:
           task_name: 'Compile_Ascend_X86_ubuntu24'
           image_version: ${{ jobs.JOB_image.outputs.Compile_Ascend_X86_ubuntu24 }}
           arch: 'x64'
-          package_name: 'libopsgnn_npu_kernel.so'
+          package_name: 'libopsgnn_npu_kernel*.so'
       JOB_x86_compile_Python_ubuntu24:
         name: Compile_Ascend_X86_Python_ubuntu24
         uses: .gitcode/workflows/compile_action.yml
