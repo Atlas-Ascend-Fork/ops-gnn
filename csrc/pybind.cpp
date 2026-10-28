@@ -31,6 +31,7 @@
 #include "radius/op_host/radius.h"
 #include "graclus_cluster/op_host/graclus_cluster.h"
 #include "ind2ptr/op_host/ind2ptr.h"
+#include "matrix_exp/op_host/matrix_exp.h"
 #include "ptr2ind/op_host/ptr2ind.h"
 #include "scatter/op_host/scatter.h"
 #include "torch_sparse_spmm/op_host/torch_sparse_spmm.h"
@@ -174,6 +175,18 @@ void BindTorchSparseSpmm(py::module_& m)
 }
 
 
+void BindMatrixExp(py::module_& m)
+{
+    m.def(
+        "matrix_exp",
+        [](torch::Tensor a, py::object outObject) {
+            torch::Tensor out = outObject.is_none() ? torch::Tensor() : outObject.cast<torch::Tensor>();
+            return opsgnn::matrix_exp(a, out);
+        },
+        py::arg("a"), py::arg("out") = py::none(),
+        "Matrix exponential on NPU, aligned with torch.linalg.matrix_exp");
+}
+
 void BindArch35(py::module_& m)
 {
     m.attr("npu_arch") = "dav-3510";
@@ -191,6 +204,7 @@ void BindArch35(py::module_& m)
           py::arg("out") = py::none(), "Gather CSR (NPU)");
     m.def("segment_max_csr", &opsgnn::segment_max_csr, py::arg("src"), py::arg("indptr"),
           py::arg("optional_out") = torch::Tensor(), "Segment max csr(NPU)");
+    BindMatrixExp(m);
     RegisterFps(m);
     m.def("radius", &opsgnn::radius_npu, py::arg("x"), py::arg("y"),
           py::arg("ptr_x") = py::none(), py::arg("ptr_y") = py::none(),

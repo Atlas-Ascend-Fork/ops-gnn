@@ -391,7 +391,7 @@ if(NPU_ASC_FILES)
         foreach(INC_DIR ${ASCEND_INCLUDE_DIRS})
             list(APPEND ASC_INCLUDE_FLAGS "-I${INC_DIR}")
         endforeach()
-        list(APPEND ASC_INCLUDE_FLAGS 
+        list(APPEND ASC_INCLUDE_FLAGS
             "-I${CMAKE_CURRENT_SOURCE_DIR}/csrc"
             "-I${CMAKE_CURRENT_SOURCE_DIR}/csrc/npu"
         )

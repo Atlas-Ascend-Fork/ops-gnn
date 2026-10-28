@@ -65,6 +65,7 @@ else:
     from .gather_coo import gather_coo
     from .grid_cluster import grid_cluster
     from .ind2ptr import ind2ptr
+    from .matrix_exp import matrix_exp
     from .ptr2ind import ptr2ind
     from .random_walk import random_walk
     from .scatter import (
@@ -118,6 +119,7 @@ else:
         'segment_min_coo',
         'segment_max_coo',
         'ind2ptr',
+        'matrix_exp',
         'ptr2ind',
         'radius',
         'radius_graph',

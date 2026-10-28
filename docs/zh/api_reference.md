@@ -1188,6 +1188,74 @@ dtype/shape 点及 0.45 性能比例门限。
 正式产品仓库。
 
 
+---
+
+### matrix_exp — 矩阵指数
+
+对 batch 方阵计算矩阵指数 exp(A)，接口对齐 `torch.linalg.matrix_exp`，
+Ascend 950（arch35），MIX 架构（AIC Cube + AIV Vector 协作）。
+
+**函数签名：**
+
+```python
+def matrix_exp(a: Tensor, *, out: Optional[Tensor] = None) -> Tensor:
+```
+
+**参数说明：**
+
+| 参数 | 类型 | 输入/输出 | 说明 |
+|------|------|------|------|
+| a | Tensor | 输入 | 形状 `(..., n, n)` 的方阵（末两维相等），位于 NPU 设备；支持 float32 / float16 / bfloat16，内部统一 fp32 计算 |
+| out | Optional[Tensor] | 输出 | 可选输出 Tensor；提供时校验 dtype / device / 形状，支持非连续视图（经连续缓冲计算后写回原视图） |
+
+**返回值说明：**
+
+返回与输入同 dtype、同形状 `(..., n, n)` 的 Tensor；未提供 `out` 时新分配。
+
+**功能说明：**
+
+- 语义对齐 `torch.linalg.matrix_exp`：batch 内各矩阵独立计算，结果与 torch 参考（fp64 Padé）在精度契约内一致，不逐位相同
+- 算法：缩放平方 + Taylor（K=9）Horner 嵌套递推，范数经 Frobenius 归约确定缩放次数 s，缩放因子 2^-s 折入 Horner 标量
+- n=1 走纯 Vector 逐元素 `exp` 快速路径（batch 维完全并行）
+- 精度按 `||A||_F` 分桶验收：fp32 在范数 ≤ 8 达 1e-5，随范数增大逐级放宽至 1e-2；fp16 / bfloat16 由输出量化主导（不劣于 2e-3 / 2e-2）
+
+**注意事项：**
+
+- 迭代一支持 n ≤ 128（UB 全常驻路径）；n > 128 直接报错，分块路径规划于迭代三
+- 不支持 float64 / complex（950 Cube 无 fp64），调用直接报错——与 torch 的显式差异
+- 仅前向计算，不支持反向
+- 非连续输入在 host 侧连续化；空 batch 直接返回空 Tensor
+- kernel 使用当前 NPU stream 异步执行，Host 侧读取结果前需 `torch.npu.synchronize()`
+
+**使用示例：**
+
+```python
+import torch
+import ops_gnn
+
+a = torch.zeros(2, 2, device='npu')
+a[0, 0] = 1.0
+out = ops_gnn.matrix_exp(a)
+# tensor([[2.7183, 0.0000],
+#         [0.0000, 1.0000]], device='npu:0')
+
+batch = torch.randn(4, 8, 8, device='npu')
+result = ops_gnn.matrix_exp(batch)   # (4, 8, 8)
+
+provided = torch.empty_like(result)
+ops_gnn.matrix_exp(batch, out=provided)  # 写入 provided 并返回同一 Tensor
+```
+
+**实现架构：**
+
+- **Kernel 模式**：`KERNEL_TYPE_MIX_AIC_1_2`（每 block 1 AIC + 2 AIV，仅 subBlock 0 的 AIV 参与计算）
+- **AIV**：GM→UB 搬入、Cast fp32、Frobenius 范数、s/σ 缩放因子、Horner 标量乘加、输出 Cast
+- **AIC**：Horner 8 次 Mmad(A@E) + s 次 Mmad(E@E)，CANN SDK tensor_api（`AscendC::Te`）
+- **数据交接**：fp32 全链路；E 每轮经 GM workspace 往返（3510 无 UB→L1 fp32 直通），nPad 方阵布局，CrossCore MODE4 flag 锁步
+- **测试**：`pytest test/matrix_exp/arch35/test_matrix_exp.py -v`（27 用例：功能 / 精度分桶 / 边界，内置 fp64 参考）
+
+实现设计见 [matrix_exp算子设计文档](../experiment/design/matrix_exp/matrix_exp算子设计文档.md)。
+
 ## 三、测试指南
 
 ### 运行测试
@@ -1208,6 +1276,7 @@ python -m pytest test/gather_coo/arch35/test_gather_coo.py -v
 pytest test/random_walk/arch35/test_random_walk.py -v
 pytest test/radius/arch35/test_radius.py -v
 pytest test/sparse/arch35/test_sparse.py -v
+pytest test/matrix_exp/arch35/test_matrix_exp.py -v
 
 # 运行 random_walk 性能测试
 NPU_DEVICE_ID=<device_id> python test/random_walk/arch35/benchmark_random_walk.py

@@ -1237,6 +1237,76 @@ Comparison tools, historical attachments and self-test reports belong to the
 separate acceptance materials, not the production repository.
 
 
+---
+
+### matrix_exp — Matrix Exponential
+
+Computes the matrix exponential exp(A) for batches of square matrices, aligned
+with `torch.linalg.matrix_exp`. Ascend 950 (arch35), MIX architecture (AIC Cube
+cooperating with AIV Vector).
+
+**Signature:**
+
+```python
+def matrix_exp(a: Tensor, *, out: Optional[Tensor] = None) -> Tensor:
+```
+
+**Parameters:**
+
+| Parameter | Type | Direction | Description |
+|-----------|------|-----------|-------------|
+| a | Tensor | input | Square matrices of shape `(..., n, n)` (last two dims equal) on the NPU device; supports float32 / float16 / bfloat16, computed internally in float32 |
+| out | Optional[Tensor] | output | Optional output tensor; dtype / device / shape are validated when provided, non-contiguous views are supported (computed via a contiguous buffer and written back to the view) |
+
+**Returns:**
+
+A tensor with the same dtype and shape `(..., n, n)` as the input; newly
+allocated when `out` is not provided.
+
+**Behavior:**
+
+- Semantics align with `torch.linalg.matrix_exp`: matrices in a batch are computed independently; results agree with the torch reference (fp64 Padé) within the accuracy contract, not bit-exact
+- Algorithm: scaling-and-squaring + Taylor (K=9) Horner nested evaluation; the Frobenius norm reduction determines the scaling count s, and the factor 2^-s is folded into the Horner scalars
+- n=1 takes the pure-Vector element-wise `exp` fast path (batch dim fully parallel)
+- Accuracy is accepted in `||A||_F` buckets: fp32 reaches 1e-5 for norm <= 8, relaxing stepwise to 1e-2 as the norm grows; fp16 / bfloat16 are dominated by output quantization (no worse than 2e-3 / 2e-2)
+
+**Notes:**
+
+- Iteration 1 supports n <= 128 (all-resident UB path); n > 128 raises an error, the tiled path is planned for Iteration 3
+- float64 / complex are not supported (the 950 Cube has no fp64) and raise on call — an explicit divergence from torch
+- Forward-only computation, no backward
+- Non-contiguous inputs are made contiguous on host; an empty batch returns an empty tensor
+- The kernel runs asynchronously on the current NPU stream; call `torch.npu.synchronize()` before reading results on host
+
+**Example:**
+
+```python
+import torch
+import ops_gnn
+
+a = torch.zeros(2, 2, device='npu')
+a[0, 0] = 1.0
+out = ops_gnn.matrix_exp(a)
+# tensor([[2.7183, 0.0000],
+#         [0.0000, 1.0000]], device='npu:0')
+
+batch = torch.randn(4, 8, 8, device='npu')
+result = ops_gnn.matrix_exp(batch)   # (4, 8, 8)
+
+provided = torch.empty_like(result)
+ops_gnn.matrix_exp(batch, out=provided)  # writes into provided and returns the same tensor
+```
+
+**Implementation:**
+
+- **Kernel mode**: `KERNEL_TYPE_MIX_AIC_1_2` (1 AIC + 2 AIV per block, only the subBlock 0 AIV participates)
+- **AIV**: GM→UB load, Cast to fp32, Frobenius norm, s/σ scaling factors, Horner scalar multiply-add, output Cast
+- **AIC**: 8 Horner Mmad(A@E) + s squaring Mmad(E@E), via the CANN SDK tensor_api (`AscendC::Te`)
+- **Data exchange**: all-fp32 pipeline; E round-trips through the GM workspace each round (3510 has no UB→L1 fp32 direct path), nPad-square layout, CrossCore MODE4 flag lockstep
+- **Tests**: `pytest test/matrix_exp/arch35/test_matrix_exp.py -v` (27 cases: functional / accuracy buckets / edges, built-in fp64 reference)
+
+See the [design document](../experiment/design/matrix_exp/matrix_exp算子设计文档_en.md) for implementation details.
+
 ## Testing Guide
 
 ### Running Tests
@@ -1257,6 +1327,7 @@ python -m pytest test/gather_coo/arch35/test_gather_coo.py -v
 pytest test/random_walk/arch35/test_random_walk.py -v
 pytest test/radius/arch35/test_radius.py -v
 pytest test/sparse/arch35/test_sparse.py -v
+pytest test/matrix_exp/arch35/test_matrix_exp.py -v
 
 # Run the random_walk performance benchmark
 NPU_DEVICE_ID=<device_id> python test/random_walk/arch35/benchmark_random_walk.py
