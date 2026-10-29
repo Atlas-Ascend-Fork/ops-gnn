@@ -30,6 +30,23 @@ def test_tc01_small_graph_without_weight():
     _run_reference_and_npu(row, col, seed=11)
 
 
+def test_npu_weighted_calls_advance_node_permutation_rng():
+    _npu_or_skip()
+    row = torch.tensor([0, 0, 1, 2], dtype=torch.long, device="npu")
+    col = torch.tensor([1, 2, 0, 0], dtype=torch.long, device="npu")
+    weight = torch.tensor([1.0, 0.5, 1.0, 0.5], device="npu")
+
+    torch.manual_seed(18027)
+    before = torch.get_rng_state()
+    ops_gnn.graclus_cluster(row, col, weight, num_nodes=3)
+    after_first = torch.get_rng_state()
+    ops_gnn.graclus_cluster(row, col, weight, num_nodes=3)
+    after_second = torch.get_rng_state()
+
+    assert not torch.equal(before, after_first)
+    assert not torch.equal(after_first, after_second)
+
+
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 def test_tc02_with_l1_weight(dtype):
     row = torch.tensor([0, 0, 1, 1, 2, 2, 3, 3], dtype=torch.long)

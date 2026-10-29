@@ -16,7 +16,6 @@ from .typing import Tensor, OptTensor
 
 
 _CSR_CACHE = {}
-_NODE_PERM_CACHE = {}
 _MAX_CSR_CACHE_SIZE = 128
 _FLOAT32_EXACT_INT_MAX = 16777216
 
@@ -62,21 +61,9 @@ def _cache_put(key, value) -> None:
     _CSR_CACHE[key] = value
 
 
-def _node_perm_key(context: _RunContext):
-    return context.node_count, str(context.row.device), int(torch.initial_seed())
-
-
 def _get_node_perm(context: _RunContext) -> Tensor:
-    key = _node_perm_key(context)
-    cached = _NODE_PERM_CACHE.get(key)
-    if cached is not None:
-        return cached
-    if len(_NODE_PERM_CACHE) >= _MAX_CSR_CACHE_SIZE:
-        _NODE_PERM_CACHE.pop(next(iter(_NODE_PERM_CACHE)))
     node_perm = torch.randperm(context.node_count, device=torch.device("cpu"))
-    node_perm = node_perm.to(context.row.device).contiguous()
-    _NODE_PERM_CACHE[key] = node_perm
-    return node_perm
+    return node_perm.to(context.row.device).contiguous()
 
 
 def _tensor_version(tensor: Tensor) -> Optional[int]:
