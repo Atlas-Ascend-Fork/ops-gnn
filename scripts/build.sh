@@ -288,10 +288,15 @@ build_python() {
 
     # 开发模式安装同时编译原生库并保存可分发的 wheel 包。
     log_info "安装 Python 包到开发模式..."
-    if ! $PYTHON_CMD -m pip install -e . --no-build-isolation &> /dev/null; then
-        log_warn "标准安装失败，尝试使用 --break-system-packages..."
+    if pip_output=$($PYTHON_CMD -m pip install -e . --no-build-isolation 2>&1); then
+        :
+    elif [[ "$pip_output" == *"externally-managed-environment"* ]]; then
+        log_warn "标准安装受到 externally-managed-environment 限制，尝试使用 --break-system-packages..."
         $PYTHON_CMD -m pip install -e . --no-build-isolation --break-system-packages || \
             log_error "Python 开发模式安装失败"
+    else
+        printf '%s\n' "$pip_output" >&2
+        log_error "Python 开发模式安装失败"
     fi
 
     # 显示 wheel 包位置
