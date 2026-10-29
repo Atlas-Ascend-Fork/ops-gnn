@@ -39,6 +39,9 @@ Ascend 950（arch35）上为每个x点返回同batch最近y点的全局int64索�
 可选batch为同设备int64的一维非负非降序标签，长度分别为N/M；两侧非空标签集合须一致，省略的一侧视为batch 0。不合法batch抛ValueError。支持非连续输入；未传batch的空x返回空输出，非空x配空y报错。NaN/Inf坐标及F=0不支持。
 
 ```python
+import torch
+import ops_gnn
+
 x = torch.tensor([[0., 0., 0.], [9., 0., 0.]], device="npu")
 y = torch.tensor([[1., 0., 0.], [10., 0., 0.]], device="npu")
 indices = ops_gnn.nearest(x, y)  # tensor([0, 1], device='npu:0')

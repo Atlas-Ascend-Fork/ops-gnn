@@ -39,6 +39,9 @@ On Ascend 950 (arch35), return the global int64 index of the nearest y point in 
 Optional batches are nonnegative sorted 1-D int64 labels of length N/M on the input device, with matching nonempty label sets; an omitted batch means zero. Invalid batches raise ValueError. Noncontiguous inputs are supported. Empty x without batches returns an empty output; nonempty x with empty y is rejected. NaN/Inf coordinates and F=0 are rejected.
 
 ```python
+import torch
+import ops_gnn
+
 x = torch.tensor([[0., 0., 0.], [9., 0., 0.]], device="npu")
 y = torch.tensor([[1., 0., 0.], [10., 0., 0.]], device="npu")
 indices = ops_gnn.nearest(x, y)  # tensor([0, 1], device='npu:0')
