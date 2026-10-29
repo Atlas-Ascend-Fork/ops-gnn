@@ -17,4 +17,4 @@ filterwarnings = [
 ]
 
 [tool.cibuildwheel]
-test-command = "python -c \"import ops_gnn; print(ops_gnn.greet('World'))\""
+test-command = "python -c \"import ops_gnn; print(ops_gnn.__version__)\""
