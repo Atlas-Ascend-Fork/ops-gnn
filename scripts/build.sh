@@ -28,7 +28,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # 默认值
 BUILD_TYPE="Release"
-# 命令行 --npu-arch 优先；否则沿用环境变量，最后自动检测设备。
+# 命令行 --npu-arch 优先；未指定时构建全部目标。
 NPU_ARCH="${NPU_ARCH:-${TARGET_NPU_ARCH:-}}"
 CANN_TARGET="${CANN_TARGET:-}"
 WITH_PYTHON="ON"
@@ -52,8 +52,8 @@ ${BLUE}ops-gnn 构建脚本${NC}
 选项:
     -t, --type TYPE      构建类型 (Debug/Release) [默认: Release]
     --npu-arch ARCH      NPU 架构 (dav-3510/dav-2201；dav-2201 覆盖 A2/A3)
-                         [默认: 环境变量 NPU_ARCH/TARGET_NPU_ARCH，未设置时按芯片型号自动检测]
-    --cann-target TARGET 目标设备 (950/a2/a3)，同时选择架构和 wheel 版本标记
+                         [默认: arch22 和 arch35 都编译]
+    --cann-target TARGET 只编译目标设备 (950/a2/a3)
     --no-python          禁用 Python 绑定 (仅 C++ 构建)
     -c, --clean          清理构建缓存 (删除 build 和 output 目录)
     -h, --help           显示帮助信息
@@ -141,50 +141,58 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-detect_cann_target() {
-    local npu_smi_bin="${NPU_SMI_BIN:-npu-smi}"
-    local device_info
-    if ! command -v "$npu_smi_bin" >/dev/null 2>&1; then
-        log_warn "未找到 npu-smi，默认以 Ascend 950 设备进行编译；可用 --cann-target 指定目标"
-        CANN_TARGET="950"
-    elif ! device_info=$("$npu_smi_bin" info -m 2>&1); then
-        log_warn "npu-smi info 执行失败，默认以 Ascend 950 设备进行编译；可用 --cann-target 指定目标"
-        CANN_TARGET="950"
-    elif grep -qiE '910_93|910c' <<< "$device_info"; then
-        CANN_TARGET="a3"
-    elif grep -qi '910b' <<< "$device_info"; then
-        CANN_TARGET="a2"
-    elif grep -qi '950' <<< "$device_info"; then
-        CANN_TARGET="950"
-    else
-        log_error "不支持的芯片型号，仅支持 950 / A2 / A3"
-    fi
-}
-
 case "$NPU_ARCH" in
     ""|dav-3510|dav-2201) ;;
     *) log_error "不支持的 NPU 架构: $NPU_ARCH（支持 dav-3510、dav-2201）" ;;
 esac
-if [ -z "$CANN_TARGET" ]; then
-    if [ "$NPU_ARCH" = "dav-3510" ]; then
-        CANN_TARGET="950"
-    else
-        detect_cann_target
+if [ -n "$CANN_TARGET" ]; then
+    CANN_TARGET="${CANN_TARGET,,}"
+    case "$CANN_TARGET" in
+        950) TARGET_ARCH="dav-3510" ;;
+        a2|a3) TARGET_ARCH="dav-2201" ;;
+        *) log_error "不支持的 CANN_TARGET: $CANN_TARGET（支持 950、a2、a3）" ;;
+    esac
+    if [ -n "$NPU_ARCH" ] && [ "$NPU_ARCH" != "$TARGET_ARCH" ]; then
+        log_error "NPU_ARCH=$NPU_ARCH 与 CANN_TARGET=$CANN_TARGET 不匹配"
     fi
+    NPU_ARCH="$TARGET_ARCH"
+elif [ "$NPU_ARCH" = "dav-3510" ]; then
+    CANN_TARGET="950"
+elif [ "$NPU_ARCH" = "dav-2201" ]; then
+    CANN_TARGET="a2,a3"
+else
+    CANN_TARGET="a2,a3,950"
 fi
-CANN_TARGET="${CANN_TARGET,,}"
-case "$CANN_TARGET" in
-    950) TARGET_ARCH="dav-3510" ;;
-    a2|a3) TARGET_ARCH="dav-2201" ;;
-    *) log_error "不支持的 CANN_TARGET: $CANN_TARGET（支持 950、a2、a3）" ;;
-esac
-if [ -n "$NPU_ARCH" ] && [ "$NPU_ARCH" != "$TARGET_ARCH" ]; then
-    log_error "NPU_ARCH=$NPU_ARCH 与 CANN_TARGET=$CANN_TARGET 不匹配"
+# setup.py 将空 CANN_TARGET 解释为构建全部；逗号列表仅用于脚本循环。
+BUILD_TARGETS="$CANN_TARGET"
+if [[ "$CANN_TARGET" == *,* ]]; then
+    unset CANN_TARGET
+else
+    export CANN_TARGET
 fi
-NPU_ARCH="$TARGET_ARCH"
+if [ -n "$NPU_ARCH" ]; then export NPU_ARCH; fi
 
-# Python 构建由 setup.py 启动新的 CMake 进程，因此必须导出该值。
-export NPU_ARCH CANN_TARGET
+# 本机设备信息仅用于显示与测试，不决定默认编译范围。
+detect_local_device() {
+    LOCAL_CANN_TARGET="未检测到"
+    LOCAL_NPU_ARCH="未检测到"
+    local npu_smi_bin="${NPU_SMI_BIN:-npu-smi}"
+    local device_info
+    if ! command -v "$npu_smi_bin" >/dev/null 2>&1 ||
+       ! device_info=$("$npu_smi_bin" info -m 2>/dev/null); then
+        return
+    fi
+    if grep -qiE '910_93|910c' <<< "$device_info"; then
+        LOCAL_CANN_TARGET="a3"
+        LOCAL_NPU_ARCH="dav-2201"
+    elif grep -qi '910b' <<< "$device_info"; then
+        LOCAL_CANN_TARGET="a2"
+        LOCAL_NPU_ARCH="dav-2201"
+    elif grep -qi '950' <<< "$device_info"; then
+        LOCAL_CANN_TARGET="950"
+        LOCAL_NPU_ARCH="dav-3510"
+    fi
+}
 
 ###############################################################################
 # 清理构建缓存
@@ -300,11 +308,11 @@ build_python() {
     fi
 
     # 显示 wheel 包位置
-    WHL_FILE=$(find "$PROJECT_ROOT/output/whl" -name "ops_gnn-*+cann_${CANN_TARGET}-*.whl" 2>/dev/null | head -n1)
+    WHL_FILE=$(find "$PROJECT_ROOT/output/whl" -name "ops_gnn-0.1.0-*.whl" 2>/dev/null | head -n1)
     if [ -n "$WHL_FILE" ]; then
         log_info "wheel 包生成成功: $WHL_FILE"
     else
-        log_error "wheel 包未找到: $PROJECT_ROOT/output/whl（目标: $CANN_TARGET）"
+        log_error "wheel 包未找到: $PROJECT_ROOT/output/whl"
     fi
 
     log_info "Python 包构建完成!"
@@ -347,7 +355,7 @@ run_tests() {
 build_cpp() {
     log_info "开始构建 C++ 二进制..."
 
-    BUILD_DIR="$PROJECT_ROOT/build/cpp_${NPU_ARCH}"
+    BUILD_DIR="$PROJECT_ROOT/build/cpp_${CANN_TARGET}"
     mkdir -p "$BUILD_DIR"
     cd "$BUILD_DIR"
 
@@ -358,6 +366,7 @@ build_cpp() {
         -DWITH_PYTHON="$WITH_PYTHON" \
         -DNPU_ARCH="$NPU_ARCH" \
         -DCANN_TARGET="$CANN_TARGET" \
+        -DOPSGNN_BUILD_WHEEL=OFF \
         "$PROJECT_ROOT"
 
     # 编译
@@ -368,19 +377,6 @@ build_cpp() {
     log_info "安装到 output/kernel..."
     cmake --install .
 
-    # 更新 Python 包中的 so 文件
-    if [ "$WITH_PYTHON" = "ON" ]; then
-        PYTHON_SO_PATH="$PROJECT_ROOT/python/ops_gnn/_pybind.so"
-        OUTPUT_SO_PATH="$INSTALL_PREFIX/kernel/lib_pybind.so"
-        if [ -f "$OUTPUT_SO_PATH" ]; then
-            log_info "更新 Python 包中的 so 文件..."
-            cp "$OUTPUT_SO_PATH" "$PYTHON_SO_PATH"
-            log_info "so 文件已更新: $PYTHON_SO_PATH"
-        else
-            log_warn "so 文件未找到: $OUTPUT_SO_PATH"
-        fi
-    fi
-
     log_info "C++ 二进制构建完成!"
     log_info "输出目录: $BUILD_DIR"
     log_info "安装目录: $INSTALL_PREFIX/kernel"
@@ -390,11 +386,13 @@ build_cpp() {
 # 主函数
 ###############################################################################
 main() {
+    detect_local_device
     log_info "ops-gnn 构建脚本启动"
     log_info "构建目标: $BUILD_TARGET"
     log_info "构建类型: $BUILD_TYPE"
-    log_info "NPU 架构: $NPU_ARCH"
-    log_info "CANN 目标设备: $CANN_TARGET"
+    log_info "NPU 架构: $LOCAL_NPU_ARCH"
+    log_info "CANN 目标设备: $LOCAL_CANN_TARGET"
+    log_info "编译目标: $BUILD_TARGETS"
     log_info "Python 绑定: $WITH_PYTHON"
     log_info "清理缓存: $CLEAN_BUILD"
 
@@ -406,12 +404,20 @@ main() {
             build_python
             ;;
         cpp)
-            build_cpp
+            for target in ${BUILD_TARGETS//,/ }; do
+                CANN_TARGET="$target"
+                if [ "$target" = "950" ]; then NPU_ARCH="dav-3510"; else NPU_ARCH="dav-2201"; fi
+                build_cpp
+            done
             ;;
         all)
             build_python
             log_info ""
-            build_cpp
+            for target in ${BUILD_TARGETS//,/ }; do
+                CANN_TARGET="$target"
+                if [ "$target" = "950" ]; then NPU_ARCH="dav-3510"; else NPU_ARCH="dav-2201"; fi
+                build_cpp
+            done
             ;;
         test)
             run_tests

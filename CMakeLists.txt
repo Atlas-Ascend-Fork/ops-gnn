@@ -16,6 +16,68 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(OPSGNN_VERSION 0.1.0)
 
+# Without a target selection, build all device variants in isolated directories.
+# The final wheel contains a single Python distribution and the three native pairs.
+set(_REQUESTED_NPU_ARCH "${NPU_ARCH}")
+if(_REQUESTED_NPU_ARCH STREQUAL "")
+    if(NOT "$ENV{NPU_ARCH}" STREQUAL "")
+        set(_REQUESTED_NPU_ARCH "$ENV{NPU_ARCH}")
+    else()
+        set(_REQUESTED_NPU_ARCH "$ENV{TARGET_NPU_ARCH}")
+    endif()
+endif()
+if(NOT OPSGNN_SINGLE_TARGET
+   AND NOT DEFINED CANN_TARGET AND "$ENV{CANN_TARGET}" STREQUAL ""
+   AND (_REQUESTED_NPU_ARCH STREQUAL "" OR
+        _REQUESTED_NPU_ARCH STREQUAL "dav-2201"))
+    project(opsgnn_all LANGUAGES NONE)
+    option(WITH_PYTHON "Link to Python when building" ON)
+    option(OPSGNN_BUILD_WHEEL "Build a distributable Python wheel" ON)
+    if(_REQUESTED_NPU_ARCH STREQUAL "dav-2201")
+        set(_DEVICE_TARGETS a2 a3)
+    else()
+        set(_DEVICE_TARGETS a2 a3 950)
+    endif()
+    set(_VARIANT_TARGETS)
+    foreach(DEVICE_TARGET IN LISTS _DEVICE_TARGETS)
+        list(APPEND _VARIANT_TARGETS variant_${DEVICE_TARGET})
+        if(DEVICE_TARGET STREQUAL "950")
+            set(DEVICE_ARCH dav-3510)
+        else()
+            set(DEVICE_ARCH dav-2201)
+        endif()
+        add_custom_target(variant_${DEVICE_TARGET} ALL
+            COMMAND ${CMAKE_COMMAND} -S "${CMAKE_CURRENT_SOURCE_DIR}"
+                -B "${CMAKE_CURRENT_BINARY_DIR}/variant_${DEVICE_TARGET}"
+                -DOPSGNN_SINGLE_TARGET=ON
+                -DOPSGNN_BUILD_WHEEL=OFF
+                -DWITH_PYTHON=${WITH_PYTHON}
+                -DNPU_ARCH=${DEVICE_ARCH}
+                -DCANN_TARGET=${DEVICE_TARGET}
+            COMMAND ${CMAKE_COMMAND} --build
+                "${CMAKE_CURRENT_BINARY_DIR}/variant_${DEVICE_TARGET}"
+            VERBATIM
+        )
+    endforeach()
+    # A2 and A3 share the output kernel filename; avoid concurrent writes.
+    add_dependencies(variant_a3 variant_a2)
+    if(WITH_PYTHON AND OPSGNN_BUILD_WHEEL)
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        add_custom_target(wheel ALL
+            COMMAND ${CMAKE_COMMAND} -E env
+                "NPU_ARCH=${_REQUESTED_NPU_ARCH}" "TARGET_NPU_ARCH=" "CANN_TARGET="
+                "OPSGNN_PREBUILT_ROOT=${CMAKE_CURRENT_BINARY_DIR}"
+                "OPSGNN_SOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+                "${Python3_EXECUTABLE}" -m pip wheel . --no-deps --no-build-isolation
+                -w "${CMAKE_CURRENT_SOURCE_DIR}/output/whl"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            DEPENDS ${_VARIANT_TARGETS}
+            VERBATIM
+        )
+    endif()
+    return()
+endif()
+
 ###############################################################################
 # Configuration Options
 ###############################################################################
@@ -368,7 +430,13 @@ set(OPERATOR_SOURCES
 set(NPU_KERNEL_LIB "")
 
 if(NPU_ASC_FILES)
-    set(NPU_KERNEL_LIB_NAME "opsgnn_npu_kernel")
+    if(NPU_ARCH STREQUAL "dav-2201")
+        set(KERNEL_LIBRARY_LABEL "A2-A3")
+    else()
+        set(KERNEL_LIBRARY_LABEL "950")
+    endif()
+    set(KERNEL_DEVICE_LABEL "${KERNEL_LIBRARY_LABEL}")
+    set(NPU_KERNEL_LIB_NAME "opsgnn_npu_kernel-${KERNEL_LIBRARY_LABEL}")
     set(OUTPUT_KERNEL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/output/kernel")
     set(NPU_KERNEL_LIB "${OUTPUT_KERNEL_DIR}/lib${NPU_KERNEL_LIB_NAME}.so")
 
@@ -494,17 +562,21 @@ set_target_properties(_pybind PROPERTIES
 )
 
 add_custom_command(TARGET _pybind POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+    "${CMAKE_CURRENT_SOURCE_DIR}/python/ops_gnn/${KERNEL_DEVICE_LABEL}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "$<TARGET_FILE:_pybind>"
-    "${CMAKE_CURRENT_SOURCE_DIR}/python/ops_gnn/_pybind.so"
-    COMMENT "Copying _pybind.so to python/ops_gnn/"
+    "${CMAKE_CURRENT_SOURCE_DIR}/python/ops_gnn/${KERNEL_DEVICE_LABEL}/_pybind.so"
+    COMMENT "Copying _pybind.so to python/ops_gnn/${KERNEL_DEVICE_LABEL}/"
 )
 
 if(NPU_KERNEL_LIB)
     add_custom_command(TARGET _pybind POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/ops_gnn/${KERNEL_DEVICE_LABEL}"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${NPU_KERNEL_LIB}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/python/ops_gnn/libopsgnn_npu_kernel.so"
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/ops_gnn/${KERNEL_DEVICE_LABEL}/lib${NPU_KERNEL_LIB_NAME}.so"
         COMMENT "Copying NPU kernel library to python/ops_gnn/"
     )
 endif()

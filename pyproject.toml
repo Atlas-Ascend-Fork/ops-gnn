@@ -2,13 +2,13 @@
 requires = ["setuptools>=64", "wheel", "torch>=1.8"]
 build-backend = "setuptools.build_meta"
 
-# Distribution metadata lives in setup.py/setup.cfg so its version can include
-# the selected CANN device label (950/a2/a3).
+# Distribution metadata lives in setup.py/setup.cfg. Device labels are reserved
+# for the bundled native kernel libraries.
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
 python_files = ["test_*.py"]
-addopts = "--capture=no"
+addopts = "--capture=no -rs"
 markers = [
     "npu: requires an Ascend NPU and the compiled ops_gnn extension",
 ]

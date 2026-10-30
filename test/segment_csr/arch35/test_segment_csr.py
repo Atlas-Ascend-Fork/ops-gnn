@@ -10,12 +10,16 @@
 """CSR API, cross-call semantics and vector-route regression coverage."""
 
 import os
+from pathlib import Path
+import runpy
 
 import pytest
 import torch
 
 import ops_gnn
-from golden import segment_csr_cpu, segment_argminmax_cpu
+_GOLDEN = runpy.run_path(str(Path(__file__).with_name("golden.py")))
+segment_csr_cpu = _GOLDEN["segment_csr_cpu"]
+segment_argminmax_cpu = _GOLDEN["segment_argminmax_cpu"]
 
 # test_segment_csr
 

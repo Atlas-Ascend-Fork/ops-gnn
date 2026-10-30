@@ -10,12 +10,17 @@
 import copy
 import gc
 import importlib
+from pathlib import Path
+import runpy
 from contextlib import nullcontext
 
 import pytest
 import torch
 
-from golden import COMBOS, compare, golden, registered_call, sample
+_GOLDEN = runpy.run_path(str(Path(__file__).with_name("golden.py")))
+COMBOS, compare, golden, registered_call, sample = (
+    _GOLDEN[name] for name in ("COMBOS", "compare", "golden", "registered_call", "sample")
+)
 
 pytest.importorskip("torch_npu")
 torch_sparse = pytest.importorskip("torch_sparse")

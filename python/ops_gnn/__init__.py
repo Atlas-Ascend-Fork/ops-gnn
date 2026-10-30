@@ -8,9 +8,13 @@ INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A
 See LICENSE in the root of the software repository for the full text of the License.
 """
 
-import importlib
+import importlib.util
+import os
+import sys
 
 import torch
+
+from ._device import select_target
 
 __version__ = '0.1.0'
 
@@ -20,14 +24,19 @@ except ImportError:
     torch_npu = None
 
 try:
-    _pybind = importlib.import_module('._pybind', __name__)
-except (ImportError, OSError) as exc:
+    _target = select_target()
+    _library = os.path.join(os.path.dirname(__file__), _target, '_pybind.so')
+    _spec = importlib.util.spec_from_file_location(__name__ + '._pybind', _library)
+    _pybind = importlib.util.module_from_spec(_spec)
+    sys.modules[_spec.name] = _pybind
+    _spec.loader.exec_module(_pybind)
+except (ImportError, OSError, RuntimeError, ValueError) as exc:
     raise ImportError(
         "无法导入 ops_gnn._pybind 原生扩展，NPU 算子不可用。请确认："
         "(1) ops_gnn 与当前 Python、PyTorch 和 torch_npu 版本匹配；"
         "(2) 已加载 CANN 环境（例如执行 set_env.sh，且动态库搜索路径正确）；"
-        "(3) 安装包是为当前 NPU 架构编译的。"
-        "如从源码安装，请设置正确的 NPU_ARCH 后重新编译。"
+        "(3) wheel 中包含当前设备对应的 kernel 包。"
+        "如只编译了单个设备，请设置 CANN_TARGET 选择该设备重新编译。"
         f"原始错误：{exc}"
     ) from exc
 

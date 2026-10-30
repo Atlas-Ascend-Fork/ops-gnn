@@ -10,13 +10,11 @@ See LICENSE in the root of the software repository for the full text of the Lice
 import os
 import shutil
 import subprocess
-import warnings
 
 from setuptools import Distribution, find_packages, setup
 from setuptools.command.build_py import build_py
 from setuptools.command.develop import develop
 from setuptools.command.editable_wheel import editable_wheel
-from wheel.bdist_wheel import bdist_wheel
 
 __version__ = '0.1.0'
 URL = 'https://gitcode.com/cann/ops-gnn'
@@ -24,61 +22,33 @@ URL = 'https://gitcode.com/cann/ops-gnn'
 BUILD_DOCS = os.getenv('BUILD_DOCS', '0') == '1'
 
 
-def detect_cann_target():
-    npu_smi = shutil.which(os.getenv('NPU_SMI_BIN', 'npu-smi'))
-    reason = '未找到 npu-smi'
-    if npu_smi is not None:
-        try:
-            result = subprocess.run(
-                [npu_smi, 'info', '-m'], check=True, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, timeout=10)
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            reason = f'npu-smi info 执行失败：{exc}'
-        else:
-            product_info = result.stdout.lower()
-            if '910_93' in product_info or '910c' in product_info:
-                return 'a3'
-            if '910b' in product_info:
-                return 'a2'
-            if '950' in product_info:
-                return '950'
-            raise ValueError('不支持的芯片型号，仅支持 950 / A2 / A3。')
-    warnings.warn(
-        f'由于检测不到 NPU 设备（{reason}），当前默认以 Ascend 950 设备进行编译'
-        '（dav-3510 / arch35）。可设置 CANN_TARGET=950/a2/a3 显式指定目标设备。',
-        RuntimeWarning, stacklevel=2)
-    return '950'
+TARGET_ARCHS = {'a2': 'dav-2201', 'a3': 'dav-2201', '950': 'dav-3510'}
+KERNEL_LABELS = {'a2': 'A2-A3', 'a3': 'A2-A3', '950': '950'}
 
 
-def resolve_npu_target():
-    target_archs = {'950': 'dav-3510', 'a2': 'dav-2201', 'a3': 'dav-2201'}
+def resolve_build_targets():
     npu_arch = os.getenv('NPU_ARCH') or os.getenv('TARGET_NPU_ARCH')
-    cann_target = os.getenv('CANN_TARGET')
-    if npu_arch and npu_arch not in target_archs.values():
+    cann_target = os.getenv('CANN_TARGET', '').lower()
+    if npu_arch and npu_arch not in TARGET_ARCHS.values():
         raise ValueError(f'Unsupported NPU_ARCH: {npu_arch}')
-    if cann_target:
-        cann_target = cann_target.lower()
-        if cann_target not in target_archs:
-            raise ValueError(f'Unsupported CANN_TARGET: {cann_target}; use 950/a2/a3')
-    else:
-        # dav-2201 is shared by A2/A3 and requires a device label or detection.
-        cann_target = '950' if npu_arch == 'dav-3510' else detect_cann_target()
-    target_arch = target_archs.get(cann_target)
-    if target_arch is None:
+    if cann_target and cann_target not in TARGET_ARCHS:
         raise ValueError(f'Unsupported CANN_TARGET: {cann_target}; use 950/a2/a3')
-    if npu_arch and npu_arch != target_arch:
-        raise ValueError(
-            f'NPU_ARCH={npu_arch} 与 CANN_TARGET={cann_target} 不匹配；'
-            '使用 CANN_TARGET=950/a2/a3 指定目标设备。')
-    return target_arch, cann_target
+    if cann_target and npu_arch and TARGET_ARCHS[cann_target] != npu_arch:
+        raise ValueError(f'NPU_ARCH={npu_arch} conflicts with CANN_TARGET={cann_target}')
+    if cann_target:
+        return (cann_target,)
+    if npu_arch:
+        return ('950',) if npu_arch == 'dav-3510' else ('a2', 'a3')
+    return ('a2', 'a3', '950')
 
 
-def build_with_cmake(npu_arch):
+def build_with_cmake(cann_target):
+    npu_arch = TARGET_ARCHS[cann_target]
     if 'ASCEND_HOME_PATH' not in os.environ:
         raise EnvironmentError("ASCEND_HOME_PATH environment variable not set. Please source set_env.sh first.")
 
     print(f'NPU 架构: {npu_arch}')
-    cmake_build_dir = f'build/cmake_python_{npu_arch}'
+    cmake_build_dir = f'build/cmake_python_{cann_target}'
     # 删除 CMakeCache.txt，避免 pip 拷贝源码到临时目录后
     # cmake 检测到缓存的源路径与当前路径不一致而报错
     cache_file = os.path.join(cmake_build_dir, 'CMakeCache.txt')
@@ -92,7 +62,7 @@ def build_with_cmake(npu_arch):
         '-DOPSGNN_BUILD_WHEEL=OFF',
         '-DCMAKE_BUILD_TYPE=Release',
         f'-DNPU_ARCH={npu_arch}',
-        f'-DCANN_TARGET={CANN_TARGET}',
+        f'-DCANN_TARGET={cann_target}',
         '-S', '.',
         '-B', cmake_build_dir,
     ]
@@ -104,13 +74,14 @@ def build_with_cmake(npu_arch):
     print(f'Running Make: {" ".join(make_cmd)}')
     subprocess.run(make_cmd, check=True)
     
-    npu_kernel_lib = os.path.join('output', 'kernel', 'libopsgnn_npu_kernel.so')
+    npu_kernel_lib = os.path.join('output', 'kernel', f'libopsgnn_npu_kernel-{KERNEL_LABELS[cann_target]}.so')
     if os.path.exists(npu_kernel_lib):
         print(f'NPU kernel library generated at: {npu_kernel_lib}')
     
     pybind_lib = os.path.join(cmake_build_dir, 'lib_pybind.so')
     if os.path.exists(pybind_lib):
-        pybind_dest = os.path.join('python', 'ops_gnn', '_pybind.so')
+        pybind_dest = os.path.join('python', 'ops_gnn', KERNEL_LABELS[cann_target], '_pybind.so')
+        os.makedirs(os.path.dirname(pybind_dest), exist_ok=True)
         shutil.copy2(pybind_lib, pybind_dest)
         print(f'Copied _pybind.so to: {pybind_dest}')
 
@@ -124,8 +95,8 @@ def reuse_cmake_libraries(build_dir):
             key, value = line.strip().split('=', 1)
             cache[key.split(':', 1)[0]] = value
     expected = {
-        'NPU_ARCH': NPU_ARCH,
-        'CANN_TARGET': CANN_TARGET,
+        'NPU_ARCH': TARGET_ARCHS[BUILD_TARGETS[0]],
+        'CANN_TARGET': BUILD_TARGETS[0],
     }
     for key, value in expected.items():
         if cache.get(key) != value:
@@ -135,37 +106,46 @@ def reuse_cmake_libraries(build_dir):
         raise ValueError('Prebuilt CMake source directory is missing or unavailable')
     # Older pip versions package a temporary source copy. Read native artifacts
     # from the original CMake source/build directories instead of the copy.
+    label = KERNEL_LABELS[BUILD_TARGETS[0]]
+    destination = os.path.join('python', 'ops_gnn', label)
+    os.makedirs(destination, exist_ok=True)
+    kernel_filename = f'libopsgnn_npu_kernel-{KERNEL_LABELS[BUILD_TARGETS[0]]}.so'
     libraries = (
         (os.path.join(build_dir, 'lib_pybind.so'), '_pybind.so'),
-        (os.path.join(source_dir, 'output', 'kernel', 'libopsgnn_npu_kernel.so'), 'libopsgnn_npu_kernel.so'),
+        (os.path.join(source_dir, 'output', 'kernel', kernel_filename), kernel_filename),
     )
     for source, filename in libraries:
-        shutil.copy2(source, os.path.join('python', 'ops_gnn', filename))
+        shutil.copy2(source, os.path.join(destination, filename))
     print(f'Reusing native libraries from: {build_dir}')
 
 
-NPU_ARCH, CANN_TARGET = resolve_npu_target()
-
-if not BUILD_DOCS:
+def prepare_native_libraries():
+    prebuilt_root = os.getenv('OPSGNN_PREBUILT_ROOT')
+    if prebuilt_root:
+        for target in BUILD_TARGETS:
+            label = KERNEL_LABELS[target]
+            destination = os.path.join('python', 'ops_gnn', label)
+            os.makedirs(destination, exist_ok=True)
+            libraries = (
+                (os.path.join(prebuilt_root, f'variant_{target}', 'lib_pybind.so'), '_pybind.so'),
+                (os.path.join(os.getenv('OPSGNN_SOURCE_ROOT', '.'), 'output', 'kernel',
+                              f'libopsgnn_npu_kernel-{KERNEL_LABELS[target]}.so'),
+                 f'libopsgnn_npu_kernel-{KERNEL_LABELS[target]}.so'),
+            )
+            for source, filename in libraries:
+                shutil.copy2(source, os.path.join(destination, filename))
     prebuilt_dir = os.getenv('OPSGNN_PREBUILT_DIR')
     if prebuilt_dir:
         reuse_cmake_libraries(prebuilt_dir)
-    else:
-        build_with_cmake(NPU_ARCH)
+    elif not prebuilt_root:
+        for target in BUILD_TARGETS:
+            build_with_cmake(target)
 
 
-class CannBdistWheel(bdist_wheel):
-    def run(self):
-        super().run()
-        # Preserve canonical internal metadata and use underscores in filenames.
-        for index, (command, python_version, path) in enumerate(self.distribution.dist_files):
-            if command != 'bdist_wheel':
-                continue
-            filename = os.path.basename(path).replace('+cann.', '+cann_')
-            renamed = os.path.join(os.path.dirname(path), filename)
-            if renamed != path:
-                os.replace(path, renamed)
-                self.distribution.dist_files[index] = (command, python_version, renamed)
+BUILD_TARGETS = resolve_build_targets()
+
+if not BUILD_DOCS:
+    prepare_native_libraries()
 
 
 class CannEditableWheel(editable_wheel):
@@ -188,15 +168,21 @@ class CannDevelop(develop):
 
 class CustomBuildPy(build_py):
     def run(self):
+        # A previous build may have populated other device directories.
+        for label in ('A2', 'A3', 'A2-A3', '950'):
+            shutil.rmtree(os.path.join(self.build_lib, 'ops_gnn', label), ignore_errors=True)
         build_py.run(self)
+        for label in ('A2', 'A3', 'A2-A3', '950'):
+            if label not in {KERNEL_LABELS[target] for target in BUILD_TARGETS}:
+                shutil.rmtree(os.path.join(self.build_lib, 'ops_gnn', label), ignore_errors=True)
 
-        for library_name in ('_pybind.so', 'libopsgnn_npu_kernel.so'):
-            library_src = os.path.join('python', 'ops_gnn', library_name)
-            if os.path.exists(library_src):
-                library_dest = os.path.join(self.build_lib, 'ops_gnn', library_name)
+        for target in BUILD_TARGETS:
+            label = KERNEL_LABELS[target]
+            for library_name in ('_pybind.so', f'libopsgnn_npu_kernel-{KERNEL_LABELS[target]}.so'):
+                library_src = os.path.join('python', 'ops_gnn', label, library_name)
+                library_dest = os.path.join(self.build_lib, 'ops_gnn', label, library_name)
                 os.makedirs(os.path.dirname(library_dest), exist_ok=True)
                 shutil.copy2(library_src, library_dest)
-                print(f'Copied {library_name} to build lib: {library_dest}')
 
 
 class BinaryDistribution(Distribution):
@@ -206,7 +192,7 @@ class BinaryDistribution(Distribution):
 
 setup(
     name='ops-gnn',
-    version=f'{__version__}+cann.{CANN_TARGET}',
+    version=__version__,
     license='CANN Open Software License Agreement Version 2.0',
     url=URL,
     download_url=f'{URL}/archive/{__version__}.tar.gz',
@@ -215,12 +201,15 @@ setup(
     distclass=BinaryDistribution,
     cmdclass={
         'build_py': CustomBuildPy,
-        'bdist_wheel': CannBdistWheel,
         'editable_wheel': CannEditableWheel,
         'develop': CannDevelop,
     },
     packages=find_packages('python'),
     package_dir={'': 'python'},
-    package_data={'ops_gnn': ['*.so']},
+    package_data={'ops_gnn': [
+        f'{KERNEL_LABELS[target]}/{filename}'
+        for target in BUILD_TARGETS
+        for filename in ('_pybind.so', f'libopsgnn_npu_kernel-{KERNEL_LABELS[target]}.so')
+    ]},
     include_package_data=True,
 )

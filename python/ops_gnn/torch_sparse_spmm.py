@@ -404,8 +404,13 @@ for _key in ("PrivateUse1", "AutogradPrivateUse1"):
     )
     _lib.impl("spmm_min", lambda ptr, col, value, mat: _dispatch(ptr, col, value, mat, 2))
     _lib.impl("spmm_max", lambda ptr, col, value, mat: _dispatch(ptr, col, value, mat, 3))
-    _lib.impl("ind2ptr", lambda ind, m: _C.convert(ind, m + 1, True))
-    _lib.impl("ptr2ind", lambda ptr, e: _C.convert(ptr, e, False))
+    # torch_sparse_utils may already have registered NPU conversion kernels.
+    for _name, _impl in (
+        ("ind2ptr", lambda ind, m: _C.convert(ind, m + 1, True)),
+        ("ptr2ind", lambda ptr, e: _C.convert(ptr, e, False)),
+    ):
+        if not _pybind.has_private_use1_kernel("torch_sparse::" + _name):
+            _lib.impl(_name, _impl)
     _LIBRARIES.append(_lib)
 
 torch_sparse.spmm = coo_spmm

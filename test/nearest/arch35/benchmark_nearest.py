@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import runpy
 from pathlib import Path
 import subprocess
 import shutil
@@ -20,7 +21,7 @@ import time
 import torch
 import ops_gnn
 
-from golden import nearest_golden
+nearest_golden = runpy.run_path(str(Path(__file__).with_name("golden.py")))["nearest_golden"]
 
 # The order and reference milliseconds are copied from task section 7.
 CASES = [

@@ -11,11 +11,13 @@ import argparse
 from dataclasses import dataclass
 from functools import partial
 import logging
+from pathlib import Path
+import runpy
 import time
 
 import torch
 
-from golden import COMBOS
+COMBOS = runpy.run_path(str(Path(__file__).with_name("golden.py")))["COMBOS"]
 
 
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16, "int8": torch.int8}

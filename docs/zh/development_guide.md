@@ -139,7 +139,7 @@ ops-gnn
 └── LICENSE                         # CANN 许可证
 ```
 
-`csrc/npu` 下各算子目录包含 `op_host` 和 `op_kernel/<arch>`；测试按 `test/<算子>/<arch>` 组织，各架构子目录包含 `golden.py`、功能测试文件和性能测试文件。其中，`<arch>` 表示目标架构对应的目录名。编译与测试均只处理当前机器芯片型号对应的目录：950 → `arch35`，A2(910B)/A3(910C) → `arch22`，其他芯片型号不支持。
+`csrc/npu` 下各算子目录包含 `op_host` 和 `op_kernel/<arch>`；测试按 `test/<算子>/<arch>` 组织，各架构子目录包含 `golden.py`、功能测试文件和性能测试文件。其中，`<arch>` 表示目标架构对应的目录名。默认编译 `arch22` 和 `arch35`；测试只处理当前机器芯片型号对应的目录：950 → `arch35`，A2(910B)/A3(910C) → `arch22`。
 
 ### 核心文件说明
 
@@ -213,7 +213,7 @@ CMakeLists.txt 负责编译 AscendC Kernel 和 PyTorch 绑定库：
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `NPU_ARCH` | NPU 架构 | 按芯片型号自动检测：`dav-3510`（950 → arch35）/ `dav-2201`（A2(910B)/A3(910C) → arch22）；可显式设置覆盖检测结果 |
+| `NPU_ARCH` | NPU 架构 | 默认构建两种架构；设置 `dav-3510` 仅构建 950，设置 `dav-2201` 构建 A2/A3 |
 | `WITH_PYTHON` | 是否编译 Python 绑定 | `ON` |
 | `ASCEND_HOME_PATH` | CANN 安装路径 | 从环境变量读取 |
 | `Python3_ROOT_DIR` | Python 根目录 | build.sh 自动导出 |

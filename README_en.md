@@ -87,17 +87,19 @@ cd ..
 
 All three methods save distributable wheels to `output/whl/`. Methods 1 and 2 also install in
 development mode; Method 3 packages the wheel after building shared libraries.
-Wheel filenames identify the target device:
+The wheel has a device-neutral version.
+By default it builds arch22 for A2/A3 and arch35 for 950, bundling
+`libopsgnn_npu_kernel-A2-A3.so` (shared by A2/A3) and
+`libopsgnn_npu_kernel-950.so`. On import, `ops_gnn` detects the local device
+with `npu-smi` and loads the matching native extension and kernel. Set
+`CANN_TARGET=a2/a3/950` to select a target explicitly. A2/A3 share the native
+extension and kernel in `python/ops_gnn/A2-A3/`; 950 uses `python/ops_gnn/950/`.
+A wheel built for either a2 or a3 supports both A2 and A3.
 
-| Target device | Wheel filename |
-|---------------|----------------|
-| A2 | `ops_gnn-0.1.0+cann_a2-*.whl` |
-| A3 | `ops_gnn-0.1.0+cann_a3-*.whl` |
-| 950 | `ops_gnn-0.1.0+cann_950-*.whl` |
-
-The local chip is detected automatically, with 950 as the fallback when no device is detected.
-To select a target manually, set the `CANN_TARGET` environment variable for Method 1,
-use `--cann-target` for Method 2, or use `-DCANN_TARGET` for Method 3. Values are `a2`, `a3`, or `950`.
+For a single-device build, set `CANN_TARGET` with Method 1, pass
+`--cann-target a2/a3/950` with Method 2, or pass
+`-DCANN_TARGET=a2/a3/950` with Method 3. `NPU_ARCH=dav-2201` builds
+both A2 and A3; `NPU_ARCH=dav-3510` builds 950 only.
 
 ## Functional Tests
 
@@ -110,7 +112,7 @@ for dependencies, build commands and reproduction steps.
 
 ```bash
 # Install test dependencies
-pip install pytest pytest-cov
+pip install pytest pytest-cov scipy
 
 # Quick start: run the import tests for the current architecture (arch35 on 950, arch22 on A2/A3)
 pytest test/test_import.py -v

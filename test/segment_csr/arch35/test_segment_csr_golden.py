@@ -8,10 +8,13 @@
 
 """CPU golden mean regressions in the segment CSR architecture suite."""
 
+from pathlib import Path
+import runpy
+
 import pytest
 import torch
 
-from golden import segment_csr_cpu
+segment_csr_cpu = runpy.run_path(str(Path(__file__).with_name("golden.py")))["segment_csr_cpu"]
 
 
 class TestSegmentCsrGoldenIntegerMean:

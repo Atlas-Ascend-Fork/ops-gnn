@@ -27,7 +27,7 @@ ops-gnn/
 └── LICENSE                     # CANN 许可证
 ```
 
-`csrc/npu` 下各算子目录包含 `op_host` 和 `op_kernel/<arch>`；测试按 `test/<算子>/<arch>` 组织，各架构子目录包含 `golden.py`、功能测试文件和性能测试文件。其中，`<arch>` 表示目标架构对应的目录名。编译与测试均只处理当前机器芯片型号对应的目录：950 → `arch35`，A2/A3 → `arch22`，其他芯片型号不支持。
+`csrc/npu` 下各算子目录包含 `op_host` 和 `op_kernel/<arch>`；测试按 `test/<算子>/<arch>` 组织，各架构子目录包含 `golden.py`、功能测试文件和性能测试文件。其中，`<arch>` 表示目标架构对应的目录名。默认编译 `arch22` 与 `arch35`；运行测试时只处理当前机器芯片型号对应的目录：950 → `arch35`，A2/A3 → `arch22`。
 
 ## 环境要求
 
@@ -87,16 +87,18 @@ cd ..
 
 三种方法均将可分发的 wheel 包保存到 `output/whl/`。方法 1、2 同时完成开发模式安装；
 方法 3 在编译共享库后自动打包。
-wheel 文件名按目标设备区分：
+wheel 使用统一版本号。默认编译
+arch22（A2、A3）和 arch35（950），并分别打包
+`libopsgnn_npu_kernel-A2-A3.so`（A2/A3 共用）和
+`libopsgnn_npu_kernel-950.so`。安装后导入 `ops_gnn` 时依据 `npu-smi`
+检测设备，加载对应的原生扩展与 kernel；也可设置 `CANN_TARGET=a2/a3/950`
+显式选择。A2/A3 的原生扩展和 kernel 共用 `python/ops_gnn/A2-A3/`，
+950 使用 `python/ops_gnn/950/`；单独编译 a2 或 a3 生成的 wheel 均适用于 A2/A3。
 
-| 目标设备 | wheel 文件名 |
-|----------|--------------|
-| A2 | `ops_gnn-0.1.0+cann_a2-*.whl` |
-| A3 | `ops_gnn-0.1.0+cann_a3-*.whl` |
-| 950 | `ops_gnn-0.1.0+cann_950-*.whl` |
-
-默认识别本机芯片，检测不到设备时默认选择 950。需要手动指定时，方法 1 设置环境变量
-`CANN_TARGET`，方法 2 使用 `--cann-target`，方法 3 使用 `-DCANN_TARGET`；取值为 `a2`、`a3` 或 `950`。
+只编译对应目标时，方法 1 设置 `CANN_TARGET` 环境变量，方法 2 使用
+`--cann-target a2/a3/950`，方法 3 使用 `-DCANN_TARGET=a2/a3/950`。
+也可用 `NPU_ARCH=dav-2201` 同时编译 A2/A3，或
+`NPU_ARCH=dav-3510` 只编译 950。
 
 ## 功能测试
 
@@ -108,7 +110,7 @@ Ascend 950 的 torch_sparse SpMM 随 `ops_gnn` 一起构建和安装。安装
 
 ```bash
 # 安装测试依赖
-pip install pytest pytest-cov
+pip install pytest pytest-cov scipy
 
 # 快速开始：先跑当前架构的导入用例（950 上为 arch35，A2/A3 上为 arch22）
 pytest test/test_import.py -v

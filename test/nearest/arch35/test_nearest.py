@@ -18,6 +18,10 @@ import pytest
 import torch
 import ops_gnn
 
+pytest.importorskip(
+    "scipy.cluster.vq",
+    reason="未安装 SciPy，跳过 nearest 测试；如需运行，请执行 pip install scipy",
+)
 
 _GOLDEN = runpy.run_path(str(Path(__file__).with_name("golden.py")))
 nearest_golden = _GOLDEN["nearest_golden"]

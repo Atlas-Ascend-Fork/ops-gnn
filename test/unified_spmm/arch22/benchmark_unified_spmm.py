@@ -11,6 +11,8 @@ import argparse
 import json
 import logging
 import os
+from pathlib import Path
+import runpy
 import platform
 import statistics
 import time
@@ -18,7 +20,7 @@ import time
 import torch
 import torch_npu
 from ops_gnn import bspmm, spmm
-from golden import unified_spmm_reference
+unified_spmm_reference = runpy.run_path(str(Path(__file__).with_name("golden.py")))["unified_spmm_reference"]
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 _LOGGER = logging.getLogger(__name__)

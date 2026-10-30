@@ -3,7 +3,7 @@ include LICENSE
 include CMakeLists.txt
 include cmake/OpsGNNConfig.cmake.in
 recursive-include csrc *.h *.cpp
-recursive-include python *.py *.so
+recursive-include python *.py
 recursive-include test *.py
 recursive-include docs *.md
 recursive-include gather_coo *.md

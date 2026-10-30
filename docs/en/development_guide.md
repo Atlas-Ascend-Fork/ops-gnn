@@ -216,7 +216,7 @@ Key CMake variables:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `NPU_ARCH` | NPU architecture | Detected by chip model: `dav-3510` (950 → arch35) / `dav-2201` (A2 (910B)/A3 (910C) → arch22); can be set to override detection |
+| `NPU_ARCH` | NPU architecture | Both architectures build by default; `dav-3510` selects 950 and `dav-2201` selects A2/A3 |
 | `WITH_PYTHON` | Enable Python binding build | `ON` |
 | `ASCEND_HOME_PATH` | CANN installation path | Read from env |
 | `Python3_ROOT_DIR` | Python root directory | Auto-exported by build.sh |
