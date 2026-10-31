@@ -107,9 +107,12 @@ def golden(ptr, col, v, mat, reduce, *, outdtype):
         elif reduce == "mean":
             out[..., r, :] = product.mean(-2)
         else:
-            values, indices = getattr(product, reduce)(-2)
-            out[..., r, :] = values
-            arg[..., r, :] = a + indices
+            valid = ~torch.isnan(product)
+            fill = float("inf") if reduce == "min" else -float("inf")
+            values = getattr(product.masked_fill(~valid, fill), reduce)(-2).values
+            has_value, indices = (valid & (product == values.unsqueeze(-2))).max(-2)
+            out[..., r, :] = torch.where(has_value, values, 0.0)
+            arg[..., r, :] = torch.where(has_value, a + indices, col.numel())
     if outdtype == torch.int32:
         out = out.trunc()
     return out.to(outdtype), arg

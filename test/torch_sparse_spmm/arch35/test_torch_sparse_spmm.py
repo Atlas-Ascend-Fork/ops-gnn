@@ -439,6 +439,9 @@ def test_extrema_documented_special_policy(reduce):
     )
     checked(out, expected.double(), torch.float32, f"special/{reduce}/documented_policy")
     torch.testing.assert_close(arg.cpu(), torch.tensor([[0, 1, 1 if reduce == "min" else 0], [3, 3, 3], [3, 3, 3]]))
+    reference, reference_arg = golden(p.cpu(), c.cpu(), None, b.cpu(), reduce, outdtype=torch.float64)
+    torch.testing.assert_close(reference, expected.double())
+    torch.testing.assert_close(reference_arg, arg.cpu())
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
