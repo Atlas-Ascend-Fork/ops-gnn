@@ -564,3 +564,19 @@ def test_half_mean_keeps_maximum_finite_values(host_reduce_messages, value):
     assert torch.equal(
         result, torch.tensor([[value, value], [0.0, 0.0]], dtype=torch.float16)
     )
+
+
+@pytest.mark.parametrize("reduction", ["sum", "min", "max"])
+@pytest.mark.parametrize("feature_shape", [(), (17,), (3, 17), (0,), (0, 17)])
+@pytest.mark.parametrize("rows", [0, 2])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+@pytest.mark.parametrize("fp32", [False, True])
+def test_specialized_reference_empty_source(reduction, feature_shape, rows, dtype, fp32):
+    path = Path(__file__).parents[2] / f"spmm_{reduction}" / "arch22" / "golden.py"
+    reference = runpy.run_path(path)[f"spmm_{reduction}_reference"]
+    indptr = torch.zeros(rows + 1, dtype=torch.int64)
+    indices = torch.empty(0, dtype=torch.int64)
+    features = torch.empty((0,) + feature_shape, dtype=dtype)
+    expected = features.new_zeros((rows,) + feature_shape)
+    actual = reference(indptr, indices, features, fp32=fp32)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)

@@ -13,7 +13,7 @@ import torch
 def spmm_min_reference(indptr, indices, x, fp32=True):
     """Compute 2D SpMM or 3D BSpMM copy_lhs + min."""
     m, feature_shape = indptr.numel() - 1, tuple(x.shape[1:])
-    flat = x.reshape(x.size(0), -1)
+    flat = x.reshape(x.size(0), x.shape[1:].numel())
     degrees = (indptr[1:] - indptr[:-1]).long()
     rows = torch.repeat_interleave(torch.arange(m, device=x.device), degrees)
     values = flat.float() if fp32 else flat
