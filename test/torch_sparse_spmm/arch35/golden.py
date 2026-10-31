@@ -59,7 +59,14 @@ def compare(actual, expected, dtype):
     error = (a - g).abs()
     matched = float((error <= at + rt * g.abs()).double().mean())
     rounded = g.to(dtype)
-    ulp = (torch.nextafter(rounded, torch.full_like(rounded, float("inf"))) - rounded).double().abs()
+    adjacent = torch.nextafter(rounded, torch.full_like(rounded, float("inf")))
+    # At the largest finite output, use the finite neighbor instead of infinity.
+    adjacent = torch.where(
+        torch.isfinite(rounded) & torch.isinf(adjacent),
+        torch.nextafter(rounded, torch.zeros_like(rounded)),
+        adjacent,
+    )
+    ulp = (adjacent.double() - rounded.double()).abs()
     maximum = torch.maximum(torch.full_like(ulp, limit), 32 * ulp)
     return {
         "passed": matched >= 0.99 and bool((error <= maximum).all()),
