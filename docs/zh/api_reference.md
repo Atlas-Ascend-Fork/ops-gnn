@@ -812,6 +812,41 @@ y = bspmm(ptr, idx, node_features, rhs=edge_features,
 ```
 
 
+### sddmm_csr — CSR 广义 SDDMM
+
+```python
+ops_gnn.sddmm_csr(
+    indptr, indices, lhs=None, rhs=None, op="dot",
+    lhs_target="u", rhs_target="v", out=None
+) -> Tensor
+```
+
+在 CSR 上逐边计算 `phi(lhs[lhs_target], rhs[rhs_target])`。CSR 的行是
+`src`（target 0），列是 `dst`（target 2），边序号是 `edge`（target 1）。
+
+- `op`：`dot`、`add`、`sub`、`mul`、`div`、`copy_lhs`、`copy_rhs`。
+- `lhs_target` / `rhs_target`：`u/src/0`、`e/edge/1`、`v/dst/2`。
+- `indptr` / `indices`：同一 NPU 上的一维 `int32`/`int64` CSR，二者 dtype 必须一致；
+  `indptr` 非空、单调不减，且 `indptr[0] == 0`、`indptr[-1] == nnz`，`indices` 非负。
+- `lhs` / `rhs`：同一 NPU、同 dtype、同 feature_dim 的一维或二维特征；
+  `copy_lhs`/`copy_rhs` 只使用一个。
+- `out`：可选输出；形状必须与结果一致，且与特征同设备、同 dtype、连续、
+  `requires_grad=False`，不能与 `indptr`、`indices`、`lhs`、`rhs` 共享 storage。
+
+`dot` 返回 `(nnz,)`；其他 op 返回 `(nnz, feature_dim)`；一维输入会按
+`(rows, 1)` 处理并在最后 squeeze。仅支持 arch22 上的 float16/float32；
+不支持 autograd、hetero、广播和 float64，超出范围时应使用 DGL 原生路径。
+
+```python
+from ops_gnn import sddmm_csr
+
+edge_dot = sddmm_csr(ptr, idx, lhs, rhs, op="dot")
+edge_sum = sddmm_csr(ptr, idx, lhs, rhs, op="add")
+copied = sddmm_csr(ptr, idx, lhs, None, op="copy_lhs", lhs_target="v")
+```
+
+测试位于 `test/sddmm_csr/arch22/`。
+
 ### 2.11 grid_cluster — 规则网格聚类
 
 将 `[N,D]` 点坐标映射为规则网格的线性 ID；落在同一网格单元的点得到相同 ID。接口兼容 `torch_cluster.grid_cluster`。

@@ -194,6 +194,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `scatter` / `scatter_*` | torch_scatter-compatible indexed reductions | NPU / CPU fallback for float64 and int64 | [scatter — Scatter Reductions](docs/en/api_reference.md#scatter--scatter-reductions) |
 | `spmm` | CSR copy/binary messages with sum/max/min/mean aggregation | NPU (A2/A3, arch22) | [spmm — Rank-1 and Rank-2 CSR Aggregation](docs/en/api_reference.md#spmm--general-csr-aggregation) |
 | `bspmm` | Rank-3-and-higher CSR copy/binary message aggregation | NPU (A2/A3, arch22) | [bspmm — Higher-Rank CSR Aggregation](docs/en/api_reference.md#bspmm--general-batched-csr-aggregation) |
+| `sddmm_csr` | Generalized CSR SDDMM | NPU (A2/A3, arch22) | [sddmm_csr — Generalized CSR SDDMM](docs/en/api_reference.md#sddmm_csr--generalized-csr-sddmm) |
 
 ## Development Guide
 

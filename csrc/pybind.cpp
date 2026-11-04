@@ -17,6 +17,7 @@
 #include "segment_coo/op_host/segment_coo.h"
 #include "segment_csr/op_host/segment_csr.h"
 #ifdef OPSGNN_DAV_2201
+#include "sddmm_csr/op_host/sddmm_csr.h"
 #include "spmm_max/op_host/spmm_max.h"
 #include "spmm_min/op_host/spmm_min.h"
 #include "spmm_sum/op_host/spmm_sum.h"
@@ -149,6 +150,11 @@ void BindArch22(py::module_& m)
                                    std::move(out), dimSize, reduce, false));
           }, py::arg("src"), py::arg("index"), py::arg("out"), py::arg("dim_size"),
           py::arg("reduce"), py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary>());
+    m.def("sddmm_csr", &opsgnn::SddmmCsrForward, py::arg("indptr"), py::arg("indices"),
+          py::arg("lhs"), py::arg("rhs"), py::arg("op") = "dot",
+          py::arg("lhs_target") = 0, py::arg("rhs_target") = 2,
+          py::arg("out") = py::none(), "CSR SDDMM on Ascend NPU",
+          py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary>());
     m.def("spmm_max_csr", &opsgnn::SpmmMaxCsr, py::arg("indptr"), py::arg("indices"),
           py::arg("x"), py::arg("out") = py::none(), "CSR SpMM max on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
     m.def("spmm_min_csr", &opsgnn::SpmmMinCsr, py::arg("indptr"), py::arg("indices"),

@@ -833,6 +833,43 @@ y = bspmm(ptr, idx, node_features, rhs=edge_features,
 # y: [M, 2, 3, 4]
 ```
 
+### sddmm_csr — Generalized CSR SDDMM
+
+```python
+ops_gnn.sddmm_csr(
+    indptr, indices, lhs=None, rhs=None, op="dot",
+    lhs_target="u", rhs_target="v", out=None
+) -> Tensor
+```
+
+Computes `phi(lhs[lhs_target], rhs[rhs_target])` for every CSR edge. CSR rows
+are `src` (target 0), columns are `dst` (target 2), and the edge ordinal is
+`edge` (target 1).
+
+- `op`: `dot`, `add`, `sub`, `mul`, `div`, `copy_lhs`, or `copy_rhs`.
+- `lhs_target` / `rhs_target`: `u/src/0`, `e/edge/1`, or `v/dst/2`.
+- `indptr` / `indices`: one-dimensional `int32`/`int64` CSR on the same NPU with matching dtype;
+  `indptr` must be nonempty, nondecreasing, start at 0, end at nnz, and `indices` must be nonnegative.
+- `lhs` / `rhs`: one- or two-dimensional features on the same NPU with the same dtype and
+  feature dim; `copy_*` uses one operand.
+- `out`: optional output; its shape must match the result, and it must share the feature
+  device/dtype, be contiguous, not require grad, and not alias any input storage.
+
+`dot` returns `(nnz,)`; other operations return `(nnz, feature_dim)`.
+One-dimensional inputs are treated as `(rows, 1)` and squeezed at the end.
+Only float16/float32 on arch22 are supported. Autograd, heterogeneous graphs,
+broadcasting, and float64 are not supported; use the native DGL path instead.
+
+```python
+from ops_gnn import sddmm_csr
+
+edge_dot = sddmm_csr(ptr, idx, lhs, rhs, op="dot")
+edge_sum = sddmm_csr(ptr, idx, lhs, rhs, op="add")
+copied = sddmm_csr(ptr, idx, lhs, None, op="copy_lhs", lhs_target="v")
+```
+
+Tests live in `test/sddmm_csr/arch22/`.
+
 ## 2.11 grid_cluster — Regular Grid Clustering
 
 Map `[N,D]` point coordinates to linear regular-grid IDs. Points in the same cell receive the same ID. The interface is compatible with `torch_cluster.grid_cluster`.

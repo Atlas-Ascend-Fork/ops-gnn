@@ -50,10 +50,12 @@ if _pybind.npu_arch == 'dav-2201':
         segment_mean_coo, segment_min_coo, segment_max_coo,
     )
     from .bspmm import bspmm
+    from .sddmm_csr import sddmm_csr
     from .spmm import spmm
     __all__ = [
         'spmm',
         'bspmm',
+        'sddmm_csr',
         'segment_csr', 'segment_sum_csr', 'segment_add_csr',
         'segment_mean_csr', 'segment_min_csr', 'segment_max_csr',
         'segment_coo', 'segment_sum_coo', 'segment_add_coo',

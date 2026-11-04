@@ -192,6 +192,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `scatter` / `scatter_*` | 与 torch_scatter 对齐的索引分组归约 | NPU / CPU float64、int64 回退 | [scatter — Scatter 系列归约](docs/zh/api_reference.md#scatter--scatter-系列归约) |
 | `spmm` | CSR copy/binary 消息与 sum/max/min/mean 聚合 | NPU（A2/A3，arch22） | [spmm — 一维与二维 CSR 聚合](docs/zh/api_reference.md#spmm--csr-通用聚合) |
 | `bspmm` | 三维及更高维 CSR copy/binary 消息聚合 | NPU（A2/A3，arch22） | [bspmm — 高维 CSR 聚合](docs/zh/api_reference.md#bspmm--批量-csr-通用聚合) |
+| `sddmm_csr` | CSR 广义 SDDMM | NPU（A2/A3，arch22） | [sddmm_csr — CSR 广义 SDDMM](docs/zh/api_reference.md#sddmm_csr--csr-广义-sddmm) |
 
 ## 开发指南
 
