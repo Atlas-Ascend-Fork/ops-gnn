@@ -813,6 +813,23 @@ def test_vector_minmax_fast_path_value_and_arg(dtype, reduce):
     assert torch.equal(actual[1].cpu(), expected[1])
 
 
+@pytest.mark.parametrize("rows", [512, 513, 769])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+@pytest.mark.parametrize("reduce", ["min", "max"])
+def test_vector_minmax_finalize_aligned_block_boundaries(rows, dtype, reduce):
+    torch.npu.set_device(DEVICE_ID)
+    src = torch.arange(1, rows + 1, dtype=torch.float32).reshape(rows, 1)
+    src = src.expand(rows, 16).to(dtype).contiguous().npu()
+    index = torch.zeros(rows, dtype=torch.int64, device="npu")
+    expanded_index = index.reshape(-1, 1).expand_as(src)
+    expected = scatter_cpu(
+        src.cpu(), expanded_index.cpu(), dim=0, dim_size=1, reduce=reduce
+    )
+    actual = _scatter_fn(reduce)(src, index, dim=0, dim_size=1)
+    _assert_match(actual[0], expected[0], dtype)
+    assert torch.equal(actual[1].cpu(), expected[1])
+
+
 @pytest.mark.parametrize("dtype", [torch.float64, torch.int64])
 @pytest.mark.parametrize("reduce", REDUCES)
 def test_l2_npu_fallback_out_identity_value_arg_and_warning(dtype, reduce):

@@ -134,10 +134,13 @@ ScatterPlan BuildScatterPlan(const torch::Tensor& src,
         (src.scalar_type() == at::kHalf && !f16Atomic) ||
         src.scalar_type() == at::kBFloat16;
     const bool atomic = atomicCandidate && !orderedLowPrecision;
+    const uint64_t minMaxAlignmentElements =
+        src.scalar_type() == at::kHalf ? 16 : 8;
     const bool vectorMinMax = !hasOut && src.numel() >= 4096 &&
         (reduce == SCATTER_MIN || reduce == SCATTER_MAX) &&
         (src.scalar_type() == at::kFloat || src.scalar_type() == at::kHalf) &&
-        alignedRows;
+        alignedRows &&
+        static_cast<uint64_t>(out.numel()) % minMaxAlignmentElements == 0;
     return {before, dimLength, after, static_cast<uint64_t>(out.size(dim)),
             compact, atomic, vectorAtomic, f16Atomic, vectorMinMax};
 }
@@ -193,7 +196,17 @@ uint32_t SelectBlockNum(const ScatterPlan& plan, const torch::Tensor& src)
     } else if (plan.vectorAtomicPath || plan.f16FloatAtomicPath) {
         available = std::min<uint32_t>(available, 56);
     }
-    return static_cast<uint32_t>(std::min<uint64_t>(available, useful));
+    uint32_t blocks = static_cast<uint32_t>(std::min<uint64_t>(available, useful));
+    if (plan.vectorMinMaxPath) {
+        const uint64_t outNumel = plan.before * plan.outputDim * plan.after;
+        const uint64_t alignmentElements =
+            src.scalar_type() == at::kHalf ? 16 : 8;
+        while (blocks > 1 &&
+               outNumel % (static_cast<uint64_t>(blocks) * alignmentElements) != 0) {
+            --blocks;
+        }
+    }
+    return blocks;
 }
 
 uint32_t SelectTilingKey(const ScatterPlan& plan, int64_t reduce)
