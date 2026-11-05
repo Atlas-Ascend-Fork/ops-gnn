@@ -65,19 +65,24 @@ __simt_callee__ inline float GridDivide(float a, float b)
 template <typename T, bool Round>
 __simt_callee__ inline int64_t GridIndex(T value, T origin, T size)
 {
-    if constexpr (std::is_same<T, float>::value) {
-        if (GridIsSubnormal(size)) {
+    if constexpr (std::is_same<T, float>::value || std::is_same<T, bfloat16_t>::value) {
+        const float cell = static_cast<float>(size);
+        if (GridIsSubnormal(cell)) {
             // Normalize before subtraction as well: a subnormal difference may
             // otherwise be flushed to zero. Large operands cannot cancel to a
             // subnormal, and are subtracted first to avoid inf - inf on scaling.
             GridFloatBits v, o;
-            v.value = value;
-            o.value = origin;
+            v.value = static_cast<float>(value);
+            o.value = static_cast<float>(origin);
             float delta = ((v.bits & 0x7fffffffU) < 0x40800000U &&
                 (o.bits & 0x7fffffffU) < 0x40800000U)
-                ? GridScaleTiny(value) - GridScaleTiny(origin)
-                : GridScaleTiny(GridSubtract(value, origin));
-            float q = GridDivide(delta, GridScaleTiny(size));
+                ? GridScaleTiny(v.value) - GridScaleTiny(o.value)
+                : GridScaleTiny(static_cast<float>(GridSubtract(value, origin)));
+            // BF16 的减法和除法均需保留输入 dtype 的舍入。
+            // 先缩放再舍入，避免次正规差值在设备运算中被清零。
+            if constexpr (Round) delta = static_cast<float>(static_cast<T>(delta));
+            float q = GridDivide(delta, GridScaleTiny(cell));
+            if constexpr (Round) q = static_cast<float>(static_cast<T>(q));
             // CPU float-to-int64 conversion uses INT64_MIN for nonfinite or
             // out-of-range quotients. Do not rely on a device conversion here.
             if (!(q >= -0x1p63f && q < 0x1p63f)) {
@@ -95,8 +100,8 @@ __simt_callee__ inline int64_t GridIndex(T value, T origin, T size)
 template <typename T, bool Round>
 __simt_callee__ inline int64_t GridIndexReciprocal(T value, T origin, T size, float reciprocal)
 {
-    if constexpr (std::is_same<T, float>::value) {
-        if (GridIsSubnormal(size)) return GridIndex<T, Round>(value, origin, size);
+    if constexpr (std::is_same<T, float>::value || std::is_same<T, bfloat16_t>::value) {
+        if (GridIsSubnormal(static_cast<float>(size))) return GridIndex<T, Round>(value, origin, size);
     }
     T delta = GridSubtract(value, origin);
     float a = static_cast<float>(delta);

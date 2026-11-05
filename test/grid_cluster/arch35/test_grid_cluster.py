@@ -127,6 +127,35 @@ def test_fp32_tiny_size_radix(dims, cell):
     check(pos, size, torch.zeros(dims), pos.max(0).values)
 
 
+@pytest.mark.parametrize("dims", [1, 2, 3, 16, 32, 64, 65])
+@pytest.mark.parametrize("cell", [2.0 ** -133, 2.0 ** -130, 2.0 ** -127, 2.0 ** -126])
+@pytest.mark.parametrize("shifted", [False, True])
+def test_bf16_tiny_size(dims, cell, shifted):
+    origin = -2 * cell if shifted else 0.0
+    pos = torch.zeros((5, dims), dtype=torch.bfloat16)
+    pos[:, -1] = torch.tensor([origin + offset * cell for offset in (-3, -1, 0, 1, 3)],
+                              dtype=torch.bfloat16)
+    size = torch.ones(dims, dtype=torch.bfloat16)
+    size[-1] = cell
+    start = torch.zeros(dims, dtype=torch.bfloat16)
+    start[-1] = origin
+    end = pos.max(0).values
+    check(pos, size, start, end)
+    if dims > 1:
+        # 将次正规维移到首维，同时覆盖网格步长和专用倒数路径。
+        check(pos.flip(1), size.flip(0), start.flip(0), end.flip(0))
+
+
+def test_bf16_tiny_size_keeps_subtraction_rounding():
+    # 差值 261 个次正规单位需先舍入为 260，再除以 3；直接提升精度会错算为 87。
+    unit = 2.0 ** -133
+    pos = torch.tensor([[260 * unit]], dtype=torch.bfloat16)
+    size = torch.tensor([3 * unit], dtype=torch.bfloat16)
+    start = torch.tensor([-unit], dtype=torch.bfloat16)
+    end = pos[0]
+    check(pos, size, start, end)
+
+
 def test_truncation_and_noncontiguous():
     pos = torch.tensor([[-0.9, 0.5, 1.0, 2.0], [1.9, 0.0, 3.0, 4.0]])[:, ::2]
     check(pos, torch.ones(2), torch.zeros(2), torch.full((2,), 4.0))
