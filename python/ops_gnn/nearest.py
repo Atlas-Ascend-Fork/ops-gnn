@@ -77,7 +77,9 @@ def nearest(x: torch.Tensor, y: torch.Tensor,
         labels_y, py = _batch_ptr(batch_y, y.size(0), y.device, "batch_y")
         if labels_x != labels_y:
             raise ValueError("batch_x and batch_y have different nonempty batch sets")
-        # Compact shared IDs avoid allocations proportional to the largest ID.
-        ptr_x = torch.tensor(px, dtype=torch.int64, device=x.device)
-        ptr_y = torch.tensor(py, dtype=torch.int64, device=x.device)
+        # 单个非空批次覆盖全部点，可复用无分区的 SIMD 路径。
+        # 保留上面的完整校验；多个批次仍按压缩后的编号构造指针。
+        if len(labels_x) > 1:
+            ptr_x = torch.tensor(px, dtype=torch.int64, device=x.device)
+            ptr_y = torch.tensor(py, dtype=torch.int64, device=x.device)
     return torch.ops.torch_cluster.nearest(x, y, ptr_x, ptr_y)

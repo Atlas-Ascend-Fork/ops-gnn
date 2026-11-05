@@ -150,6 +150,38 @@ def test_missing_batch_means_zero():
     check(torch.randn(4, 3), torch.randn(8, 3), None, torch.zeros(8, dtype=torch.long))
 
 
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("features", [3, 16, 64])
+@pytest.mark.parametrize("batch_id", [0, 13])
+def test_single_batch_matches_unbatched(dtype, features, batch_id):
+    generator = torch.Generator().manual_seed(41)
+    x = torch.randn(129, features, generator=generator).to(dtype)
+    y = torch.randn(257, features, generator=generator).to(dtype)
+    # 在不同位置放置相同最近点，检查规范化后仍选最小全局索引。
+    y[7] = x[0]
+    y[239] = x[0]
+    expected = nearest_golden(x, y)
+    actual = check(x, y, torch.full((129,), batch_id, dtype=torch.long),
+                   torch.full((257,), batch_id, dtype=torch.long), expected)
+    assert torch.equal(actual, check(x, y, expected=expected))
+    assert actual[0].item() == 7
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("features", [16, 64])
+def test_single_batch_close_candidates(dtype, features):
+    x = torch.zeros(129, features, dtype=dtype)
+    y = torch.full((257, features), 4, dtype=dtype)
+    # 索引 7 和 239 的平方距离分别为 1 + 2⁻¹² 和 1，误判为平局会选错索引。
+    y[7] = y[239] = 0
+    y[7, 0] = y[239, 0] = 1
+    y[7, -1] = 1 / 64
+    expected = nearest_golden(x, y)
+    assert expected.eq(239).all()
+    check(x, y, torch.full((len(x),), 13), torch.full((len(y),), 13), expected)
+    check(x, y, expected=expected)
+
+
 def test_nondefault_stream_and_input_mutation():
     stream = torch.npu.Stream()
     with torch.npu.stream(stream):
