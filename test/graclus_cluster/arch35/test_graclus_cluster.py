@@ -309,3 +309,31 @@ def test_weight_cache_invalidates_after_inplace_update():
         pytest.fail("cache invalidation result is not bit-wise equal to reference")
     if torch.equal(first, actual):
         pytest.fail("cache did not reflect updated tensor")
+
+
+@pytest.mark.parametrize("device", ["cpu", "npu"])
+@pytest.mark.parametrize("row_values,col_values,num_nodes", [
+    pytest.param([1], [0], 0, id="explicit-zero"),
+    pytest.param([-1], [-1], None, id="inferred-zero-negative-indices"),
+    pytest.param([1], [0], 1, id="nonzero-invalid-index-control"),
+])
+def test_invalid_indices_including_zero_nodes(device, row_values, col_values, num_nodes):
+    if device == "npu":
+        _npu_or_skip()
+    row = torch.tensor(row_values, dtype=torch.long, device=device)
+    col = torch.tensor(col_values, dtype=torch.long, device=device)
+    with pytest.raises(ValueError, match="indices must be within"):
+        ops_gnn.graclus_cluster(row, col, num_nodes=num_nodes)
+
+
+@pytest.mark.parametrize("device", ["cpu", "npu"])
+@pytest.mark.parametrize("num_nodes", [0, None])
+def test_zero_nodes_empty_edges_remain_valid(device, num_nodes):
+    if device == "npu":
+        _npu_or_skip()
+    row = torch.empty(0, dtype=torch.long, device=device)
+    col = torch.empty(0, dtype=torch.long, device=device)
+    result = ops_gnn.graclus_cluster(row, col, num_nodes=num_nodes)
+    assert result.shape == (0,)
+    assert result.dtype == torch.long
+    assert result.device == row.device

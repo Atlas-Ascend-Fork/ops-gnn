@@ -327,6 +327,7 @@ def graclus_cluster(row: Tensor, col: Tensor, weight: OptTensor = None, num_node
     _validate_inputs(row, col, weight, num_nodes)
     node_count = _maybe_num_nodes(row, col, num_nodes)
     if node_count == 0:
+        _check_index_bounds(row, col, node_count)
         return torch.empty(0, dtype=torch.long, device=row.device)
     if weight is not None and weight.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
         raise TypeError("weight supports float16, bfloat16, float32, and float64")
