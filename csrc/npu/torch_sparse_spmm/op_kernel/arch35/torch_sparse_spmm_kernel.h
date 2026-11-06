@@ -308,24 +308,71 @@ void TypedLaunch(void* ptr, void* col, void* val, void* mat, void* out, void* ar
     GenericLaunch<T, O, A>(ptr, col, val, mat, out, arg, s, weighted, small, blocks, stream);
 }
 
+__simt_callee__ __aicore__ inline int64_t FindCsrEdgeRow(
+    __gm__ int64_t* ptr, int64_t rows, int64_t edge)
+{
+    int64_t lo = 0, hi = rows;
+    while (lo < hi) {
+        int64_t mid = (lo + hi) / 2;
+        if (ptr[mid + 1] <= edge) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+template <class T>
+__simt_callee__ __aicore__ inline void ValueGradScalarWarp(
+    __gm__ int64_t* ptr, __gm__ int64_t* col, __gm__ T* mat,
+    __gm__ float* grad, __gm__ float* out, SpmmShape s)
+{
+    constexpr int64_t warpSize = 32;
+    int64_t lane = AscendC::Simt::GetThreadIdx() % warpSize;
+    int64_t warp = static_cast<int64_t>(AscendC::Simt::GetBlockIdx()) *
+                       (AscendC::Simt::GetThreadNum() / warpSize) +
+                   AscendC::Simt::GetThreadIdx() / warpSize;
+    int64_t stride = static_cast<int64_t>(AscendC::Simt::GetBlockNum()) *
+                     (AscendC::Simt::GetThreadNum() / warpSize);
+    for (int64_t edge = warp; edge < s.edges; edge += stride) {
+        int64_t row = FindCsrEdgeRow(ptr, s.m, edge);
+        int64_t column = col[edge];
+        float acc = 0;
+        for (int64_t batch = 0; batch < s.batches; ++batch) {
+            for (int64_t feature = lane; feature < s.k; feature += warpSize) {
+                acc += static_cast<float>(mat[(batch * s.n + column) * s.k + feature]) *
+                       grad[(batch * s.m + row) * s.k + feature];
+            }
+        }
+        for (int offset = 16; offset > 0; offset /= 2) {
+            acc += AscendC::Simt::WarpShflDownSync(acc, offset);
+        }
+        if (lane == 0) {
+            if (s.reduce == 1 && ptr[row + 1] > ptr[row]) {
+                acc /= static_cast<float>(ptr[row + 1] - ptr[row]);
+            }
+            out[edge] = acc;
+        }
+    }
+}
+
 template <class T>
 __simt_vf__ __aicore__ LAUNCH_BOUND(512) void ValueGradCompute(__gm__ int64_t* ptr, __gm__ int64_t* col, __gm__ T* mat,
                                                                __gm__ float* grad, __gm__ float* out, SpmmShape s)
 {
+    // Scalar edge weights reduce across features; wide rows share that work
+    // across a warp instead of assigning the entire reduction to one lane.
+    if (s.valueWidth == 1 && s.k >= 128) {
+        ValueGradScalarWarp<T>(ptr, col, mat, grad, out, s);
+        return;
+    }
     int64_t tid = static_cast<int64_t>(AscendC::Simt::GetBlockIdx()) * AscendC::Simt::GetThreadNum() +
                   AscendC::Simt::GetThreadIdx();
     int64_t stride = static_cast<int64_t>(AscendC::Simt::GetBlockNum()) * AscendC::Simt::GetThreadNum();
     for (int64_t id = tid; id < s.edges * s.valueWidth; id += stride) {
-        int64_t e = id / s.valueWidth, lo = 0, hi = s.m;
-        while (lo < hi) {
-            int64_t mid = (lo + hi) / 2;
-            if (ptr[mid + 1] <= e) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        int64_t row = lo;
+        int64_t e = id / s.valueWidth;
+        int64_t row = FindCsrEdgeRow(ptr, s.m, e);
         float acc = 0;
         int64_t first = s.valueWidth == 1 ? 0 : id % s.valueWidth;
         int64_t last = s.valueWidth == 1 ? s.k : first + 1;

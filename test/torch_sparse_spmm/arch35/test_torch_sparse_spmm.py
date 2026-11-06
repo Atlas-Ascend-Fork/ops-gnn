@@ -701,3 +701,149 @@ def test_pyg_layer(kind, pyg_nn):
     torch.testing.assert_close(xn.grad.cpu(), x.grad, rtol=1e-4, atol=1e-5)
     for a, b in zip(dut.parameters(), cpu.parameters()):
         torch.testing.assert_close(a.grad.cpu(), b.grad, rtol=1e-4, atol=1e-5)
+
+
+_VALUE_GRAD_DTYPES = [torch.float32, torch.float16, torch.bfloat16]
+_VALUE_GRAD_BATCHES = [(), (2, 3)]
+_VALUE_GRAD_EMPTY_SIZES = [(4, 7), (0, 7), (4, 0), (0, 0)]
+
+
+def _value_grad_tolerance(dtype):
+    return 0.03 if dtype == torch.bfloat16 else 0.008 if dtype == torch.float16 else 0.0001
+
+
+@pytest.mark.parametrize("dtype", _VALUE_GRAD_DTYPES)
+@pytest.mark.parametrize("reduce", [0, 1])
+@pytest.mark.parametrize("features", [127, 128, 129])
+@pytest.mark.parametrize("batch", _VALUE_GRAD_BATCHES)
+@pytest.mark.parametrize("rows,columns", _VALUE_GRAD_EMPTY_SIZES)
+@pytest.mark.parametrize("feature_weights", [False, True])
+def test_native_value_backward_empty_edges(dtype, reduce, features, batch, rows, columns, feature_weights):
+    ptr = torch.zeros(rows + 1, device="npu", dtype=torch.int64)
+    col = torch.empty(0, device="npu", dtype=torch.int64)
+    mat = torch.ones(batch + (columns, features), device="npu", dtype=dtype)
+    grad = torch.ones(batch + (rows, features), device="npu", dtype=torch.float32)
+    width = features if feature_weights else 1
+    result = native_spmm.value_backward(ptr, col, mat, grad, reduce, width)
+    torch.npu.synchronize()
+    assert result.shape == (0, width)
+    assert result.dtype == torch.float32
+    assert result.device == mat.device
+    assert result.numel() == 0
+
+
+@pytest.mark.parametrize("dtype", _VALUE_GRAD_DTYPES)
+@pytest.mark.parametrize("reduce", ["sum", "mean"])
+@pytest.mark.parametrize("features", [127, 128, 129])
+@pytest.mark.parametrize("batch", _VALUE_GRAD_BATCHES)
+@pytest.mark.parametrize("rows,columns", _VALUE_GRAD_EMPTY_SIZES)
+@pytest.mark.parametrize("feature_weights", [False, True])
+@pytest.mark.parametrize("grad_mode", ["value", "mat", "both"])
+def test_public_csr_empty_edges_keep_gradients(
+    dtype, reduce, features, batch, rows, columns, feature_weights, grad_mode
+):
+    ptr = torch.zeros(rows + 1, device="npu", dtype=torch.int64)
+    col = torch.empty(0, device="npu", dtype=torch.int64)
+    value_shape = (0, features) if feature_weights else (0,)
+    value = torch.empty(value_shape, device="npu", dtype=dtype, requires_grad=grad_mode != "mat")
+    mat = torch.ones(batch + (columns, features), device="npu", dtype=dtype, requires_grad=grad_mode != "value")
+    result = npu.csr_spmm(ptr, col, value, mat, reduce, output_dtype=torch.float32)
+    assert result.shape == batch + (rows, features)
+    assert result.requires_grad and result.grad_fn is not None
+    torch.testing.assert_close(result.cpu(), torch.zeros(result.shape), rtol=0, atol=0)
+    inputs = tuple((tensor for tensor in (value, mat) if tensor.requires_grad))
+    gradients = torch.autograd.grad(result.sum(), inputs, allow_unused=False)
+    torch.npu.synchronize()
+    for tensor, gradient in zip(inputs, gradients):
+        assert gradient.shape == tensor.shape
+        assert gradient.dtype == tensor.dtype
+        assert gradient.device == tensor.device
+        torch.testing.assert_close(gradient.cpu(), torch.zeros(tensor.shape, dtype=dtype), rtol=0, atol=0)
+
+
+def _check_value_gradient_reference(dtype, reduce, features, batch, feature_weights, ptr, row, col, columns):
+    rows, edges = (ptr.numel() - 1, col.numel())
+    generator = torch.Generator().manual_seed(1700 + features)
+    mat = torch.randn(batch + (columns, features), generator=generator).to(dtype)
+    value = torch.randn((edges, features) if feature_weights else (edges,), generator=generator).to(dtype)
+    upstream = torch.randn(batch + (rows, features), generator=generator)
+    reference_mat = mat.double().requires_grad_()
+    reference_value = value.double().requires_grad_()
+    weights = reference_value if feature_weights else reference_value.unsqueeze(-1)
+    messages = reference_mat.index_select(-2, col) * weights
+    if reduce == "mean":
+        messages = messages / (ptr[1:] - ptr[:-1]).index_select(0, row).unsqueeze(-1)
+    reference = torch.zeros(batch + (rows, features), dtype=torch.float64).index_add(-2, row, messages)
+    expected_value, expected_mat = torch.autograd.grad(
+        (reference * upstream.double()).sum(), (reference_value, reference_mat)
+    )
+    ptr_npu, col_npu = (ptr.npu(), col.npu())
+    value_npu = value.npu().requires_grad_()
+    mat_npu = mat.npu().requires_grad_()
+    result = npu.csr_spmm(ptr_npu, col_npu, value_npu, mat_npu, reduce, output_dtype=torch.float32)
+    actual_value, actual_mat = torch.autograd.grad((result * upstream.npu()).sum(), (value_npu, mat_npu))
+    raw_value = native_spmm.value_backward(
+        ptr_npu,
+        col_npu,
+        mat_npu.detach(),
+        upstream.npu(),
+        0 if reduce == "sum" else 1,
+        features if feature_weights else 1,
+    )
+    torch.npu.synchronize()
+    tolerance = _value_grad_tolerance(dtype)
+    for actual, expected in ((result, reference), (actual_value, expected_value), (actual_mat, expected_mat)):
+        torch.testing.assert_close(actual.detach().cpu().double(), expected.detach(), rtol=tolerance, atol=tolerance)
+    torch.testing.assert_close(
+        raw_value.cpu().double().reshape_as(expected_value), expected_value, rtol=tolerance, atol=tolerance
+    )
+
+
+@pytest.mark.parametrize("dtype", _VALUE_GRAD_DTYPES)
+@pytest.mark.parametrize("reduce", ["sum", "mean"])
+@pytest.mark.parametrize("features", [127, 128, 129])
+@pytest.mark.parametrize("batch", _VALUE_GRAD_BATCHES)
+@pytest.mark.parametrize("feature_weights", [False, True])
+def test_duplicate_edges_and_empty_rows_match_cpu_fp64(dtype, reduce, features, batch, feature_weights):
+    ptr = torch.tensor([0, 0, 3, 3, 6], dtype=torch.int64)
+    row = torch.tensor([1, 1, 1, 3, 3, 3], dtype=torch.int64)
+    col = torch.tensor([1, 1, 2, 0, 0, 0], dtype=torch.int64)
+    _check_value_gradient_reference(dtype, reduce, features, batch, feature_weights, ptr, row, col, 3)
+
+
+@pytest.mark.parametrize("dtype", _VALUE_GRAD_DTYPES)
+@pytest.mark.parametrize("reduce", ["sum", "mean"])
+@pytest.mark.parametrize("features", [127, 128, 129])
+@pytest.mark.parametrize("feature_weights", [False, True])
+@pytest.mark.parametrize("mat_grad", [False, True])
+def test_zero_batch_with_nonempty_edges_writes_zero_value_gradients(dtype, reduce, features, feature_weights, mat_grad):
+    ptr = torch.tensor([0, 2, 2, 3], dtype=torch.int64, device="npu")
+    col = torch.tensor([1, 1, 3], dtype=torch.int64, device="npu")
+    width = features if feature_weights else 1
+    value_shape = (3, features) if feature_weights else (3,)
+    value = torch.ones(value_shape, dtype=dtype, device="npu", requires_grad=True)
+    mat = torch.empty((0, 4, features), dtype=dtype, device="npu", requires_grad=mat_grad)
+    grad = torch.empty((0, 3, features), dtype=torch.float32, device="npu")
+    raw_value = native_spmm.value_backward(ptr, col, mat.detach(), grad, 0 if reduce == "sum" else 1, width)
+    result = npu.csr_spmm(ptr, col, value, mat, reduce, output_dtype=torch.float32)
+    assert result.shape == (0, 3, features)
+    assert result.requires_grad and result.grad_fn is not None
+    inputs = (value, mat) if mat_grad else (value,)
+    gradients = torch.autograd.grad(result.sum(), inputs, allow_unused=False)
+    torch.npu.synchronize()
+    assert raw_value.shape == (3, width) and raw_value.dtype == torch.float32
+    torch.testing.assert_close(raw_value.cpu(), torch.zeros((3, width)), rtol=0, atol=0)
+    for tensor, gradient in zip(inputs, gradients):
+        assert gradient.shape == tensor.shape and gradient.dtype == tensor.dtype
+        torch.testing.assert_close(gradient.cpu(), torch.zeros(tensor.shape, dtype=dtype), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype", _VALUE_GRAD_DTYPES)
+@pytest.mark.parametrize("reduce", ["sum", "mean"])
+def test_scalar_value_gradients_across_many_grid_strides(dtype, reduce):
+    degree = torch.zeros(257, dtype=torch.int64)
+    degree[1], degree[128], degree[256] = (4097, 1, 4095)
+    ptr = torch.cat((torch.zeros(1, dtype=torch.int64), degree.cumsum(0)))
+    row = torch.repeat_interleave(torch.arange(257), degree)
+    col = torch.arange(8193, dtype=torch.int64) % 17
+    _check_value_gradient_reference(dtype, reduce, 129, (2,), False, ptr, row, col, 17)
