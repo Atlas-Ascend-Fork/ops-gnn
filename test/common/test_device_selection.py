@@ -45,6 +45,18 @@ class TestDeviceSelection(unittest.TestCase):
         cases = [
             ("Ascend 910B", "A2-A3"), ("ASCEND 910b", "A2-A3"),
             ("Ascend 910C", "A2-A3"), ("Ascend 910_9391", "A2-A3"), ("Ascend 950", "950"),
+            # npu-smi prints only the base product name on some SKUs. Driver
+            # 26.1.1 on Ascend910_9382 reports "Ascend910" while
+            # torch_npu.get_device_name() reports "Ascend910_9382"; both must
+            # resolve to the A2-A3 build.
+            ("Ascend910_9382", "A2-A3"), ("Ascend 910", "A2-A3"),
+            ("ascend910", "A2-A3"),
+            # A captured header line from `npu-smi info -m` on that machine.
+            ("    NPU ID  Chip ID  Chip Logic ID  Chip Name\n"
+             "    5       0        0               Ascend910\n"
+             "    5       1        1               Ascend910\n", "A2-A3"),
+            # 950 must stay distinguishable from the 910 family.
+            ("Ascend 950PR", "950"),
         ]
         for product, expected in cases:
             with self.subTest(product=product):

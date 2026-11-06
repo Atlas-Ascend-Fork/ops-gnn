@@ -28,10 +28,17 @@ def select_target():
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"npu-smi device detection failed: {exc}") from exc
     product = result.stdout.lower()
-    if "910_93" in product or "910c" in product:
-        return "A2-A3"
-    if "910b" in product:
-        return "A2-A3"
+    # Match the device FAMILY, not an enumerated list of product suffixes.
+    # npu-smi reports only the base name on some SKUs (for example
+    # "ascend910" on Ascend910_9382 with driver 26.1.1) and the full variant
+    # on others ("ascend 910b3"), so testing for a fixed set of suffixes
+    # rejects supported hardware.
     if "950" in product:
         return "950"
-    raise RuntimeError("Unsupported Ascend device; supported devices: A2, A3, 950")
+    if "910" in product:
+        return "A2-A3"
+    raise RuntimeError(
+        "Unsupported Ascend device; supported devices: A2, A3, 950 "
+        f"(npu-smi reported {product.strip()!r}); "
+        "set CANN_TARGET=a2/a3/950 to override"
+    )
