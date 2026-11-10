@@ -262,8 +262,11 @@ _original_coo = torch_sparse.spmm
 def _build_coo_layout(index, m):
     if bool(((index[0] < 0) | (index[0] >= m)).any().item()):
         raise ValueError("COO row out of range")
-    perm = torch.argsort(index[0], stable=True)
-    row, col = index[0][perm], index[1][perm]
+    row = index[0]
+    if row.numel() < 2 or not bool((row[1:] < row[:-1]).any().item()):
+        return _C.convert(row, m + 1, True), index[1].clone(), None
+    perm = torch.argsort(row, stable=True)
+    row, col = row[perm], index[1][perm]
     return _C.convert(row, m + 1, True), col, perm
 
 
@@ -277,7 +280,7 @@ def coo_to_csr(
     not validate dense-input compatibility or populate the SpMM caches.
     """
     ptr, col, perm = _build_coo_layout(index, m)
-    return ptr, col, None if value is None else value[perm]
+    return ptr, col, None if value is None else (value.clone() if perm is None else value[perm])
 
 
 def _cached_coo_layout(index, m):
@@ -318,6 +321,9 @@ def coo_spmm(index: torch.Tensor, value: Optional[torch.Tensor], m: int, n: int,
     ptr, col, perm = _cached_coo_layout(index, m)
     if value is None:
         weights = None
+    elif perm is None:
+        snapshot = torch.is_grad_enabled() and (value.requires_grad or matrix.requires_grad)
+        weights = value.clone() if snapshot else value
     elif torch.is_grad_enabled() and value.requires_grad:
         weights = value[perm]
     else:

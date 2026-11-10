@@ -31,6 +31,37 @@ npu = importlib.import_module("ops_gnn.torch_sparse_spmm")
 native_spmm = importlib.import_module("ops_gnn._pybind").torch_sparse_spmm
 
 
+@pytest.mark.parametrize("feature_weights", [False, True])
+@pytest.mark.parametrize("warm_layout", [False, True])
+def test_sorted_coo_matrix_gradient_uses_forward_value_snapshot(feature_weights, warm_layout):
+    row = torch.tensor([0, 0, 1, 2, 2], dtype=torch.int64)
+    col = torch.tensor([1, 1, 0, 1, 2], dtype=torch.int64)
+    index = torch.stack((row, col)).npu()
+    value = torch.tensor([2.0, -1.0, 3.0, 4.0, -2.0])
+    if feature_weights:
+        value = value.unsqueeze(-1) * torch.tensor([1.0, 2.0, -1.0, 3.0])
+    matrix = torch.arange(12, dtype=torch.float32).reshape(3, 4) / 4
+    upstream = torch.tensor([[1.0, -2.0, 3.0, 4.0], [2.0, 3.0, -1.0, 1.0], [-1.0, 4.0, 2.0, -3.0]])
+    expected_out = torch.zeros((3, 4))
+    expected_grad = torch.zeros((3, 4))
+    for edge in range(row.numel()):
+        expected_out[row[edge]] += value[edge] * matrix[col[edge]]
+        expected_grad[col[edge]] += value[edge] * upstream[row[edge]]
+    value_npu = value.npu()
+    matrix_npu = matrix.npu().requires_grad_()
+    npu.clear_validation_cache()
+    if warm_layout:
+        with torch.no_grad():
+            npu.coo_spmm(index, value_npu, 3, 3, matrix_npu.detach())
+
+    result = npu.coo_spmm(index, value_npu, 3, 3, matrix_npu)
+    assert matrix_npu.requires_grad and not value_npu.requires_grad
+    torch.testing.assert_close(result.detach().cpu(), expected_out)
+    value_npu.add_(100)
+    (result * upstream.npu()).sum().backward()
+    torch.testing.assert_close(matrix_npu.grad.cpu(), expected_grad)
+
+
 @pytest.fixture(scope="module")
 def pyg_nn():
     pytest.importorskip("torch_geometric")
