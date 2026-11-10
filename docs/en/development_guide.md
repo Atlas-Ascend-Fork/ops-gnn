@@ -24,13 +24,13 @@ Where `${VERSION}` is the CANN version (e.g., 9.1.0) and `$(arch)` is the CPU ar
 #### Post-installation Configuration
 
 ```bash
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
+source /usr/local/Ascend/cann/set_env.sh
 ```
 
 If CANN is installed in a custom path, run:
 
 ```bash
-source ${install_path}/ascend-toolkit/set_env.sh
+source ${install_path}/cann/set_env.sh
 ```
 
 ### Detailed CANN Installation Guide
@@ -444,7 +444,7 @@ require torch_geometric. Python annotations support the repository's Python 3.9+
 range. From the ops-gnn repository root:
 
 ```bash
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
+source /usr/local/Ascend/cann/set_env.sh
 CANN_TARGET=950 NPU_ARCH=dav-3510 MAX_JOBS=2 python -m pip install --no-build-isolation --no-deps -e .
 ```
 

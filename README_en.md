@@ -45,13 +45,13 @@ Each operator directory under `csrc/npu` contains `op_host` and `op_kernel/<arch
 
 ```bash
 # Activate CANN environment
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
+source /usr/local/Ascend/cann/set_env.sh
 ```
 
 If CANN is installed in a custom path, run:
 
 ```bash
-source ${install_path}/ascend-toolkit/set_env.sh
+source ${install_path}/cann/set_env.sh
 ```
 
 ## Installation

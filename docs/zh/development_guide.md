@@ -24,13 +24,13 @@ chmod +x Ascend-cann-toolkit_${VERSION}_linux-$(arch).run
 #### 安装后配置
 
 ```bash
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
+source /usr/local/Ascend/cann/set_env.sh
 ```
 
 如果 CANN 安装在自定义路径，请执行：
 
 ```bash
-source ${install_path}/ascend-toolkit/set_env.sh
+source ${install_path}/cann/set_env.sh
 ```
 
 ### CANN 详细安装指南
@@ -435,7 +435,7 @@ torch_geometric。Python 接口兼容仓库的 Python 3.9+ 范围。
 在 ops-gnn 仓库根目录执行：
 
 ```bash
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
+source /usr/local/Ascend/cann/set_env.sh
 CANN_TARGET=950 NPU_ARCH=dav-3510 MAX_JOBS=2 python -m pip install --no-build-isolation --no-deps -e .
 ```
 

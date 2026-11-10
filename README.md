@@ -45,13 +45,13 @@ ops-gnn/
 
 ```bash
 # 激活 CANN 环境
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
+source /usr/local/Ascend/cann/set_env.sh
 ```
 
 如果 CANN 安装在自定义路径，请执行：
 
 ```bash
-source ${install_path}/ascend-toolkit/set_env.sh
+source ${install_path}/cann/set_env.sh
 ```
 
 ## 安装方法
