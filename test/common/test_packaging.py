@@ -144,17 +144,17 @@ class TestPackaging(unittest.TestCase):
 
     def test_resolve_build_targets(self):
         cases = [
-            ({}, ("a2", "a3", "950")),
+            ({}, ("a2", "950")),
             ({"CANN_TARGET": "a2"}, ("a2",)),
             ({"CANN_TARGET": "A3"}, ("a3",)),
             ({"CANN_TARGET": "950"}, ("950",)),
-            ({"NPU_ARCH": "dav-2201"}, ("a2", "a3")),
+            ({"NPU_ARCH": "dav-2201"}, ("a2",)),
             ({"NPU_ARCH": "dav-3510"}, ("950",)),
-            ({"TARGET_NPU_ARCH": "dav-2201"}, ("a2", "a3")),
+            ({"TARGET_NPU_ARCH": "dav-2201"}, ("a2",)),
             ({"TARGET_NPU_ARCH": "dav-3510"}, ("950",)),
             ({"NPU_ARCH": "dav-2201", "CANN_TARGET": "a3"}, ("a3",)),
             ({"NPU_ARCH": "dav-3510", "CANN_TARGET": "950"}, ("950",)),
-            ({"NPU_ARCH": "dav-2201", "TARGET_NPU_ARCH": "dav-3510"}, ("a2", "a3")),
+            ({"NPU_ARCH": "dav-2201", "TARGET_NPU_ARCH": "dav-3510"}, ("a2",)),
         ]
         for environment, expected in cases:
             with self.subTest(environment=environment):
@@ -178,7 +178,7 @@ class TestPackaging(unittest.TestCase):
 
     def test_native_build_only_schedules_requested_targets(self):
         cases = [
-            ({}, ["a2", "a3", "950"]), ({"CANN_TARGET": "a2"}, ["a2"]),
+            ({}, ["a2", "950"]), ({"CANN_TARGET": "a2"}, ["a2"]),
             ({"CANN_TARGET": "a3"}, ["a3"]), ({"CANN_TARGET": "950"}, ["950"]),
         ]
         for environment, expected in cases:

@@ -37,9 +37,13 @@ def resolve_build_targets():
         raise ValueError(f'NPU_ARCH={npu_arch} conflicts with CANN_TARGET={cann_target}')
     if cann_target:
         return (cann_target,)
-    if npu_arch:
-        return ('950',) if npu_arch == 'dav-3510' else ('a2', 'a3')
-    return ('a2', 'a3', '950')
+    if npu_arch == 'dav-3510':
+        return ('950',)
+    if npu_arch == 'dav-2201':
+        # a2 / a3 共享 dav-2201 源码与 A2-A3 产物，默认去重只构建一份
+        return ('a2',)
+    # 默认全目标：a2 / a3 是同一物理产物 A2-A3，加上 950，共两套原生库
+    return ('a2', '950')
 
 
 def build_with_cmake(cann_target):

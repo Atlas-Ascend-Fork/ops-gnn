@@ -34,9 +34,11 @@ if(NOT OPSGNN_SINGLE_TARGET
     option(WITH_PYTHON "Link to Python when building" ON)
     option(OPSGNN_BUILD_WHEEL "Build a distributable Python wheel" ON)
     if(_REQUESTED_NPU_ARCH STREQUAL "dav-2201")
-        set(_DEVICE_TARGETS a2 a3)
+        # a2 / a3 共享 dav-2201 源码与 A2-A3 产物，默认去重只构建一份；
+        # 单一目标仍可通过 -DCANN_TARGET=a2/a3 显式选择。
+        set(_DEVICE_TARGETS a2)
     else()
-        set(_DEVICE_TARGETS a2 a3 950)
+        set(_DEVICE_TARGETS a2 950)
     endif()
     set(_VARIANT_TARGETS)
     foreach(DEVICE_TARGET IN LISTS _DEVICE_TARGETS)
@@ -59,8 +61,6 @@ if(NOT OPSGNN_SINGLE_TARGET
             VERBATIM
         )
     endforeach()
-    # A2 and A3 share the output kernel filename; avoid concurrent writes.
-    add_dependencies(variant_a3 variant_a2)
     if(WITH_PYTHON AND OPSGNN_BUILD_WHEEL)
         find_package(Python3 COMPONENTS Interpreter REQUIRED)
         add_custom_target(wheel ALL
