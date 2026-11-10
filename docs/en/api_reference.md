@@ -72,8 +72,11 @@ Tests compare int64 indices with `torch.equal`. Performance results are written 
 
 ### segment_max_csr — CSR Segmented Max
 
-This section describes the existing `int32` pointer API. The new `int64`
-pointer family is documented under [`segment_csr`](#segment_csr--int64-csr-segment-reductions).
+This section describes the value-only `int32` pointer path in Ascend 950 builds
+that expose the legacy entry. Use `out=` with `segment_max_csr`. The historical
+`optional_out=` keyword is available through `segment_max_csr_legacy`.
+The `int64` pointer family is documented under
+[`segment_csr`](#segment_csr--int64-csr-segment-reductions).
 The two paths differ in empty-segment and return-value semantics.
 
 **Function Signature:**
@@ -82,7 +85,7 @@ The two paths differ in empty-segment and return-value semantics.
 def segment_max_csr(
     src: Tensor,
     indptr: Tensor,
-    optional_out: Optional[Tensor] = None,
+    out: Optional[Tensor] = None,
 ) -> Tensor:
 ```
 
@@ -92,7 +95,7 @@ def segment_max_csr(
 |-----------|------|-----|-------------|
 | src | Tensor | Input | Input data Tensor, must be on NPU device |
 | indptr | Tensor | Input | CSR format index pointer Tensor, dtype must be `torch.int32`, must be on NPU device. Last dimension length - 1 determines the number of segments |
-| optional_out | Optional[Tensor] | Input | Optional output Tensor, on NPU device. If provided, the first element of each segment is compared with the corresponding value in `optional_out` via max (i.e., `max(src[start:end], optional_out)`), rather than taking max only from src |
+| out | Optional[Tensor] | Input | Optional tensor on the NPU. Its corresponding value is included in the maximum for each segment. |
 
 **Return Value:**
 
@@ -112,11 +115,12 @@ Performs segmented max reduction on `src` along the dimension specified by CSR f
 **Call Chain:**
 
 ```text
-ops_gnn.segment_max_csr(src, indptr, optional_out)
-    → _pybind.segment_max_csr()           # PyTorch binding
-        → segment_max_csr()                # Host: dimension parsing, Tiling fill, dtype dispatch
-            → LaunchSegmentMaxCsrKernel<T>()  # Kernel Launch: get AIV cores, <<<>>> launch
-                → segment_max_csr_kernel<T>   # Device: Init → Process → Compute pipeline
+ops_gnn.segment_max_csr(src, indptr, out=out)
+    → segment_max_csr_legacy(src, indptr, optional_out=out)
+        → _pybind.segment_max_csr()           # PyTorch binding
+            → segment_max_csr()                # Host: dimension parsing, tiling, dtype dispatch
+                → LaunchSegmentMaxCsrKernel<T>()  # Kernel Launch: get AIV cores, <<<>>> launch
+                    → segment_max_csr_kernel<T>   # Device: Init → Process → Compute pipeline
 ```
 
 **Supported dtypes:**
@@ -132,7 +136,7 @@ ops_gnn.segment_max_csr(src, indptr, optional_out)
 
 - `indptr` dtype must be `torch.int32`
 - `indptr` values must be non-decreasing (i.e., `indptr[seg] <= indptr[seg+1]`)
-- Empty segment (`indptr[seg] == indptr[seg+1]`): if no `optional_out`, fills with the corresponding dtype minimum; if `optional_out` exists, directly copies the value from `optional_out`
+- Empty segment (`indptr[seg] == indptr[seg+1]`): uses the dtype minimum when `out` is omitted and the corresponding value from `out` when supplied.
 - Supports broadcasting: 1D indptr can broadcast to multiple batches (`indptr.view(1, -1)`)
 - Inputs must be on NPU device (`device='npu'`)
 
@@ -186,15 +190,15 @@ result = ops_gnn.segment_max_csr(src, indptr)
 # result[1] = [3, 4]        — max of src[0:2]
 ```
 
-#### With optional_out
+#### With an initial value in out
 
 ```python
 src = torch.tensor([[1, 2], [3, 4]], dtype=torch.float32, device='npu')
 indptr = torch.tensor([0, 2], dtype=torch.int32, device='npu')
-optional_out = torch.tensor([[10, 20]], dtype=torch.float32, device='npu')
+out = torch.tensor([[10, 20]], dtype=torch.float32, device='npu')
 
-result = ops_gnn.segment_max_csr(src, indptr, optional_out)
-# result = [[10, 20]]  — max(src[0:2], optional_out) = max([[1,2],[3,4]], [[10,20]])
+result = ops_gnn.segment_max_csr(src, indptr, out=out)
+# result = [[10, 20]]
 ```
 
 #### 2D indptr (Different Segments per Batch)

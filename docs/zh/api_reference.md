@@ -72,7 +72,9 @@ python test/nearest/arch35/benchmark_nearest.py --warmup 20 --iter 100
 
 ### segment_max_csr — CSR 分段最大值
 
-本节描述原有的 `int32` 指针接口。新增的 `int64` 指针算子族见下方
+本节描述提供旧入口的 Ascend 950 构建中，`int32` 指针仅返回值的路径。
+`segment_max_csr` 使用 `out=`，历史关键字 `optional_out=` 可通过
+`segment_max_csr_legacy` 使用。`int64` 指针算子族见下方
 [`segment_csr`](#segment_csr--int64-csr-分段归约算子族)；两条路径的空段和返回值约定不同。
 
 **函数签名：**
@@ -81,7 +83,7 @@ python test/nearest/arch35/benchmark_nearest.py --warmup 20 --iter 100
 def segment_max_csr(
     src: Tensor,
     indptr: Tensor,
-    optional_out: Optional[Tensor] = None,
+    out: Optional[Tensor] = None,
 ) -> Tensor:
 ```
 
@@ -91,7 +93,7 @@ def segment_max_csr(
 |------|------|------|------|
 | src | Tensor | 输入 | 输入数据 Tensor，必须位于 NPU 设备 |
 | indptr | Tensor | 输入 | CSR 格式的索引指针 Tensor，dtype 必须为 `torch.int32`，必须位于 NPU 设备。最后一维的长度 - 1 决定分段数量 |
-| optional_out | Optional[Tensor] | 输入 | 可选输出 Tensor，位于 NPU 设备。如果提供，每个 segment 的第一个元素会与 `optional_out` 的对应值做 max 比较（即 `max(src[start:end], optional_out)`），而非仅从 src 中取最大值 |
+| out | Optional[Tensor] | 输入 | 位于 NPU 的可选 Tensor。若提供，对应位置的值也参与每个分段的最大值归约。 |
 
 **返回值说明：**
 
@@ -110,12 +112,13 @@ def segment_max_csr(
 
 **调用链：**
 
-```test
-ops_gnn.segment_max_csr(src, indptr, optional_out)
-    → _pybind.segment_max_csr()           # PyTorch 绑定
-        → segment_max_csr()                # Host 端：维度解析、Tiling 填充、dtype 分发
-            → LaunchSegmentMaxCsrKernel<T>()  # Kernel Launch：获取 AIV 核数、<<<>>> 启动
-                → segment_max_csr_kernel<T>   # Device 端：Init → Process → Compute 流水线
+```text
+ops_gnn.segment_max_csr(src, indptr, out=out)
+    → segment_max_csr_legacy(src, indptr, optional_out=out)
+        → _pybind.segment_max_csr()           # PyTorch 绑定
+            → segment_max_csr()                # Host 端：维度解析、Tiling 填充、dtype 分发
+                → LaunchSegmentMaxCsrKernel<T>()  # Kernel Launch：获取 AIV 核数、<<<>>> 启动
+                    → segment_max_csr_kernel<T>   # Device 端：Init → Process → Compute 流水线
 ```
 
 **支持的 dtype：**
@@ -131,7 +134,7 @@ ops_gnn.segment_max_csr(src, indptr, optional_out)
 
 - `indptr` 的 dtype 必须为 `torch.int32`
 - `indptr` 的值必须是非递减的（即 `indptr[seg] <= indptr[seg+1]`）
-- 空 segment（`indptr[seg] == indptr[seg+1]`）：若无 `optional_out`，填充对应 dtype 的最小值；若有 `optional_out`，直接拷贝 `optional_out` 对应位置的值
+- 空分段（`indptr[seg] == indptr[seg+1]`）在省略 `out` 时填充对应 dtype 的最小值，提供 `out` 时拷贝其对应位置的值。
 - 支持广播：1D indptr 可广播到多个 batch（`indptr.view(1, -1)`）
 - 输入必须位于 NPU 设备（`device='npu'`）
 
@@ -185,15 +188,15 @@ result = ops_gnn.segment_max_csr(src, indptr)
 # result[1] = [3, 4]        — src[0:2] 的最大值
 ```
 
-#### 带 optional_out
+#### 通过 out 提供初始值
 
 ```python
 src = torch.tensor([[1, 2], [3, 4]], dtype=torch.float32, device='npu')
 indptr = torch.tensor([0, 2], dtype=torch.int32, device='npu')
-optional_out = torch.tensor([[10, 20]], dtype=torch.float32, device='npu')
+out = torch.tensor([[10, 20]], dtype=torch.float32, device='npu')
 
-result = ops_gnn.segment_max_csr(src, indptr, optional_out)
-# result = [[10, 20]]  — max(src[0:2], optional_out) = max([[1,2],[3,4]], [[10,20]])
+result = ops_gnn.segment_max_csr(src, indptr, out=out)
+# result = [[10, 20]]
 ```
 
 #### 2D indptr（每 batch 不同分段）
