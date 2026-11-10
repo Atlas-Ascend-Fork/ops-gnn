@@ -695,7 +695,7 @@ python test/gather_csr/arch35/benchmark_gather_csr.py --warmup 20 --iterations 1
 
 ### scatter — Scatter 系列归约
 
-`scatter` 系列接口与 `torch_scatter` 2.1.2 的前向语义保持一致：
+`scatter` 系列的前向接口对齐 `torch_scatter` 2.1.2。最值平局规则见下文。
 
 ```python
 ops_gnn.scatter(src, index, dim=-1, out=None, dim_size=None, reduce="sum")
@@ -726,9 +726,11 @@ ops_gnn.scatter_max(src, index, dim=-1, out=None, dim_size=None)
 | L1 | float16、bfloat16、float32、int8、int16、int32、uint8 | Ascend C NPU Kernel | 全部六种 |
 | L2 | float64、int64 | 同步 CPU 回退并复制回原设备 | 全部六种 |
 
-整数 `mean` 使用 floor 除法。`min/max` 出现相同最值时由后写入者胜出；
-未写入位置的值为零，`arg_out` 为 `src.size(dim)`。接口支持显式
-`dim_size`、空 Tensor、非连续 Tensor、无序或重复索引以及高冲突索引。
+整数 `mean` 使用 floor 除法。多个输入元素在同一输出位置并列最值时，
+`min/max` 的 `arg_out` 取这些元素沿 `dim` 的最大下标。`torch_scatter` 2.1.2
+的 CPU 实现保留首次出现的最值。未写入位置的 `arg_out` 为 `src.size(dim)`，
+未提供 `out` 时对应的值为零。接口支持显式 `dim_size`、空 Tensor、非连续
+Tensor、无序或重复索引以及高冲突索引。
 本接口仅提供前向计算。
 
 #### 示例

@@ -711,7 +711,8 @@ python test/gather_csr/arch35/benchmark_gather_csr.py --warmup 20 --iterations 1
 
 ## scatter — Scatter Reductions
 
-The Scatter family follows the forward semantics of `torch_scatter` 2.1.2:
+The Scatter family follows the forward API of `torch_scatter` 2.1.2. See the
+min/max tie rule below.
 
 ```python
 ops_gnn.scatter(src, index, dim=-1, out=None, dim_size=None, reduce="sum")
@@ -743,9 +744,12 @@ semantics.
 | L1 | float16, bfloat16, float32, int8, int16, int32, uint8 | Ascend C NPU kernel | all six |
 | L2 | float64, int64 | synchronous CPU fallback copied back to the original device | all six |
 
-Integer `mean` uses floor division. For equal extrema, `min/max` selects the
-later writer. Unwritten output positions contain zero and their `arg_out`
-value is `src.size(dim)`. The APIs support explicit `dim_size`, empty and
+Integer `mean` uses floor division. When multiple input elements tie for an
+extremum at the same output position, `min/max` returns the largest of their
+indices along `dim` in `arg_out`. The `torch_scatter` 2.1.2 CPU implementation
+keeps the first occurrence of the extremum. Unwritten output positions have
+`arg_out` set to `src.size(dim)` and contain zero if `out` is omitted.
+The APIs support explicit `dim_size`, empty and
 non-contiguous Tensors, unordered or duplicate indices, and high-contention
 indices. Only forward computation is provided.
 
