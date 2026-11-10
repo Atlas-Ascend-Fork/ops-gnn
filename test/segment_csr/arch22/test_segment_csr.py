@@ -652,6 +652,42 @@ def test_interleaved_nonoverlapping_out(npu_api, dtype, reduce, batched):
     assert torch.equal(storage.cpu()[holes], torch.full((len(holes),), 23, dtype=dtype))
 
 
+@pytest.mark.parametrize(
+    "out_shape, overlaps",
+    [
+        ((3, 2, 2), False),
+        ((3, 2, 3), True),
+    ],
+)
+def test_interleaved_out_outer_extent(npu_api, out_shape, overlaps):
+    strides = (3, 4, 5)
+    src_shape = (out_shape[0], 4, out_shape[2])
+    src = torch.arange(
+        1, math.prod(src_shape) + 1, dtype=torch.float32
+    ).reshape(src_shape)
+    pointer = torch.tensor([[0, 2, 4]], dtype=torch.int64)
+
+    storage_size = 1 + sum(
+        (size - 1) * stride for size, stride in zip(out_shape, strides)
+    )
+    storage = torch.full((storage_size,), 23.0, device="npu")
+    output = storage.as_strided(out_shape, strides)
+
+    source_npu = src.npu()
+    pointer_npu = pointer.npu()
+
+    if overlaps:
+        with pytest.raises(
+            RuntimeError, match="out must have non-overlapping storage"
+        ):
+            npu_api.segment_sum_csr(source_npu, pointer_npu, out=output)
+    else:
+        result = npu_api.segment_sum_csr(source_npu, pointer_npu, out=output)
+        expected = cpu_reference(src, pointer, reduce="sum")
+        assert result is output
+        torch.testing.assert_close(result.cpu(), expected, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("inference", (False, True))
 def test_independent_storage_alias_out_invalidates_pointer_cache(npu_api, inference):
     pointer = torch.tensor([0, 2, 4], dtype=torch.int64)

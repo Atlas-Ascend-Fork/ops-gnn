@@ -905,6 +905,60 @@ torch::Tensor PreparePointers(const torch::Tensor &src, const torch::Tensor &ind
 }
 
 #ifdef OPSGNN_DAV_2201
+namespace {
+// 小轴组合偏移的规模上限；超过则回退到完整枚举。
+constexpr int64_t kMaxProbeOffsets = 4096;
+// 快速判定的比较次数上限，避免退化场景比原实现更慢。
+constexpr int64_t kMaxProbePairs = 1000000;
+
+enum class InterleaveProbe { kDisjoint, kOverlap, kUnknown };
+
+// 精确判定：布局内任一地址都可写成 k * blockGap + delta，其中 blockGap 是最大
+// stride 轴的步长，delta 来自其余轴的组合偏移。于是整个布局无重叠，当且仅当
+// delta 集合内部无重复，且任意两个 delta 之差都不是 blockGap 的「有效倍数」：
+// 差值为 m * blockGap 且 1 <= m < outerSize 时才会命中同一块索引，构成重叠；
+// 差值 >= outerSize * blockGap 时 k+m 越出块索引范围，不构成重叠。
+// 判定只涉及小轴组合，开销与 numel 无关。
+// 对 (3,2,200000)/stride(2,3,8)，只需枚举 6 个 delta 即可得出结论。
+InterleaveProbe ProbeInterleave(const std::vector<std::pair<int64_t, int64_t>> &axes) {
+    const size_t last = axes.size() - 1;
+    const int64_t blockGap = axes[last].first;
+    const int64_t outerSize = axes[last].second;
+    int64_t count = 1;
+    for (size_t i = 0; i < last; ++i) {
+        if (axes[i].second > kMaxProbeOffsets / count) return InterleaveProbe::kUnknown;
+        count *= axes[i].second;
+    }
+    std::vector<int64_t> deltas(static_cast<size_t>(count), 0);
+    size_t filled = 1;
+    for (size_t i = 0; i < last; ++i) {
+        const int64_t stride = axes[i].first;
+        const int64_t size = axes[i].second;
+        const size_t base = filled;
+        filled *= static_cast<size_t>(size);
+        for (int64_t k = 1; k < size; ++k)
+            for (size_t j = 0; j < base; ++j)
+                deltas[j + static_cast<size_t>(k) * base] = deltas[j] + k * stride;
+    }
+    std::sort(deltas.begin(), deltas.end());
+    // 同一块内出现重复偏移时无需再看外层轴，直接判定非法。
+    if (std::adjacent_find(deltas.begin(), deltas.end()) != deltas.end()) return InterleaveProbe::kOverlap;
+    const int64_t maxDelta = deltas.back();
+    if (maxDelta < blockGap) return InterleaveProbe::kDisjoint;
+    const int64_t maxMultiple = std::min(maxDelta / blockGap, outerSize - 1);
+    if (maxMultiple * count > kMaxProbePairs) return InterleaveProbe::kUnknown;
+    for (int64_t m = 1; m <= maxMultiple; ++m) {
+        const int64_t gap = m * blockGap;
+        for (size_t i = 0; i + 1 < deltas.size(); ++i) {
+            const auto it = std::lower_bound(deltas.begin() + static_cast<ptrdiff_t>(i) + 1, deltas.end(),
+                                             deltas[i] + gap);
+            if (it != deltas.end() && *it == deltas[i] + gap) return InterleaveProbe::kOverlap;
+        }
+    }
+    return InterleaveProbe::kDisjoint;
+}
+}  // namespace
+
 void ValidateInterleavedOutput(const std::vector<std::pair<int64_t, int64_t>> &axes, int64_t elements) {
     if (axes.size() == 2) {
         const auto divisor = std::gcd(axes[0].first, axes[1].first);
@@ -913,6 +967,10 @@ void ValidateInterleavedOutput(const std::vector<std::pair<int64_t, int64_t>> &a
         TORCH_CHECK(!overlap, "out must have non-overlapping storage");
         return;
     }
+    const auto probe = ProbeInterleave(axes);
+    if (probe == InterleaveProbe::kDisjoint) return;
+    TORCH_CHECK(probe != InterleaveProbe::kOverlap, "out must have non-overlapping storage");
+    // 小轴组合过大时保留原来的完整枚举路径，保证判定能力不下降。
     // Enumerate metadata addresses only, never source/output values.
     std::vector<int64_t> offsets{0};
     offsets.reserve(static_cast<size_t>(elements));
