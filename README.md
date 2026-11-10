@@ -186,6 +186,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `knn` / `knn_graph` | 精确近邻检索与图构建（Ascend 950PR） | NPU | [knn / knn_graph — 精确近邻搜索](docs/zh/api_reference.md#knn--knn_graph--精确近邻搜索) |
 | `nearest` | 同batch最近y点的全局索引 | NPU（950，arch35） | [nearest](docs/zh/api_reference.md) |
 | `grid_cluster` | 将点坐标映射为规则网格的线性 int64 ID（torch_cluster 兼容） | NPU（950，arch35） | [grid_cluster — 规则网格聚类](docs/zh/api_reference.md) |
+| `matrix_exp` | 计算批量方阵的矩阵指数 | NPU（Ascend 950，arch35） | [matrix_exp — 矩阵指数](docs/zh/api_reference.md#matrix_exp--矩阵指数) |
 | `graclus_cluster` | 图贪心聚类 | NPU / CPU float64 回退 | [graclus_cluster — 图贪心聚类](docs/zh/api_reference.md#graclus_cluster--图贪心聚类) |
 | `ind2ptr` | 有序行索引转 CSR 行指针（对齐 torch_sparse） | NPU | [ind2ptr — 行索引转 CSR 行指针](docs/zh/api_reference.md#ind2ptr--行索引转-csr-行指针) |
 | `ptr2ind` | CSR 行指针转行索引（对齐 torch_sparse） | NPU | [ptr2ind — CSR 行指针转行索引](docs/zh/api_reference.md#ptr2ind--csr-行指针转行索引) |
