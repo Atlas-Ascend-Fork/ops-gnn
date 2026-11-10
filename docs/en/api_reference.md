@@ -1193,7 +1193,7 @@ def fps(
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `src` | `float16`/`float32` Tensor `[N, *]` | Point features; execution occurs on the NPU, with an internal flattening to `[N, F]`. |
-| `batch` | Optional `int64` Tensor `[N]` | Batch assignment; defaults to one batch. Points belonging to a batch must be contiguous. |
+| `batch` | Optional `int64` Tensor `[N]` | Batch assignment. Defaults to one batch. When used for segmentation, batch IDs must be in nondecreasing order, with points in each batch contiguous. |
 | `ratio` | Optional float or floating-point Tensor | Range `(0, 1]`; either a scalar or one value per batch. Defaults to `0.5`. |
 | `random_start` | bool | With `False`, each segment starts at local index 0. With `True`, it matches `torch_cluster` 1.6.3 CPU and uses the process-global `libc rand() % degree`. |
 | `batch_size` | Optional int | Number of batches when `batch` is provided; defaults to `max(batch) + 1`. |

@@ -1143,7 +1143,7 @@ def fps(
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | `src` | `float16`/`float32` Tensor `[N, *]` | 点特征；在 NPU 上执行，内部展平为 `[N, F]`。 |
-| `batch` | 可选 `int64` Tensor `[N]` | batch 归属，默认单 batch；batch 中的点应连续排列。 |
+| `batch` | 可选 `int64` Tensor `[N]` | batch 归属，默认单 batch。使用 `batch` 分段时，编号须按非递减顺序排列，同一 batch 的点连续。 |
 | `ratio` | 可选 float 或浮点 Tensor | 范围 `(0, 1]`；可为标量或每个 batch 一个值，默认 `0.5`。 |
 | `random_start` | bool | `False` 时每段从局部下标 0 开始；`True` 时与 torch_cluster 1.6.3 CPU 一致，使用进程全局 `libc rand() % degree`。 |
 | `batch_size` | 可选 int | 给定 `batch` 时的 batch 数；默认 `max(batch) + 1`。 |
