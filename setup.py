@@ -74,9 +74,9 @@ def build_with_cmake(cann_target):
     print(f'Running CMake: {" ".join(cmake_cmd)}')
     subprocess.run(cmake_cmd, check=True)
     
-    make_cmd = ['make', '-C', cmake_build_dir, '-j4']
-    print(f'Running Make: {" ".join(make_cmd)}')
-    subprocess.run(make_cmd, check=True)
+    build_cmd = ['cmake', '--build', cmake_build_dir, '--parallel', '4']
+    print(f'Running CMake build: {" ".join(build_cmd)}')
+    subprocess.run(build_cmd, check=True)
     
     npu_kernel_lib = os.path.join('output', 'kernel', f'libopsgnn_npu_kernel-{KERNEL_LABELS[cann_target]}.so')
     if os.path.exists(npu_kernel_lib):
