@@ -115,7 +115,7 @@ for dependencies, build commands and reproduction steps.
 pip install pytest pytest-cov scipy
 
 # Quick start: run the import tests for the current architecture (arch35 on 950, arch22 on A2/A3)
-pytest test/test_import.py -v
+pytest test/common/test_import.py -v
 
 # Run all functional tests for the local chip model (950→arch35, A2/A3→arch22)
 pytest test/ -v

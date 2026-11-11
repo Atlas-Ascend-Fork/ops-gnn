@@ -113,7 +113,7 @@ Ascend 950 的 torch_sparse SpMM 随 `ops_gnn` 一起构建和安装。安装
 pip install pytest pytest-cov scipy
 
 # 快速开始：先跑当前架构的导入用例（950 上为 arch35，A2/A3 上为 arch22）
-pytest test/test_import.py -v
+pytest test/common/test_import.py -v
 
 # 运行当前机器芯片型号对应的所有功能测试（950→arch35，A2/A3→arch22）
 pytest test/ -v
