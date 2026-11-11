@@ -1,13 +1,10 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
-# This program is free software, you can redistribute it and/or modify it
-# under the terms and conditions of CANN Open Software License Agreement
-# Version 2.0 (the "License").
-# Please refer to the License for details. You may not use this file except
-# in compliance with the License.
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY
-# KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-# See LICENSE in the root of the software repository for the full text.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
 
 """
 Gather COO functional, bit-wise, aliasing, and stream tests.
@@ -206,6 +203,20 @@ def test_gather_coo_cross_feature_tiles_and_tail(dtype, logical_features):
         dtype=torch.int64,
         device=device,
     )
+    actual = ops_gnn.gather_coo(src, index)
+    _assert_against_references(src, index, actual)
+
+
+@pytest.mark.parametrize("dtype", (torch.float16, torch.float32, torch.int64))
+@pytest.mark.parametrize("logical_features", (64, 128, 256, 512, 528, 1008, 1024, 1040))
+def test_gather_coo_repeated_indices_cross_slabs_and_batch_tail(dtype, logical_features):
+    device = torch.device("npu")
+    src = _make_src((2, 4, logical_features), dtype, device)
+    index = torch.tensor(
+        [0] * 2049 + [1] * 4096 + [3] * 2048,
+        dtype=torch.int64,
+        device=device,
+    ).repeat(2, 1)
     actual = ops_gnn.gather_coo(src, index)
     _assert_against_references(src, index, actual)
 

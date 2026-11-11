@@ -11,6 +11,8 @@
 #include <cstdint>
 
 constexpr uint32_t GATHER_COO_MAX_FEATURE_TILE = 2048;
+constexpr uint32_t GATHER_COO_SLAB_BYTES = 64 * 1024;
+constexpr uint32_t GATHER_COO_SLAB_MAX_ROWS = 128;
 
 struct GatherCooTilingData {
     uint64_t batchCount;
@@ -33,4 +35,5 @@ struct GatherCooTilingData {
     uint32_t featureTile;
     uint32_t coreNum;
     uint32_t useRunCache;
+    uint32_t outputSlabRows;
 };

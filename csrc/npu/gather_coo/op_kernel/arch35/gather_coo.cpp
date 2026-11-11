@@ -19,6 +19,13 @@ void GatherCoo(
     const GatherCooTilingData& tiling,
     aclrtStream stream)
 {
+    if (tiling.outputSlabRows != 0 &&
+        !(tiling.logicalFeatureCount == 128 && tiling.elementBytes <= 4)) {
+        gather_coo_slab_kernel<T><<<tiling.coreNum, nullptr, stream>>>(
+            reinterpret_cast<uint8_t*>(src), reinterpret_cast<uint8_t*>(index),
+            reinterpret_cast<uint8_t*>(out), tiling);
+        return;
+    }
     gather_coo_kernel<T><<<tiling.coreNum, nullptr, stream>>>(
         reinterpret_cast<uint8_t*>(src),
         reinterpret_cast<uint8_t*>(index),

@@ -197,6 +197,14 @@ GatherCooTilingData BuildTiling(const GatherCooShapeInfo& info)
     tiling.coreNum = coreNum;
     tiling.useRunCache = info.featureCount <= tiling.featureTile &&
         info.indexRows > info.sourceRows ? 1 : 0;
+    const uint64_t rowBytes = info.logicalFeatures * info.elementBytes;
+    const bool originalSlab = info.logicalFeatures == 128 && info.elementBytes <= 4;
+    const bool alignedSlab = rowBytes > 0 && rowBytes <= 1024 && rowBytes % 32 == 0 &&
+        info.logicalFeatures != 128 && tiling.rowsPerCore >= 4;
+    if (originalSlab || alignedSlab) {
+        tiling.outputSlabRows = static_cast<uint32_t>(std::min<uint64_t>(
+            GATHER_COO_SLAB_MAX_ROWS, GATHER_COO_SLAB_BYTES / rowBytes));
+    }
     TORCH_CHECK(tiling.featureTile > 0, "gather_coo feature tile must be positive");
     return tiling;
 }

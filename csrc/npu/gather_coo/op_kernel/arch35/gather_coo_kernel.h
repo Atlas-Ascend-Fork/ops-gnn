@@ -19,10 +19,8 @@ using namespace AscendC;
 constexpr uint32_t GATHER_COO_INDEX_TILE_ENTRIES = 128;
 constexpr uint32_t GATHER_COO_INDEX_BUFFER_ENTRIES =
     GATHER_COO_INDEX_TILE_ENTRIES + 4;
-constexpr uint32_t GATHER_COO_OUTPUT_SLAB_ROWS = 128;
-constexpr uint32_t GATHER_COO_OUTPUT_SLAB_FEATURES = 128;
 
-template <typename T>
+template <typename T, bool ExtendedSlab = true>
 class GatherCooKernel {
 public:
     __aicore__ inline GatherCooKernel() = default;
@@ -66,25 +64,21 @@ public:
         pipe->InitBuffer(indexBuffer, indexBufferSize);
         indexLocal = indexBuffer.Get<uint32_t>();
 
-        // K=128 and element-size <= 4 are the performance-critical path.
-        // One bank holds the complete 128-row output tile so all source
-        // loads can be issued before the single slab writeback.
-        useOutputSlab = logicalFeatureCount == GATHER_COO_OUTPUT_SLAB_FEATURES &&
-            elementBytes <= 4;
+        outputSlabRows = tiling->outputSlabRows;
+        useOutputSlab = outputSlabRows != 0;
         if (useOutputSlab) {
             outputSlabSize = static_cast<uint32_t>(
-                GATHER_COO_OUTPUT_SLAB_ROWS *
-                GATHER_COO_OUTPUT_SLAB_FEATURES * sizeof(T));
+                outputSlabRows * featureCount * sizeof(T));
             pipe->InitBuffer(outputSlabBuffer, outputSlabSize);
             outputSlabLocal = outputSlabBuffer.Get<T>();
         }
 
-        // This kernel is a pure MTE2 -> MTE3 copy path.  There is no vector
-        // instruction between the GM-to-UB and UB-to-GM copies, so use the
-        // direct MTE2_MTE3 dependency instead of routing through V events.
         eventMte2ToMte3 = static_cast<event_t>(pipe->AllocEventID<HardEvent::MTE2_MTE3>());
         eventMte3ToMte2 = static_cast<event_t>(pipe->AllocEventID<HardEvent::MTE3_MTE2>());
         eventIndexMte2ToV = static_cast<event_t>(pipe->AllocEventID<HardEvent::MTE2_V>());
+        if (ExtendedSlab) {
+            eventSlabVToMte3 = static_cast<event_t>(pipe->AllocEventID<HardEvent::V_MTE3>());
+        }
     }
 
     __aicore__ inline void Process()
@@ -95,13 +89,17 @@ public:
 
         for (uint64_t tileBegin = rowBegin; tileBegin < rowEnd;) {
             const uint64_t candidateTileEnd =
-                tileBegin + GATHER_COO_INDEX_TILE_ENTRIES;
+                tileBegin + (ExtendedSlab && useOutputSlab ? outputSlabRows : GATHER_COO_INDEX_TILE_ENTRIES);
             const uint64_t tileEnd = candidateTileEnd < rowEnd
                 ? candidateTileEnd
                 : rowEnd;
             const uint64_t loadBegin = LoadIndexTile(tileBegin, tileEnd);
             if (useOutputSlab) {
-                ProcessOutputSlab(tileBegin, tileEnd, loadBegin);
+                if (ExtendedSlab) {
+                    ProcessOutputSlab(tileBegin, tileEnd, loadBegin);
+                } else {
+                    ProcessOriginalOutputSlab(tileBegin, tileEnd, loadBegin);
+                }
             } else {
                 ProcessGenericTile(tileBegin, tileEnd, loadBegin);
             }
@@ -174,7 +172,7 @@ private:
         }
     }
 
-    __aicore__ inline void ProcessOutputSlab(
+    __aicore__ inline void ProcessOriginalOutputSlab(
         uint64_t tileBegin, uint64_t tileEnd, uint64_t loadBegin)
     {
         if (slabInFlight) {
@@ -192,6 +190,73 @@ private:
         }
         SetFlag<HardEvent::MTE2_MTE3>(eventMte2ToMte3);
         WaitFlag<HardEvent::MTE2_MTE3>(eventMte2ToMte3);
+        DataCopy(
+            outGm[tileBegin * featureCount],
+            outputSlabLocal,
+            static_cast<uint32_t>((tileEnd - tileBegin) * featureCount));
+        SetFlag<HardEvent::MTE3_MTE2>(eventMte3ToMte2);
+        slabInFlight = true;
+    }
+
+    __aicore__ inline void CopyRepeatedSlabRows(uint64_t slabRow, uint32_t runRows)
+    {
+        SetFlag<HardEvent::MTE2_V>(eventIndexMte2ToV);
+        WaitFlag<HardEvent::MTE2_V>(eventIndexMte2ToV);
+        LocalTensor<uint32_t> words = outputSlabLocal.template ReinterpretCast<uint32_t>();
+        const uint32_t wordsPerRow = static_cast<uint32_t>(featureCount * sizeof(T) / sizeof(uint32_t));
+        const uint32_t firstWord = static_cast<uint32_t>(slabRow * sizeof(T) / sizeof(uint32_t));
+        uint32_t filled = 1;
+        while (filled < runRows) {
+            const uint32_t copies = runRows - filled < filled ? runRows - filled : filled;
+            DataCopy(words[firstWord + filled * wordsPerRow], words[firstWord], copies * wordsPerRow);
+            PipeBarrier<PIPE_V>();
+            filled += copies;
+        }
+    }
+
+    __aicore__ inline void ProcessOutputSlab(
+        uint64_t tileBegin, uint64_t tileEnd, uint64_t loadBegin)
+    {
+        if (slabInFlight) {
+            WaitFlag<HardEvent::MTE3_MTE2>(eventMte3ToMte2);
+        }
+        bool copiedRows = false;
+        for (uint64_t row = tileBegin; row < tileEnd;) {
+            const uint64_t currentIndex = static_cast<uint64_t>(ReadIndex(row, loadBegin));
+            const uint64_t sourceRow = (batch * sourceRows + currentIndex) * featureCount;
+            const uint64_t slabRow = (row - tileBegin) * featureCount;
+            uint64_t runEnd = row + 1;
+            if (useRunCache != 0 && logicalFeatureCount != 128) {
+                const uint64_t batchEnd = row + indexRows - entry;
+                const uint64_t limit = batchEnd < tileEnd ? batchEnd : tileEnd;
+                while (runEnd < limit &&
+                       static_cast<uint64_t>(ReadIndex(runEnd, loadBegin)) == currentIndex) {
+                    ++runEnd;
+                }
+            }
+            DataCopy(
+                outputSlabLocal[slabRow],
+                srcGm[sourceRow],
+                static_cast<uint32_t>(featureCount));
+            const uint32_t runRows = static_cast<uint32_t>(runEnd - row);
+            if (runRows > 1) {
+                CopyRepeatedSlabRows(slabRow, runRows);
+                copiedRows = true;
+            }
+            entry += runRows;
+            if (entry == indexRows) {
+                ++batch;
+                entry = 0;
+                hasPreviousRow = false;
+            }
+            row = runEnd;
+        }
+        SetFlag<HardEvent::MTE2_MTE3>(eventMte2ToMte3);
+        WaitFlag<HardEvent::MTE2_MTE3>(eventMte2ToMte3);
+        if (copiedRows) {
+            SetFlag<HardEvent::V_MTE3>(eventSlabVToMte3);
+            WaitFlag<HardEvent::V_MTE3>(eventSlabVToMte3);
+        }
         DataCopy(
             outGm[tileBegin * featureCount],
             outputSlabLocal,
@@ -298,6 +363,7 @@ private:
     uint32_t rowBufferSize = 0;
     uint32_t indexBufferSize = 0;
     uint32_t outputSlabSize = 0;
+    uint32_t outputSlabRows = 0;
     bool useOutputSlab = false;
     bool hasPreviousRow = false;
     bool slabInFlight = false;
@@ -305,6 +371,7 @@ private:
     event_t eventMte2ToMte3;
     event_t eventMte3ToMte2;
     event_t eventIndexMte2ToV;
+    event_t eventSlabVToMte3;
 };
 
 template <typename T>
@@ -315,7 +382,17 @@ __attribute__((aiv)) __global__ __aicore__ void gather_coo_kernel(
     const GatherCooTilingData tiling)
 {
     TPipe pipe;
-    GatherCooKernel<T> op;
+    GatherCooKernel<T, false> op;
+    op.Init(src, index, out, &tiling, &pipe);
+    op.Process();
+}
+
+template <typename T>
+__attribute__((aiv)) __global__ __aicore__ void gather_coo_slab_kernel(
+    GM_ADDR src, GM_ADDR index, GM_ADDR out, const GatherCooTilingData tiling)
+{
+    TPipe pipe;
+    GatherCooKernel<T, true> op;
     op.Init(src, index, out, &tiling, &pipe);
     op.Process();
 }
