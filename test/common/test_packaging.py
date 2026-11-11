@@ -202,7 +202,8 @@ class TestPackaging(unittest.TestCase):
                 self.assertEqual(configure.args[0][-1], f"build/cmake_python_{target}")
                 self.assertTrue(configure.kwargs["check"])
                 self.assertEqual(
-                    run.call_args_list[1].args[0], ["make", "-C", f"build/cmake_python_{target}", "-j4"]
+                    run.call_args_list[1].args[0],
+                    ["cmake", "--build", f"build/cmake_python_{target}", "--parallel", "4"],
                 )
 
     def test_prebuilt_reuse_keeps_device_names(self):
