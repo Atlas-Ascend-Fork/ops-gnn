@@ -17,6 +17,11 @@ constexpr uint32_t FPS_REDUCE_WORK_BYTES = 4096;
 constexpr uint32_t FPS_REDUCE_RESULT_BYTES = 32;
 constexpr uint32_t FPS_MAX_TILE_POINTS = 16384;
 
+inline bool FpsUsesFallback(int dtype, int64_t num_points, int64_t feature_dim)
+{
+    return num_points > FPS_MAX_TILE_POINTS || (dtype == 0 && feature_dim > 64);
+}
+
 template <typename T>
 struct FpsLaunchArgs {
     const T* src_soa;

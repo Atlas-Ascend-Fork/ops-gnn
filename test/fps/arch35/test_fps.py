@@ -97,6 +97,24 @@ class TestFps:
         assert actual.numel() == 0
 
     @pytest.mark.parametrize("dtype", SUPPORTED_DTYPES)
+    @pytest.mark.parametrize("points", [16384, 16385])
+    @pytest.mark.parametrize("features", [3, 65])
+    def test_fallback_boundary_keeps_first_tie(self, dtype, points, features):
+        src = torch.zeros((points, features), dtype=dtype)
+        src[1:3] = 1
+        actual = ops_gnn.fps(src.to("npu"), ratio=1.5 / points, random_start=False)
+        assert actual.cpu().tolist() == [0, 1]
+
+    @pytest.mark.parametrize("features", [100000, 1000000])
+    @pytest.mark.parametrize("batched", [False, True])
+    def test_fallback_does_not_require_vector_center_buffer(self, features, batched):
+        rows = 4 if batched else 2
+        src = torch.arange(rows, dtype=torch.float32)[:, None].expand(rows, features).contiguous()
+        kwargs = {"ptr": torch.tensor([0, 2, 4], device="npu")} if batched else {}
+        actual = ops_gnn.fps(src.to("npu"), ratio=1.0, random_start=False, **kwargs)
+        assert actual.cpu().tolist() == list(range(rows))
+
+    @pytest.mark.parametrize("dtype", SUPPORTED_DTYPES)
     def test_one_dimensional_input(self, dtype):
         src = torch.arange(24, dtype=torch.float32).to(dtype)
         actual = ops_gnn.fps(src.npu(), ratio=0.5, random_start=False)

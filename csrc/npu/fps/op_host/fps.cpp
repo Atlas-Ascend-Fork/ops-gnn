@@ -94,7 +94,7 @@ void Launch(const torch::Tensor& src, const torch::Tensor& src_soa,
 {
     FpsLaunchArgs<T> args{};
     const bool batched = ptr.defined();
-    args.src_soa = static_cast<const T*>(src_soa.data_ptr());
+    args.src_soa = src_soa.defined() ? static_cast<const T*>(src_soa.data_ptr()) : nullptr;
     args.ptr = batched ? ptr.data_ptr<int64_t>() : nullptr;
     args.out_ptr = batched ? out_ptr.data_ptr<int64_t>() : nullptr;
     args.start = batched ? start.data_ptr<int64_t>() : nullptr;
@@ -108,19 +108,22 @@ void Launch(const torch::Tensor& src, const torch::Tensor& src_soa,
     args.single_out_size = single_out_size;
     args.single_start = single_start;
 
-    auto platform = platform_ascendc::PlatformAscendCManager::GetInstance();
-    TORCH_CHECK(platform != nullptr, "fps: platform information unavailable");
-    uint64_t ub_bytes = 0;
-    platform->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ub_bytes);
-    args.tile_points = SelectTilePoints(src, ub_bytes);
-    args.tile_bytes = AlignUp32(
-        static_cast<uint64_t>(args.tile_points) * src.element_size());
-    args.promoted_tile_bytes = AlignUp32(
-        static_cast<uint64_t>(args.tile_points) * sizeof(float));
-    args.cascade_tile_bytes = AlignUp32(
-        static_cast<uint64_t>(args.tile_points) * 5 * sizeof(float));
-    args.center_bytes = AlignUp32(
-        static_cast<uint64_t>(src.size(1)) * src.element_size());
+    // SIMT 路径直接读取 GM，不使用向量路径的 UB 布局。
+    if (!FpsUsesFallback(DType, args.num_points, args.feature_dim)) {
+        auto platform = platform_ascendc::PlatformAscendCManager::GetInstance();
+        TORCH_CHECK(platform != nullptr, "fps: platform information unavailable");
+        uint64_t ub_bytes = 0;
+        platform->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ub_bytes);
+        args.tile_points = SelectTilePoints(src, ub_bytes);
+        args.tile_bytes = AlignUp32(
+            static_cast<uint64_t>(args.tile_points) * src.element_size());
+        args.promoted_tile_bytes = AlignUp32(
+            static_cast<uint64_t>(args.tile_points) * sizeof(float));
+        args.cascade_tile_bytes = AlignUp32(
+            static_cast<uint64_t>(args.tile_points) * 5 * sizeof(float));
+        args.center_bytes = AlignUp32(
+            static_cast<uint64_t>(src.size(1)) * src.element_size());
+    }
 
     aclrtStream stream = c10_npu::getCurrentNPUStream(src.device().index()).stream();
     Fps<T, DType>(static_cast<const T*>(src.data_ptr()), args, stream);
@@ -136,7 +139,9 @@ torch::Tensor AllocateAndLaunch(const torch::Tensor& src,
     auto long_options = torch::TensorOptions()
                             .dtype(torch::kLong)
                             .device(src.device());
-    const torch::Tensor src_soa = src.transpose(0, 1).contiguous();
+    const int dtype = src.scalar_type() == torch::kFloat ? 0 : 1;
+    const torch::Tensor src_soa = FpsUsesFallback(dtype, src.size(0), src.size(1))
+        ? torch::Tensor() : src.transpose(0, 1).contiguous();
     torch::Tensor dist = torch::empty({src.size(0)}, src.options());
     torch::Tensor best_dist = torch::empty(
         {256}, torch::TensorOptions().dtype(torch::kFloat).device(src.device()));
