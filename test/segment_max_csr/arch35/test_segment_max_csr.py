@@ -21,6 +21,33 @@ _GOLDEN = runpy.run_path(Path(__file__).with_name("golden.py"))
 segment_max_csr_cpu = _GOLDEN["segment_max_csr_cpu"]
 
 
+@pytest.mark.parametrize('shape', [(1,), (1, 8), (2, 4), (3, 8)])
+def test_legacy_rejects_optional_out_shape(shape):
+    torch.npu.set_device(int(os.environ.get('NPU_DEVICE_ID', '0')))
+    src = torch.arange(32, dtype=torch.float32, device='npu').reshape(4, 8)
+    indptr = torch.tensor([0, 2, 4], dtype=torch.int32, device='npu')
+    with pytest.raises(RuntimeError, match='optional_out shape'):
+        ops_gnn.segment_max_csr_legacy(src, indptr, torch.zeros(shape, device='npu'))
+
+
+def test_legacy_rejects_cpu_optional_out():
+    torch.npu.set_device(int(os.environ.get('NPU_DEVICE_ID', '0')))
+    src = torch.ones((4, 8), device='npu')
+    indptr = torch.tensor([0, 2, 4], dtype=torch.int32, device='npu')
+    with pytest.raises(RuntimeError, match='optional_out must be on the same device'):
+        ops_gnn.segment_max_csr_legacy(src, indptr, torch.zeros(2, 8))
+
+
+def test_legacy_noncontiguous_optional_out():
+    torch.npu.set_device(int(os.environ.get('NPU_DEVICE_ID', '0')))
+    src = torch.zeros((4, 8), device='npu')
+    indptr = torch.tensor([0, 2, 4], dtype=torch.int32, device='npu')
+    initial = (torch.arange(16, dtype=torch.float32, device='npu') + 10).reshape(8, 2).t()
+    assert not initial.is_contiguous()
+    result = ops_gnn.segment_max_csr_legacy(src, indptr, initial)
+    torch.testing.assert_close(result.cpu(), initial.cpu(), rtol=0, atol=0)
+
+
 def test_segment_max_csr_basic():
     """测试基本功能 - 1D indptr，沿 dim 0 分段"""
     device_id = int(os.environ.get("NPU_DEVICE_ID", 0))

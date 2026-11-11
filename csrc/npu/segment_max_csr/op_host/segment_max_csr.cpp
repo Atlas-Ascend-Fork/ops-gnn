@@ -166,6 +166,14 @@ torch::Tensor segment_max_csr(torch::Tensor src, torch::Tensor indptr, torch::Te
     std::vector<int64_t> outShape(src.sizes().begin(), src.sizes().end());
     outShape[dim.indptrDim - 1] = dim.nSegments;
 
+    if (hasOptionalOut) {
+        TORCH_CHECK(optional_out.device() == src.device(),
+                    "segment_max_csr: optional_out must be on the same device as src");
+        TORCH_CHECK(optional_out.sizes() == c10::IntArrayRef(outShape),
+                    "segment_max_csr: optional_out shape must match the output shape");
+        optional_out = optional_out.contiguous();
+    }
+
     if (dim.K == 0) {
         return torch::empty(outShape, src.options());
     }
