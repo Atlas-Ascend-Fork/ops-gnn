@@ -149,6 +149,43 @@ def test_ind2ptr_dense_one_per_row():
         assert_exact(out, ind2ptr_cpu(row.cpu(), num_rows), msg=f'dense num_rows={num_rows}')
 
 
+@pytest.mark.parametrize('num_edges,num_rows', [
+    (32767, 257),
+    (32768, 257),
+    (65535, 257),
+    (65536, 257),
+    (65536, 960),
+    (65536, 961),
+    (65536, 962),
+    (65536, 963),
+    (65536, 1023),
+    (65536, 1024),
+    (1048575, 257),
+    (1048576, 257),
+    (1048576, 6240),
+    (1048576, 6241),
+])
+@pytest.mark.parametrize('distribution', ['uniform', 'ends', 'single', 'first', 'last'])
+def test_ind2ptr_dispatch_boundary(num_edges, num_rows, distribution):
+    _set_device()
+    ind_cpu = torch.arange(num_edges, dtype=torch.long) * num_rows // num_edges
+    if distribution == 'ends':
+        ind_cpu = (torch.arange(num_edges) >= num_edges // 2).long() * (num_rows - 1)
+    elif distribution == 'single':
+        ind_cpu.fill_(num_rows // 2)
+    elif distribution == 'first':
+        ind_cpu.zero_()
+    elif distribution == 'last':
+        ind_cpu.fill_(num_rows - 1)
+    golden = ind2ptr_cpu(ind_cpu, num_rows)
+    out = ops_gnn.ind2ptr(ind_cpu.to('npu'), num_rows)
+    assert_exact(
+        out,
+        golden,
+        msg=f'dispatch edges={num_edges} rows={num_rows} distribution={distribution}',
+    )
+
+
 def test_ptr2ind_all_in_one_row():
     _set_device()
     ptr = torch.tensor([0, 0, 0, 5, 5], dtype=torch.long, device='npu')
