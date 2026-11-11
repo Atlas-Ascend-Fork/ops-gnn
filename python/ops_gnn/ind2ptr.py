@@ -8,8 +8,19 @@
 
 """Public ind2ptr API."""
 
+import operator
+
+import torch
+
 from . import _pybind
 from .typing import Tensor
+
+
+def _ind2ptr_npu(index: torch.Tensor, size: int) -> torch.Tensor:
+    """Build CSR pointers on the index device; no index tensor visits CPU."""
+    counts = index.new_zeros(size)
+    counts.scatter_add_(0, index, torch.ones_like(index))
+    return torch.cat((index.new_zeros(1), counts.cumsum(0)))
 
 
 def ind2ptr(ind: Tensor, num_rows: int) -> Tensor:
@@ -18,9 +29,13 @@ def ind2ptr(ind: Tensor, num_rows: int) -> Tensor:
     Drop-in replacement for ``torch.ops.torch_sparse.ind2ptr(ind, M)`` on Ascend NPU.
     The second argument is the row count (historically named ``M`` in torch_sparse).
 
+    Ascend 950PR&950DT series products:
     Launches asynchronously on the current NPU stream (same as pytorch_sparse CUDA).
     Synchronize with ``torch.npu.synchronize()`` / ``torch.npu.current_stream().synchronize()``
     before reading results on host if needed.
+
+    Calls with non-empty input on Atlas A3 series products and Atlas A2 series
+    products include device synchronization.
 
     Args:
         ind (Tensor): 1-D ``torch.long`` tensor of non-decreasing row indices on NPU.
@@ -36,6 +51,22 @@ def ind2ptr(ind: Tensor, num_rows: int) -> Tensor:
         >>> ops_gnn.ind2ptr(row, 8)
         tensor([0, 0, 0, 2, 2, 3, 5, 6, 6], device='npu:0')
     """
-    if not ind.is_contiguous():
-        ind = ind.contiguous()
-    return _pybind.ind2ptr(ind, int(num_rows))
+    if _pybind.npu_arch != 'dav-2201':
+        if not ind.is_contiguous():
+            ind = ind.contiguous()
+        return _pybind.ind2ptr(ind, int(num_rows))
+    num_rows = operator.index(num_rows)
+    if (ind.device.type != 'npu' or ind.layout != torch.strided
+            or ind.dtype != torch.int64):
+        raise RuntimeError('ind2ptr: ind must be a 1-D NPU int64 tensor')
+    if ind.dim() != 1:
+        raise RuntimeError('ind2ptr: ind must be a 1-D NPU int64 tensor')
+    if num_rows < 0:
+        raise RuntimeError('ind2ptr: num_rows must be non-negative')
+    with torch.npu.device(ind.device):
+        if ind.numel():
+            invalid = ((ind < 0) | (ind >= num_rows)).any()
+            invalid = invalid | (ind[1:] < ind[:-1]).any()
+            if bool(invalid):
+                raise RuntimeError('ind2ptr: ind must be sorted and in [0, num_rows)')
+        return _ind2ptr_npu(ind, num_rows)

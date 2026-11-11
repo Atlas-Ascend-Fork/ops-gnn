@@ -437,6 +437,12 @@ assert returned.data_ptr() == provided.data_ptr()
 
 ## ind2ptr — Sorted Row Indices to CSR Row Pointer
 
+**Supported products:**
+
+- <term>Ascend 950PR&950DT series products</term>: Supported
+- <term>Atlas A3 series products</term>: Supported
+- <term>Atlas A2 series products</term>: Supported
+
 **Function signature:**
 
 ```python
@@ -459,13 +465,16 @@ A 1-D `torch.long` CSR row-pointer tensor of shape `[num_rows + 1]` on the same 
 
 **Description:**
 
-Converts sorted row indices to a CSR row pointer. Drop-in replacement for `torch.ops.torch_sparse.ind2ptr(ind, M)`. Runs asynchronously on the current NPU stream; synchronize with `torch.npu.synchronize()` before reading results on host if needed.
+Converts sorted row indices to a CSR row pointer. Drop-in replacement for `torch.ops.torch_sparse.ind2ptr(ind, M)`.
 
 **Notes:**
 
 - `ind` must be non-decreasing; an empty input yields an all-zero pointer of length `num_rows + 1`
 - dtype must be `torch.long` (int64)
-- Non-contiguous inputs are made contiguous before the call
+- Non-contiguous inputs are supported
+- `ind` values must be in `[0, num_rows)`
+- <term>Ascend 950PR&950DT series products</term>: Runs asynchronously on the current NPU stream; synchronize with `torch.npu.synchronize()` before reading results on host if needed.
+- <term>Atlas A3 series products</term>, <term>Atlas A2 series products</term>: Calls with non-empty `ind` include device synchronization.
 
 **Example:**
 
@@ -481,6 +490,12 @@ rowptr = ops_gnn.ind2ptr(row, 8)
 ---
 
 ## ptr2ind — CSR Row Pointer to Row Indices
+
+**Supported products:**
+
+- <term>Ascend 950PR&950DT series products</term>: Supported
+- <term>Atlas A3 series products</term>: Supported
+- <term>Atlas A2 series products</term>: Supported
 
 **Function signature:**
 
@@ -504,13 +519,16 @@ A 1-D `torch.long` row-index tensor of shape `[num_edges]` on the same device as
 
 **Description:**
 
-Converts a CSR row pointer to row indices. Drop-in replacement for `torch.ops.torch_sparse.ptr2ind(ptr, E)`. Runs asynchronously on the current NPU stream; synchronize with `torch.npu.synchronize()` before reading results on host if needed.
+Converts a CSR row pointer to row indices. Drop-in replacement for `torch.ops.torch_sparse.ptr2ind(ptr, E)`.
 
 **Notes:**
 
 - dtype must be `torch.long` (int64)
 - `num_edges == 0` returns an empty index tensor
-- Non-contiguous inputs are made contiguous before the call
+- Non-contiguous inputs are supported
+- `ptr` must be non-empty and non-decreasing, start at 0 and end at `num_edges`
+- <term>Ascend 950PR&950DT series products</term>: Runs asynchronously on the current NPU stream; synchronize with `torch.npu.synchronize()` before reading results on host if needed.
+- <term>Atlas A3 series products</term>, <term>Atlas A2 series products</term>: Calls include device synchronization.
 
 **Example:**
 

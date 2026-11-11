@@ -11,6 +11,7 @@ import importlib.util
 import os
 from pathlib import Path
 import runpy
+import subprocess
 import sys
 import tempfile
 from types import ModuleType
@@ -38,6 +39,60 @@ def test_version():
     """测试版本号"""
     import ops_gnn
     assert ops_gnn.__version__ == '0.1.0'
+
+
+def test_arch22_index_exports():
+    import ops_gnn
+
+    if 'bspmm' not in ops_gnn.__all__:
+        return
+    for name in ('ind2ptr', 'ptr2ind'):
+        assert name in ops_gnn.__all__
+        assert callable(getattr(ops_gnn, name))
+
+
+def test_arch22_index_optional_dependency():
+    import ops_gnn
+
+    if 'bspmm' not in ops_gnn.__all__:
+        return
+    source = r'''
+import importlib.abc
+import sys
+import torch
+import torch_npu
+
+if sys.argv[1] == 'absent':
+    class BlockSparse(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == 'torch_sparse' or fullname.startswith('torch_sparse.'):
+                raise ModuleNotFoundError('optional dependency disabled for this test')
+    sys.meta_path.insert(0, BlockSparse())
+else:
+    import torch_sparse
+
+def registration():
+    return {name: torch._C._dispatch_has_kernel_for_dispatch_key(
+        'torch_sparse::' + name, 'PrivateUse1')
+        if hasattr(torch.ops.torch_sparse, name) else None
+        for name in ('ind2ptr', 'ptr2ind')}
+
+before = registration()
+import ops_gnn
+ind = torch.tensor([0, 0, 2], dtype=torch.int64, device='npu')
+ptr = ops_gnn.ind2ptr(ind, 3)
+torch.testing.assert_close(ptr.cpu(), torch.tensor([0, 2, 2, 3]))
+torch.testing.assert_close(ops_gnn.ptr2ind(ptr, 3), ind)
+assert registration() == before
+if sys.argv[1] == 'absent':
+    assert 'torch_sparse' not in sys.modules
+'''
+    modes = ['absent']
+    if importlib.util.find_spec('torch_sparse') is not None:
+        modes.append('present')
+    for mode in modes:
+        subprocess.run([sys.executable, '-c', source, mode],
+                       check=True, timeout=120)
 
 
 class _NpuDependencyGuardReached(Exception):

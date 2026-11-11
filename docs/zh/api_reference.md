@@ -426,6 +426,12 @@ assert returned.data_ptr() == provided.data_ptr()
 
 ### ind2ptr — 行索引转 CSR 行指针
 
+**产品支持情况：**
+
+- <term>Ascend 950PR&950DT系列产品</term>：支持
+- <term>Atlas A3系列产品</term>：支持
+- <term>Atlas A2系列产品</term>：支持
+
 **函数签名：**
 
 ```python
@@ -448,13 +454,16 @@ def ind2ptr(
 
 **功能说明：**
 
-将有序行索引转换为 CSR 行指针，API 对齐 `torch.ops.torch_sparse.ind2ptr(ind, M)`。在当前 NPU stream 上异步执行；如需在 Host 读取结果，请先 `torch.npu.synchronize()`。
+将有序行索引转换为 CSR 行指针，API 对齐 `torch.ops.torch_sparse.ind2ptr(ind, M)`。
 
 **注意事项：**
 
 - `ind` 须为非降序；空输入返回全 0 的 `[num_rows + 1]`
 - dtype 为 `torch.long`（int64）
-- 非连续输入会在调用前转为连续张量
+- 支持非连续输入
+- `ind` 的取值范围为 `[0, num_rows)`
+- <term>Ascend 950PR&950DT系列产品</term>：在当前 NPU stream 上异步执行；如需在 Host 读取结果，请先 `torch.npu.synchronize()`。
+- <term>Atlas A3系列产品</term>、<term>Atlas A2系列产品</term>：`ind`非空时，调用包含设备同步。
 
 **使用示例：**
 
@@ -470,6 +479,12 @@ rowptr = ops_gnn.ind2ptr(row, 8)
 ---
 
 ### ptr2ind — CSR 行指针转行索引
+
+**产品支持情况：**
+
+- <term>Ascend 950PR&950DT系列产品</term>：支持
+- <term>Atlas A3系列产品</term>：支持
+- <term>Atlas A2系列产品</term>：支持
 
 **函数签名：**
 
@@ -493,13 +508,16 @@ def ptr2ind(
 
 **功能说明：**
 
-将 CSR 行指针转换为行索引，API 对齐 `torch.ops.torch_sparse.ptr2ind(ptr, E)`。在当前 NPU stream 上异步执行；如需在 Host 读取结果，请先 `torch.npu.synchronize()`。
+将 CSR 行指针转换为行索引，API 对齐 `torch.ops.torch_sparse.ptr2ind(ptr, E)`。
 
 **注意事项：**
 
 - dtype 为 `torch.long`（int64）
 - `num_edges == 0` 时返回空索引张量
-- 非连续输入会在调用前转为连续张量
+- 支持非连续输入
+- `ptr` 须非空、非降序，首项为 0，末项为 `num_edges`
+- <term>Ascend 950PR&950DT系列产品</term>：在当前 NPU stream 上异步执行；如需在 Host 读取结果，请先 `torch.npu.synchronize()`。
+- <term>Atlas A3系列产品</term>、<term>Atlas A2系列产品</term>：调用包含设备同步。
 
 **使用示例：**
 

@@ -42,6 +42,8 @@ except ImportError:
     torch_sparse = None
 
 from ops_gnn import _pybind as _C  # registers the TORCH_LIBRARY blocks
+from .ind2ptr import _ind2ptr_npu
+from .ptr2ind import _ptr2ind_npu
 
 if _C.npu_arch != "dav-3510":
     raise ImportError("torch_sparse utility operators require an Ascend 950 (dav-3510) build")
@@ -76,21 +78,6 @@ def torch_sparse_random_walk_with_rand(rowptr, col, start, walk_length, rand):
 
 def is_available() -> bool:
     return hasattr(torch, "npu") and torch.npu.is_available()
-
-
-def _ind2ptr_npu(index: torch.Tensor, size: int) -> torch.Tensor:
-    """Build CSR pointers on the index device; no index tensor visits CPU."""
-    counts = index.new_zeros(size)
-    counts.scatter_add_(0, index, torch.ones_like(index))
-    return torch.cat((index.new_zeros(1), counts.cumsum(0)))
-
-
-def _ptr2ind_npu(pointer: torch.Tensor, nnz: int) -> torch.Tensor:
-    """Expand CSR row ids on NPU, with the output size already known."""
-    rows = torch.arange(pointer.numel() - 1, dtype=pointer.dtype,
-                        device=pointer.device)
-    return torch.repeat_interleave(
-        rows, pointer[1:] - pointer[:-1], output_size=nnz)
 
 
 def _validate_diag_values(value, values):
