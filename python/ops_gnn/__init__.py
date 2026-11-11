@@ -51,6 +51,7 @@ if _pybind.npu_arch == 'dav-2201':
         segment_coo, segment_sum_coo, segment_add_coo,
         segment_mean_coo, segment_min_coo, segment_max_coo,
     )
+    from .segment_logsumexp import segment_logsumexp
     from .bspmm import bspmm
     from .sddmm_csr import sddmm_csr
     from .spmm import spmm
@@ -62,6 +63,7 @@ if _pybind.npu_arch == 'dav-2201':
         'sddmm_csr',
         'segment_csr', 'segment_sum_csr', 'segment_add_csr',
         'segment_mean_csr', 'segment_min_csr', 'segment_max_csr',
+        'segment_logsumexp',
         'segment_coo', 'segment_sum_coo', 'segment_add_coo',
         'segment_mean_coo', 'segment_min_coo', 'segment_max_coo',
     ]
@@ -74,6 +76,7 @@ else:
         segment_coo, segment_sum_coo, segment_add_coo,
         segment_mean_coo, segment_min_coo, segment_max_coo,
     )
+    from .segment_logsumexp import segment_logsumexp
     from .gather_csr import gather_csr
     from .fps import fps
     from .graclus_cluster import graclus_cluster
@@ -127,6 +130,7 @@ else:
         'segment_add_csr',
         'segment_mean_csr',
         'segment_min_csr',
+        'segment_logsumexp',
         'segment_coo',
         'segment_sum_coo',
         'segment_add_coo',

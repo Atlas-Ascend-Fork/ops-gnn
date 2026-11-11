@@ -16,6 +16,7 @@
 #include <string>
 #include "segment_coo/op_host/segment_coo.h"
 #include "segment_csr/op_host/segment_csr.h"
+#include "segment_logsumexp/op_host/segment_logsumexp.h"
 #ifdef OPSGNN_DAV_2201
 #include "sddmm_csr/op_host/sddmm_csr.h"
 #include "spmm_max/op_host/spmm_max.h"
@@ -138,11 +139,22 @@ void RegisterKnn(py::module_& m)
           "Exact K-nearest-neighbor search on NPU");
 }
 #endif
+
+// arch22 and arch35 share one device kernel, so the CSR log-sum-exp is bound
+// identically on both architectures.
+void BindSegmentLogSumExp(py::module_& m)
+{
+    m.def("segment_logsumexp_forward", &opsgnn::segment_logsumexp_forward,
+          py::arg("src"), py::arg("indptr"), "CSR log-sum-exp forward on NPU",
+          py::call_guard<py::gil_scoped_release>());
+}
+
 #ifdef OPSGNN_DAV_2201
 void BindArch22(py::module_& m)
 {
     m.attr("npu_arch") = "dav-2201";
     BindSegmentCoo(m);
+    BindSegmentLogSumExp(m);
     m.def("segment_coo_value",
           [](torch::Tensor src, torch::Tensor index, std::optional<torch::Tensor> out,
              std::optional<int64_t> dimSize, int64_t reduce) {
@@ -196,6 +208,7 @@ void BindMatrixExp(py::module_& m)
 void BindArch35(py::module_& m)
 {
     m.attr("npu_arch") = "dav-3510";
+    BindSegmentLogSumExp(m);
     m.def("grid_cluster", &opsgnn::grid_cluster_npu,
           py::arg("pos"), py::arg("size"), py::arg("start") = py::none(),
           py::arg("end") = py::none(), "Regular grid clustering on NPU");

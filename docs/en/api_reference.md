@@ -295,6 +295,58 @@ the existing value-only `segment_max_csr` path. The historical `optional_out=` k
 
 ---
 
+### segment_logsumexp — CSR Segment Log-Sum-Exp
+
+Computes `out[i] = log(sum(exp(src[j])))` per CSR segment on Ascend A2/A3
+(arch22) and Ascend 950 (arch35). The numerically stable form
+`max + log(sum(exp(src - max)))` is evaluated by a dedicated device kernel
+(`csrc/npu/segment_logsumexp`): a CSR segment is a contiguous row range, so the
+kernel splits the work into (segment, feature window) tasks and reduces each one
+in three stages — the per-feature maximum of the segment,
+`sum(exp(src - max))`, and `max + log(sum)`. When there are fewer segments than
+AI cores, the rows of a segment are additionally cut into chunks and reduced in
+two levels (chunk maximum → shift → chunk sum → result) so that every core
+contributes. It no longer composes `segment_max_csr` / `segment_sum_csr`.
+
+```python
+segment_logsumexp(src, indptr, out=None)  # Tensor
+```
+
+| Argument | Contract |
+| --- | --- |
+| `src` | NPU Tensor; float16, float32, or bfloat16; `src.size(0)` must equal `indptr[-1]` |
+| `indptr` | Same-device 1-D int32/int64 Tensor; non-negative and nondecreasing; `indptr.numel() - 1` segments |
+| `out` | Optional same-device, same-dtype Tensor of shape `(indptr.numel() - 1, *src.shape[1:])` |
+
+Empty segments evaluate to `-inf`; an `indptr` with a single element returns
+a zero-segment Tensor. Segments containing only `-inf` return `-inf`, and
+segments containing only `+inf` return `+inf`. When `out` is supplied the
+result is written into it (following its strides when it is not contiguous)
+and the same object is returned. `indptr` is narrowed to int32 for the device,
+so `src.size(0)` must not exceed `2**31 - 1`.
+
+When `indptr[0] > 0`, leading rows belong to no segment and are ignored. This
+operator requires `indptr[-1] == src.size(0)` and does not accept trailing rows
+outside the segments, which is stricter than `segment_csr`.
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+src = torch.tensor([[1., 2.], [3., 4.], [5., 6.]], device="npu")
+indptr = torch.tensor([0, 2, 3], dtype=torch.int64, device="npu")
+result = ops_gnn.segment_logsumexp(src, indptr)
+# tensor([[3.1269, 4.1269], [5.0000, 6.0000]], device='npu:0')
+```
+
+> Precision: the per-segment maximum, `sum(exp(src - max))` and `log` all run in
+> float32, while `exp` and the output round in the source dtype, so a segment is
+> not limited by the fp16 65504 ceiling; the standalone golden accumulates in
+> float64.
+
+---
+
 ### radius / radius_graph — Radius Neighbor Search
 
 NPU implementation interface-compatible with `torch_cluster.radius` /

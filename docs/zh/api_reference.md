@@ -285,6 +285,52 @@ values, indices = ops_gnn.segment_max_csr(src, indptr)
 
 ---
 
+### segment_logsumexp — CSR 分段 logsumexp
+
+在 Ascend A2/A3（arch22）与 Ascend 950（arch35）上按 CSR 行指针计算
+`out[i] = log(sum(exp(src[j])))`。实现采用数值稳定形式
+`max + log(sum(exp(src - max)))`，由独立设备侧算子
+（`csrc/npu/segment_logsumexp`）完成，不再由 `segment_max_csr` /
+`segment_sum_csr` 拼接：CSR 段是连续行区间，内核按「段 × 特征窗口」划分任务，
+分三步归约——段内逐特征最大值、`sum(exp(src - max))`、`max + log(sum)`；
+段数少于 AI 核数时，段内行再切块，用「块内最大值 → 归约 shift → 块内和 →
+归约结果」的两级归约填满所有核。
+
+```python
+segment_logsumexp(src, indptr, out=None)  # Tensor
+```
+
+| 参数 | 约束 |
+| --- | --- |
+| `src` | NPU 张量；支持 float16、float32、bfloat16；第 0 维长度必须等于 `indptr[-1]` |
+| `indptr` | 同设备 1 维 int32/int64 张量；非负、非降序；元素个数为段数 + 1 |
+| `out` | 可选，同设备、同 dtype，形状为 `(indptr.numel() - 1, *src.shape[1:])` |
+
+空段返回 `-inf`；`indptr.numel() == 1` 时返回零段张量。整段为 `-inf` 时返回
+`-inf`，整段为 `+inf` 时返回 `+inf`。提供 `out` 时结果写回 `out` 并返回同一对象
+（`out` 非连续时按 stride 拷回）。`indptr` 在内部转为 int32 传入设备，
+因此要求 `src.size(0)` 不超过 `2**31 - 1`。
+
+`indptr[0] > 0` 时前导行不属于任何段，会被忽略；本算子要求
+`indptr[-1] == src.size(0)`，不接受段外的尾部行（比 `segment_csr` 更严格）。
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+src = torch.tensor([[1., 2.], [3., 4.], [5., 6.]], device="npu")
+indptr = torch.tensor([0, 2, 3], dtype=torch.int64, device="npu")
+result = ops_gnn.segment_logsumexp(src, indptr)
+# tensor([[3.1269, 4.1269], [5.0000, 6.0000]], device='npu:0')
+```
+
+> 精度：段内最大值、`sum(exp(src - max))` 与 `log` 全部在 float32 中完成，
+> `exp` 与输出按源 dtype 舍入，因此单段长度不受 fp16 的 65504 上限限制；
+> 独立 golden 使用 float64 累加。
+
+---
+
 ### radius / radius_graph — 半径内邻居搜索
 
 与 `torch_cluster.radius` / `radius_graph`（>= 1.6.0）接口完全一致的 NPU 实现，

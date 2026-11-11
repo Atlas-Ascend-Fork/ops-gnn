@@ -182,6 +182,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `fps` | 与 torch_cluster 对齐的最远点采样 | NPU（Ascend 950） | [fps — 最远点采样](docs/zh/api_reference.md#fps--最远点采样) |
 | `random_walk` | COO 图上的均匀或 node2vec 偏置随机游走 | NPU | [random_walk — NPU 随机游走](docs/zh/api_reference.md#random_walk--npu-随机游走) |
 | `segment_max_csr` | CSR 格式的分段最大值运算 | NPU | [segment_max_csr — CSR 分段最大值](docs/zh/api_reference.md#segment_max_csr--csr-分段最大值) |
+| `segment_logsumexp` | CSR 格式的分段 logsumexp（数值稳定） | NPU（A2/A3、950） | [segment_logsumexp — CSR 分段 logsumexp](docs/zh/api_reference.md#segment_logsumexp--csr-分段-logsumexp) |
 | `radius` / `radius_graph` | 半径内邻居搜索（torch_cluster 兼容，Ascend 950PR） | NPU | [radius / radius_graph — 半径内邻居搜索](docs/zh/api_reference.md#radius--radius_graph--半径内邻居搜索) |
 | `knn` / `knn_graph` | 精确近邻检索与图构建（Ascend 950PR） | NPU | [knn / knn_graph — 精确近邻搜索](docs/zh/api_reference.md#knn--knn_graph--精确近邻搜索) |
 | `nearest` | 同batch最近y点的全局索引 | NPU（950，arch35） | [nearest](docs/zh/api_reference.md) |
