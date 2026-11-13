@@ -46,6 +46,9 @@ stages:
         container:
           image: swr.cn-north-4.myhuaweicloud.com/ci_cann/ubuntu20.04.05_x86:k8s_v1.1006
       JOB_pre:
+        permissions:
+          repository: read
+          id-token: write
         name: Test_PreBuild
         uses: cann/.gitcode/.gitcode/workflows/pre_action.yml@master
     pre:
@@ -55,12 +58,18 @@ stages:
     name: Compile
     jobs:
       JOB_codecheck:
+        permissions:
+          repository: read
+          id-token: write
         name: CodeCheck
         uses: cann/.gitcode/.gitcode/workflows/codecheck_action.yml@master
         with:
           precommit_image_version: ${{ jobs.JOB_image.outputs.precommit }}
           codecheck_image_version: ${{ jobs.JOB_image.outputs.codecheck }}
       JOB_x86_compile_ubuntu24:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_Ascend_X86_ubuntu24
         uses: .gitcode/workflows/compile_action.yml
         with:
@@ -69,6 +78,9 @@ stages:
           arch: 'x64'
           package_name: 'libopsgnn_npu_kernel*.so'
       JOB_x86_compile_Python_ubuntu24:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_Ascend_X86_Python_ubuntu24
         uses: .gitcode/workflows/compile_action.yml
         with:
@@ -77,6 +89,9 @@ stages:
           arch: 'x64'
           package_name: 'ops_gnn-linux_x86_64.whl'
       JOB_staticcheck_md_check:
+        permissions:
+          repository: read
+          id-token: write
         name: CodeCheck_staticcheck_md_check
         uses: .gitcode/workflows/staticcheck_action.yml
         with:
