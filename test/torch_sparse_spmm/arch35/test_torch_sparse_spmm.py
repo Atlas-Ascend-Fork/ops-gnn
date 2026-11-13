@@ -114,6 +114,34 @@ def test_forward(dtype, outdtype, reduce, batch, feature_values):
         torch.testing.assert_close(actual_arg.cpu(), arg)
 
 
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("feature_values", [False, True])
+def test_golden_high_rank_edge_weights(batched, feature_values):
+    ptr = torch.tensor([0, 2])
+    col = torch.tensor([0, 1])
+    mat = torch.tensor([[1., 2., 3.], [4., 5., 6.]], dtype=torch.float64)
+    if feature_values:
+        weights = torch.tensor([[2., 3., 4.], [5., 6., 7.]], dtype=torch.float64)
+        expected = torch.tensor([[22., 36., 54.]], dtype=torch.float64)
+    else:
+        weights = torch.tensor([[2.], [5.]], dtype=torch.float64)
+        expected = torch.tensor([[22., 29., 36.]], dtype=torch.float64)
+
+    weight_grad = mat if feature_values else mat.sum(-1, keepdim=True)
+    if batched:
+        mat = torch.stack((mat, 2 * mat))
+        expected = torch.stack((expected, 2 * expected))
+        weight_grad = 3 * weight_grad
+
+    mat.requires_grad_()
+    value = weights.unsqueeze(1).requires_grad_()
+    actual, _ = golden(ptr, col, value, mat, "sum", outdtype=torch.float64)
+    torch.testing.assert_close(actual, expected)
+    actual.sum().backward()
+    torch.testing.assert_close(value.grad, weight_grad.unsqueeze(1))
+    torch.testing.assert_close(mat.grad, weights.expand_as(mat))
+
+
 @pytest.mark.parametrize("reduce", ["sum", "mean", "min", "max"])
 def test_unweighted_empty_and_noncontiguous(reduce):
     ptr, col, v, mat = sample(torch.float32)

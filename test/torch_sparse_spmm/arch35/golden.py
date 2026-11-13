@@ -98,9 +98,7 @@ def golden(ptr, col, v, mat, reduce, *, outdtype):
             continue
         product = mat.double()[..., col[a:z], :]
         if v is not None:
-            weight = v.double()[a:z]
-            if weight.dim() == 1:
-                weight = weight.unsqueeze(-1)
+            weight = v[a:z].reshape(z - a, -1).double()
             product = product * weight
         if reduce in ("sum", "add"):
             out[..., r, :] = product.sum(-2)
