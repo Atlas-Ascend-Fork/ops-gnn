@@ -695,7 +695,7 @@ out[..., indptr[i]:indptr[i + 1], ...] = src[..., i, ...]
 
 | 项目 | 支持范围 |
 |------|----------|
-| 硬件 | Ascend 950PR（`dav-3510`） |
+| 硬件 | Ascend 950PR（`dav-3510`）；Atlas A3系列产品、Atlas A2系列产品（`dav-2201`） |
 | `src/out` dtype | float16、bfloat16、float32、int8、int16、int32、uint8、float64、int64 |
 | `indptr` dtype | int64 |
 | rank | `1 <= indptr.dim() <= src.dim()` |

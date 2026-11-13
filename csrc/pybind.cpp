@@ -14,6 +14,7 @@
 #include <c10/core/DispatchKey.h>
 #include <pybind11/pybind11.h>
 #include <string>
+#include "gather_csr/op_host/gather_csr.h"
 #include "segment_coo/op_host/segment_coo.h"
 #include "segment_csr/op_host/segment_csr.h"
 #include "segment_logsumexp/op_host/segment_logsumexp.h"
@@ -26,7 +27,6 @@
 #include "unified_spmm/op_host/unified_spmm.h"
 #else
 #include "gather_coo/op_host/gather_coo.h"
-#include "gather_csr/op_host/gather_csr.h"
 #include "grid_cluster/op_host/grid_cluster.h"
 #include "random_walk/op_host/random_walk.h"
 #include "segment_max_csr/op_host/segment_max_csr.h"
@@ -160,6 +160,9 @@ void BindArch22(py::module_& m)
 {
     ops_gnn::sparse::spmm_proof_detail::EnsureObserver();
     m.attr("npu_arch") = "dav-2201";
+    m.def("gather_csr", &opsgnn::gather_csr, py::arg("src"), py::arg("indptr"),
+          py::arg("out") = py::none(), "Gather CSR (NPU)",
+          py::call_guard<ExternalCsrProofBoundary>());
     BindSegmentCoo(m);
     BindSegmentLogSumExp(m);
     m.def("segment_coo_value",

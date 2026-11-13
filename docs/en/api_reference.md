@@ -714,7 +714,7 @@ is updated and returned. Only forward execution is supported.
 
 | Item | Support |
 |------|---------|
-| Hardware | Ascend 950PR (`dav-3510`) |
+| Hardware | Ascend 950PR (`dav-3510`); Atlas A3 series products and Atlas A2 series products (`dav-2201`) |
 | `src/out` dtype | float16, bfloat16, float32, int8, int16, int32, uint8, float64, int64 |
 | `indptr` dtype | int64 |
 | Rank | `1 <= indptr.dim() <= src.dim()` |

@@ -41,6 +41,7 @@ except (ImportError, OSError, RuntimeError, ValueError) as exc:
     ) from exc
 
 if _pybind.npu_arch == 'dav-2201':
+    from .gather_csr import gather_csr
     from .ind2ptr import ind2ptr
     from .ptr2ind import ptr2ind
     from .segment_csr import (
@@ -56,6 +57,7 @@ if _pybind.npu_arch == 'dav-2201':
     from .sddmm_csr import sddmm_csr
     from .spmm import spmm
     __all__ = [
+        'gather_csr',
         'ind2ptr',
         'ptr2ind',
         'spmm',
