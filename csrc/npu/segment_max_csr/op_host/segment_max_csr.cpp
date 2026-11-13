@@ -19,9 +19,7 @@ namespace opsgnn {
 
 static uint32_t GetCeilInt(uint64_t value1, uint64_t value2)
 {
-    if (value2 == 0) {
-        return static_cast<uint32_t>(value1);
-    }
+    TORCH_CHECK(value2 > 0, "segment_max_csr: GetCeilInt divisor must be > 0");
     return static_cast<uint32_t>((value1 + value2 - 1) / value2);
 }
 
@@ -78,7 +76,7 @@ DimInfo ComputeDimInfo(const torch::Tensor& src, const torch::Tensor& indptr)
 SegmentMaxCsrTilingData ComputeTiling(
     uint32_t srcLength, uint32_t E_1, uint32_t M, uint32_t nSegments,
     uint32_t K, uint32_t indptrPhysicalNum, uint32_t sizeofdatatype,
-    uint32_t aivCanUseNum, uint32_t indptrDim, uint32_t strideIndptr,
+    uint32_t aivCanUseNum, uint32_t strideIndptr,
     uint32_t hasOptionalOutVal)
 {
     TORCH_CHECK(sizeofdatatype > 0, "sizeofdatatype must be > 0");
@@ -91,7 +89,6 @@ SegmentMaxCsrTilingData ComputeTiling(
     uint32_t rowsLastAiv = (E_1 % aivNum == 0) ? rowsPerAiv : (E_1 % aivNum);
 
     uint32_t coreDataNum = 2048;
-    uint32_t coreTailDataNum = (K % 2048 == 0) ? 2048 : (K % 2048);
 
     uint32_t KloopTime = GetCeilInt(K, 2048);
 
@@ -103,14 +100,12 @@ SegmentMaxCsrTilingData ComputeTiling(
     tiling.K = K;
     tiling.indptrPhysicalNum = indptrPhysicalNum;
     tiling.coreDataNum = coreDataNum;
-    tiling.coreTailDataNum = coreTailDataNum;
     tiling.ALIGN_NUM = ALIGN_NUM;
     tiling.aivNum = aivNum;
     tiling.rowsPerAiv = rowsPerAiv;
     tiling.rowsLastAiv = rowsLastAiv;
     tiling.KloopTime = KloopTime;
     tiling.hasOptionalOut = hasOptionalOutVal;
-    tiling.indptrDimNum = indptrDim;
     tiling.strideIndptr = strideIndptr;
     return tiling;
 }
@@ -194,7 +189,7 @@ torch::Tensor segment_max_csr(torch::Tensor src, torch::Tensor indptr, torch::Te
 
     SegmentMaxCsrTilingData tiling = ComputeTiling(
         src.numel(), dim.E_1, dim.M, dim.nSegments, dim.K,
-        indptr.numel(), sizeofdatatype, aivCanUseNum, dim.indptrDim,
+        indptr.numel(), sizeofdatatype, aivCanUseNum,
         strideIndptr, hasOptionalOut ? 1 : 0);
 
     aclrtStream stream = c10_npu::getCurrentNPUStream(src.get_device()).stream();

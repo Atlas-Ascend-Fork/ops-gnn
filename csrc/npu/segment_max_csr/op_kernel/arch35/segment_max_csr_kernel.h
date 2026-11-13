@@ -17,9 +17,7 @@
 using namespace AscendC;
 
 constexpr uint32_t MAX_DEAL_NUM = 2048;
-constexpr uint32_t MAX_MASK = 64;
 constexpr uint32_t BLOCK_SIZE = 32;
-constexpr uint32_t MIN_COPY_SIZE = 8;
 
 template <typename T>
 struct SegmentMaxTraits;
@@ -63,7 +61,6 @@ public:
         this->M = tiling_data->M;
         this->nSegments = tiling_data->nSegments;
         this->coreDataNum = tiling_data->coreDataNum;
-        this->coreTailDataNum = tiling_data->coreTailDataNum;
         this->ALIGN_NUM = tiling_data->ALIGN_NUM;
         this->aivNum = tiling_data->aivNum;
         this->rowsPerAiv = tiling_data->rowsPerAiv;
@@ -71,7 +68,6 @@ public:
         this->KloopTime = tiling_data->KloopTime;
         this->indptrPhysicalNum = tiling_data->indptrPhysicalNum;
         this->strideIndptr = tiling_data->strideIndptr;
-        this->indptrDimNum = tiling_data->indptrDimNum;
         this->hasOptionalOut = tiling_data->hasOptionalOut;
 
         this->coreRowBeg = GetBlockIdx() * this->rowsPerAiv;
@@ -336,9 +332,9 @@ private:
     LocalTensor<T> optionalOutLocal;
     LocalTensor<T> outLocal;
 
-    uint32_t srcLength, E_1, K, M, nSegments, coreDataNum, coreTailDataNum;
+    uint32_t srcLength, E_1, K, M, nSegments, coreDataNum;
     uint32_t ALIGN_NUM, aivNum, rowsPerAiv, rowsLastAiv, KloopTime;
-    uint32_t indptrPhysicalNum, strideIndptr, indptrDimNum, hasOptionalOut;
+    uint32_t indptrPhysicalNum, strideIndptr, hasOptionalOut;
     uint32_t coreRowBeg, coreRowEnd;
 
     event_t eventIdMte2ToV_0, eventIdMte2ToV_1, eventIdVToMte3_0, eventIdMte3ToV_0, eventIdMte3ToMte2_0;
@@ -358,14 +354,12 @@ __attribute__((aiv)) __global__ __aicore__ void segment_max_csr_kernel(GM_ADDR s
     tiling_data.K = tiling.K;
     tiling_data.indptrPhysicalNum = tiling.indptrPhysicalNum;
     tiling_data.coreDataNum = tiling.coreDataNum;
-    tiling_data.coreTailDataNum = tiling.coreTailDataNum;
     tiling_data.ALIGN_NUM = tiling.ALIGN_NUM;
     tiling_data.aivNum = tiling.aivNum;
     tiling_data.rowsPerAiv = tiling.rowsPerAiv;
     tiling_data.rowsLastAiv = tiling.rowsLastAiv;
     tiling_data.KloopTime = tiling.KloopTime;
     tiling_data.hasOptionalOut = tiling.hasOptionalOut;
-    tiling_data.indptrDimNum = tiling.indptrDimNum;
     tiling_data.strideIndptr = tiling.strideIndptr;
     SegmentMaxCsrKernel<T> op;
     op.Init(src, indptr, optional_out, out, &tiling_data, &pipe);

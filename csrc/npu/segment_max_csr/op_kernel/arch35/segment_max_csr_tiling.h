@@ -18,13 +18,11 @@ struct SegmentMaxCsrTilingData {
     uint32_t K;
     uint32_t indptrPhysicalNum;
     uint32_t coreDataNum;
-    uint32_t coreTailDataNum;
     uint32_t ALIGN_NUM;
     uint32_t aivNum;
     uint32_t rowsPerAiv;
     uint32_t rowsLastAiv;
     uint32_t KloopTime;
     uint32_t hasOptionalOut;
-    uint32_t indptrDimNum;
     uint32_t strideIndptr;
 };
