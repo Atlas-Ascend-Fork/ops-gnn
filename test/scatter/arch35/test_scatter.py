@@ -934,3 +934,110 @@ def test_npu_index_bounds_cache_invalidates_after_inplace_update():
     index[1] = -1
     with pytest.raises(IndexError, match="negative"):
         ops_gnn.scatter(src, index, dim_size=2)
+
+
+def _integer_mean_rows(rows, index_rows, has_out):
+    """Compute independent Python-integer bucket sums and floor quotients."""
+    expected_rows = []
+    for values, targets in zip(rows, index_rows):
+        expected = [7 if has_out else 0] * 4
+        counts = [0] * 4
+        for value, target in zip(values, targets):
+            expected[target] += value
+            counts[target] += 1
+        expected_rows.append([
+            value // count if count else value
+            for value, count in zip(expected, counts)
+        ])
+    return expected_rows
+
+
+class TestScatterGoldenIntegerMean:
+    @staticmethod
+    def _assert_mean(source, index, expected, **kwargs):
+        original = source.clone()
+        original_index = index.clone()
+        actual = scatter_cpu(source, index, reduce="mean", **kwargs)
+        public_kwargs = dict(kwargs)
+        if public_kwargs.get("out") is not None:
+            public_kwargs["out"] = public_kwargs["out"].clone()
+        production = scatter_mean(source, index, **public_kwargs)
+        assert torch.equal(actual, expected), (actual, expected)
+        assert torch.equal(production, expected), (production, expected)
+        assert actual.dtype == source.dtype
+        assert torch.equal(source, original)
+        assert torch.equal(index, original_index)
+
+    @pytest.mark.parametrize("value", [1, -1, 2**24 + 1, -(2**24 + 1), 2**53 + 1, -(2**53 + 1)])
+    @pytest.mark.parametrize("count", [1, 2, 3])
+    def test_large_int64_mean(self, value, count):
+        self._assert_mean(
+            torch.full((count,), value, dtype=torch.int64),
+            torch.zeros(count, dtype=torch.int64),
+            torch.tensor([value], dtype=torch.int64), dim=0,
+        )
+
+    @pytest.mark.parametrize("dim", [0, 1])
+    @pytest.mark.parametrize("has_out", [False, True])
+    def test_noncontiguous_layout_and_out(self, dim, has_out):
+        large = 2**24 + 1
+        rows = [[large, large + 2, large + 4], [-large, -large - 1, -large - 3]]
+        index_rows = [[0, 0, 2], [0, 0, 2]]
+        source = torch.tensor(rows, dtype=torch.int64).t()
+        index = torch.tensor(index_rows, dtype=torch.int64).t()
+        expected = torch.tensor(_integer_mean_rows(rows, index_rows, has_out), dtype=torch.int64).t()
+        if dim == 1:
+            source, index, expected = source.t(), index.t(), expected.t()
+            source = source.t().contiguous().t()
+        out = torch.full(expected.shape, 7, dtype=source.dtype) if has_out else None
+        self._assert_mean(source, index, expected, dim=dim, out=out, dim_size=4)
+
+    @pytest.mark.parametrize("dtype", [torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64])
+    @pytest.mark.parametrize("control", ["wrapped_sum", "wide_count", "empty"])
+    def test_typed_sum_overflow_and_empty_buckets(self, dtype, control):
+        if control == "wrapped_sum":
+            limits = torch.iinfo(dtype)
+            span = limits.max - limits.min + 1
+            wrapped_sum = (2 * limits.max - limits.min) % span + limits.min
+            self._assert_mean(
+                torch.full((2,), limits.max, dtype=dtype), torch.tensor([1, 1]),
+                torch.tensor([0, wrapped_sum // 2, 0], dtype=dtype), dim=0, dim_size=3,
+            )
+        elif control == "wide_count":
+            source = torch.zeros(256, dtype=dtype)
+            source[0] = 100
+            expected = 100 if dtype in (torch.uint8, torch.int8) else 0
+            self._assert_mean(source, torch.zeros(256, dtype=torch.int64),
+                              torch.tensor([expected], dtype=dtype), dim=0)
+        else:
+            self._assert_mean(torch.empty(0, dtype=dtype), torch.empty(0, dtype=torch.int64),
+                              torch.zeros(3, dtype=dtype), dim=0, dim_size=3)
+
+    @pytest.mark.parametrize("dtype", [torch.uint8, torch.int8])
+    @pytest.mark.parametrize("device", ["cpu", "npu"])
+    def test_narrow_count_wrap_matches_reference(self, dtype, device):
+        if device == "npu" and (not hasattr(torch, "npu") or not torch.npu.is_available()):
+            pytest.skip("NPU is unavailable")
+        for count, expected in [(127, 0), (128, 100 if dtype == torch.int8 else 0),
+                                (256, 100), (257, 100), (258, 50)]:
+            source = torch.zeros(count, dtype=dtype, device=device)
+            source[0] = 100
+            index = torch.zeros(count, dtype=torch.int64, device=device)
+            expected_output = torch.tensor([expected], dtype=dtype)
+            if device == "cpu":
+                self._assert_mean(source, index, expected_output, dim=0)
+            else:
+                assert torch.equal(scatter_mean(source, index, dim=0).cpu(), expected_output)
+
+    @pytest.mark.parametrize("dtype", [torch.int64, torch.float64])
+    @pytest.mark.parametrize("mode", ["sum", "mul", "mean", "min", "max"])
+    def test_unmodified_reduction_controls(self, dtype, mode):
+        source = torch.tensor([2, 4, 6], dtype=dtype)
+        index = torch.tensor([0, 0, 2])
+        actual = scatter_cpu(source, index, dim=0, dim_size=4, reduce=mode)
+        if mode in ("min", "max"):
+            expected = _scatter_fn(mode)(source, index, dim=0, dim_size=4)
+            assert all(torch.equal(a, b) for a, b in zip(actual, expected))
+        else:
+            expected = scatter(source, index, dim=0, dim_size=4, reduce=mode)
+            assert torch.equal(actual, expected)

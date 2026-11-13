@@ -51,6 +51,7 @@ _L1_DTYPES = {
     torch.uint8,
 }
 _L2_DTYPES = {torch.float64, torch.int64}
+_NARROW_COUNT_DTYPES = {torch.uint8, torch.int8, torch.int16}
 _REDUCE_CODE = {"sum": 0, "add": 0, "mul": 1, "mean": 2, "min": 3, "max": 4}
 _warned_l2 = set()
 _INDEX_BOUNDS_CACHE = {}
@@ -301,7 +302,10 @@ def _finalize_reference(
     views: _ReferenceViews, result: torch.Tensor, request: _ScatterRequest
 ) -> None:
     if views.count is not None:
-        denominator = views.count.clamp_min_(1)
+        denominator = views.count
+        if result.dtype in _NARROW_COUNT_DTYPES:
+            denominator = denominator.to(result.dtype)
+        denominator.clamp_min_(1)
         if result.is_floating_point():
             views.out.div_(denominator)
         else:
@@ -435,12 +439,15 @@ def _run_original_mean_count(
     )
     result, _ = _scatter_forward(src, index, sum_request)
     count_dim = plan.dim if index.dim() > plan.dim else index.dim() - 1
-    # Counts are metadata, not values.  Keeping them in int32 prevents
-    # int8/int16/uint8 overflow when a broadcast index maps many inputs to
-    # the same destination.
+    # Accumulate in a wider tensor, then reproduce the count wrapping that
+    # torch_scatter applies in the source dtype before clamping the divisor.
     count_src = torch.ones(index.size(), dtype=torch.int32, device=src.device)
     count_request = _ScatterRequest(count_dim, None, int(result.size(plan.dim)), "sum")
     count, _ = _scatter_forward(count_src, index, count_request)
+    if src.dtype in _NARROW_COUNT_DTYPES:
+        limits = torch.iinfo(src.dtype)
+        count.remainder_(limits.max - limits.min + 1)
+        count.masked_fill_(count > limits.max, 1)
     count = broadcast(count.clamp_min_(1), result, plan.dim)
     if result.is_floating_point():
         result.div_(count)

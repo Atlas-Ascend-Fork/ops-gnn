@@ -108,8 +108,12 @@ def _finalize_cpu_output(src, out, arg, views, request):
     if views.count is not None:
         nonzero = views.count > 0
         if src.dtype in (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64):
-            quotient = views.out[nonzero].float() / views.count[nonzero].float()
-            views.out[nonzero] = quotient.floor().to(out.dtype)
+            denominator = views.count[nonzero]
+            if src.dtype in (torch.uint8, torch.int8, torch.int16):
+                denominator = denominator.to(src.dtype).clamp_min_(1)
+            views.out[nonzero] = torch.div(
+                views.out[nonzero], denominator, rounding_mode="floor"
+            ).to(out.dtype)
         else:
             views.out[nonzero] /= views.count[nonzero]
     if arg is None:

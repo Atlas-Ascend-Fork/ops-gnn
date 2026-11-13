@@ -107,6 +107,16 @@ __simt_callee__ __aicore__ inline T MulValue(T lhs, T rhs)
 template <typename T, typename CountT>
 __simt_callee__ __aicore__ inline T MeanValue(T value, CountT count)
 {
+    if constexpr (IsSameType<T, uint8_t>::value || IsSameType<T, int8_t>::value ||
+                  IsSameType<T, int16_t>::value) {
+        // torch_scatter counts in the source dtype. Reproduce its wrapping
+        // with unsigned arithmetic and clamp wrapped negative counts to one.
+        constexpr bool unsignedCount = IsSameType<T, uint8_t>::value;
+        uint32_t maxCount = static_cast<uint32_t>(HighestValue<T>());
+        uint32_t mask = unsignedCount ? maxCount : (maxCount << 1U) | 1U;
+        uint32_t wrapped = static_cast<uint32_t>(count) & mask;
+        count = static_cast<CountT>(wrapped <= maxCount ? wrapped : 1U);
+    }
     if (count < static_cast<CountT>(1)) {
         count = static_cast<CountT>(1);
     }
