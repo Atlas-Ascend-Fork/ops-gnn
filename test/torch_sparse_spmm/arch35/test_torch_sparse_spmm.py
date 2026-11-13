@@ -31,6 +31,27 @@ npu = importlib.import_module("ops_gnn.torch_sparse_spmm")
 native_spmm = importlib.import_module("ops_gnn._pybind").torch_sparse_spmm
 
 
+@pytest.mark.parametrize("location", ["lane31", "stride_tail"])
+@pytest.mark.parametrize("invalid_column", [-1, 7])
+def test_validation_reports_single_bad_column_on_lane31_and_stride_tail(location, invalid_column):
+    probe_ptr = torch.tensor([0, 1], dtype=torch.int64, device="npu")
+    probe_col = torch.zeros(1, dtype=torch.int64, device="npu")
+    probe_status = native_spmm.validate(probe_ptr, probe_col, 7)
+    assert int(probe_status.max().item()) == 0
+    stride = probe_status.numel() * 32
+    edges = 2 * stride + 32
+    ptr = torch.tensor([0, edges], dtype=torch.int64, device="npu")
+    col = torch.zeros(edges, dtype=torch.int64, device="npu")
+    bad_index = 31 if location == "lane31" else edges - 1
+    col[bad_index] = invalid_column
+
+    status = native_spmm.validate(ptr, col, 7).cpu()
+    assert int(status.max().item()) == 2
+    assert int(torch.count_nonzero(status).item()) == 1
+    with pytest.raises(ValueError, match="invalid CSR"):
+        npu.csr_spmm(ptr, col, None, torch.ones((7, 1), device="npu"))
+
+
 @pytest.mark.parametrize("feature_weights", [False, True])
 @pytest.mark.parametrize("warm_layout", [False, True])
 def test_sorted_coo_matrix_gradient_uses_forward_value_snapshot(feature_weights, warm_layout):

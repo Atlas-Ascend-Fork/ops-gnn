@@ -394,27 +394,34 @@ __attribute__((aiv)) __global__ __aicore__ void ValueGradKernel(__gm__ int64_t* 
     AscendC::Simt::VF_CALL<ValueGradCompute<T>>(AscendC::Simt::Dim3{512}, ptr, col, mat, grad, out, s);
 }
 
-// One status per AIV block, no atomics and no copying of input data to CPU.
+// One warp scans each AIV block's CSR partition and reduces to one status.
+// Keep the status layout unchanged, without atomics or input copies to CPU.
 __simt_vf__ __aicore__ LAUNCH_BOUND(512) void ValidateCompute(__gm__ int64_t* ptr, __gm__ int64_t* col,
                                                               __gm__ int32_t* status, int64_t m, int64_t n, int64_t e)
 {
-    if (AscendC::Simt::GetThreadIdx() != 0) {
-        return;
-    }
-    int64_t block = AscendC::Simt::GetBlockIdx(), blocks = AscendC::Simt::GetBlockNum();
+    int64_t lane = AscendC::Simt::GetThreadIdx();
+    int64_t block = AscendC::Simt::GetBlockIdx();
+    int64_t index = block * 32 + lane;
+    int64_t stride = static_cast<int64_t>(AscendC::Simt::GetBlockNum()) * 32;
     int32_t bad = 0;
-    for (int64_t i = block; i <= m; i += blocks) {
+    for (int64_t i = index; i <= m; i += stride) {
         int64_t v = ptr[i];
         if (v < 0 || v > e || (i == 0 && v != 0) || (i == m && v != e) || (i < m && v > ptr[i + 1])) {
             bad = 1;
         }
     }
-    for (int64_t i = block; i < e; i += blocks) {
+    for (int64_t i = index; i < e; i += stride) {
         if (col[i] < 0 || col[i] >= n) {
             bad = 2;
         }
     }
-    status[block] = bad;
+    for (int offset = 16; offset > 0; offset /= 2) {
+        int32_t other = AscendC::Simt::WarpShflDownSync(bad, offset);
+        bad = other > bad ? other : bad;
+    }
+    if (lane == 0) {
+        status[block] = bad;
+    }
 }
 __attribute__((aiv)) __global__ __aicore__ void ValidateKernel(__gm__ int64_t* ptr, __gm__ int64_t* col,
                                                                __gm__ int32_t* status, int64_t m, int64_t n, int64_t e)
