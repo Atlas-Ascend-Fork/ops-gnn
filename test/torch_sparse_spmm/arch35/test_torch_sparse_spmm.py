@@ -89,6 +89,16 @@ def pyg_nn():
     return importlib.import_module("torch_geometric.nn")
 
 
+def test_cpu_spmm_keeps_original_implementation():
+    # Regression: reloading must not let the adapters capture themselves as the
+    # CPU fallback, otherwise the CPU path recurses into itself.
+    importlib.reload(npu)
+    index = torch.tensor([[0, 1], [0, 1]], dtype=torch.int64)
+    value = torch.tensor([1.0, 2.0])
+    out = torch_sparse.spmm(index, value, 2, 2, torch.eye(2))
+    assert torch.equal(out, torch.tensor([[1.0, 0.0], [0.0, 2.0]]))
+
+
 @pytest.mark.parametrize("dtype,outdtype", COMBOS)
 @pytest.mark.parametrize("reduce", ["sum", "mean", "min", "max"])
 @pytest.mark.parametrize("batch,feature_values", [(False, False), (True, True)])

@@ -256,7 +256,18 @@ def csr_spmm(
     return result if r >= 2 else result[0]
 
 
-_original_coo = torch_sparse.spmm
+def _original_attr(owner, name):
+    """Return the pre-adaptation callable, surviving ``importlib.reload()``.
+
+    Reloading this module re-executes the assignments that replace
+    ``owner.<name>``, so the current attribute may already be our adapter.
+    The first captured value is cached in the owner's dict instead.
+    """
+    registry = owner.__dict__.setdefault("_ops_gnn_originals", {})
+    return registry.setdefault(name, owner.__dict__[name])
+
+
+_original_coo = _original_attr(torch_sparse, "spmm")
 
 
 def _build_coo_layout(index, m):
@@ -332,8 +343,8 @@ def coo_spmm(index: torch.Tensor, value: Optional[torch.Tensor], m: int, n: int,
 
 
 _mm_module = importlib.import_module("torch_sparse.matmul")
-_old_matmul = _mm_module.matmul
-_old_spmm = _mm_module.spmm
+_old_matmul = _original_attr(_mm_module, "matmul")
+_old_spmm = _original_attr(_mm_module, "spmm")
 
 
 def _sparse_rowptr(src, other):
@@ -435,7 +446,7 @@ torch_sparse.SparseTensor.__matmul__ = _tensor_matmul
 if importlib.util.find_spec("torch_geometric") is not None:
     _pyg_utils = importlib.import_module("torch_geometric.utils")
     _pyg_module = importlib.import_module("torch_geometric.utils._spmm")
-    _old_pyg_spmm = _pyg_module.spmm
+    _old_pyg_spmm = _original_attr(_pyg_module, "spmm")
 
     def _pyg_spmm(src, other, reduce="sum"):
         if isinstance(src, torch_sparse.SparseTensor) and other.device.type == "npu":
