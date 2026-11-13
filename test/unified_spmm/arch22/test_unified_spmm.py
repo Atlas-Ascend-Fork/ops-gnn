@@ -11,6 +11,7 @@
 The copy_rhs interface receives edge features already stored in CSR order.
 """
 import ast
+import math
 import os
 import runpy
 from pathlib import Path
@@ -580,3 +581,374 @@ def test_specialized_reference_empty_source(reduction, feature_shape, rows, dtyp
     expected = features.new_zeros((rows,) + feature_shape)
     actual = reference(indptr, indices, features, fp32=fp32)
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+# Host proof cache regressions (Issue #96, A2/A3, real native operators).
+# Run after building this checkout, with PYTHONPATH=python. No mocked
+# extension or CPU fallback: CPU-only machines explicitly skip these
+# integration tests.
+PATHS = ("fp16", "fp32", "batched_fp16", "copy_rhs")
+
+
+@pytest.fixture(scope="module")
+def operators():
+    pytest.importorskip("torch_npu")
+    if not torch.npu.is_available():
+        pytest.skip("Ascend A2/A3 NPU required")
+    torch.npu.set_device(int(os.environ.get("NPU_DEVICE_ID", "0")))
+    name = torch.npu.get_device_name()
+    if not any(model in name for model in ("910B", "910C", "910_93")):
+        pytest.skip(f"arch22 A2/A3 regression, found {name}")
+    from ops_gnn import bspmm, spmm
+    return spmm, bspmm
+
+
+def inputs(path, noncontiguous=False):
+    ptr = torch.tensor([0, 2, 3, 3], dtype=torch.int64)
+    idx = torch.tensor([0, 1, 0], dtype=torch.int64)
+    dtype = torch.float16 if "fp16" in path else torch.float32
+    shape = (3, 2, 17) if path == "batched_fp16" else (3, 17)
+    x = (torch.arange(math.prod(shape)).reshape(shape) % 7 - 3).to(dtype)
+    if noncontiguous:
+        def strided(value):
+            storage = torch.empty(value.shape[:-1] + (value.shape[-1] * 2,),
+                                  device="npu", dtype=value.dtype)
+            view = storage[..., ::2]
+            view.copy_(value)
+            return view
+        return tuple(strided(value) for value in (ptr, idx, x))
+    return ptr.npu(), idx.npu(), x.npu()
+
+
+def invoke(operators, path, ptr, idx, x, reduce, out=None):
+    operation = operators[1] if path == "batched_fp16" else operators[0]
+    return operation(ptr, idx, x, reduce=reduce,
+                     op="copy_rhs" if path == "copy_rhs" else "copy_lhs", out=out)
+
+
+def assert_result(result, path, ptr, idx, x, reduce):
+    expected = unified_spmm_reference(
+        ptr.cpu(), idx.cpu(), x.cpu(), reduce,
+        "copy_rhs" if path == "copy_rhs" else "copy_lhs")
+    torch.testing.assert_close(result.cpu(), expected, rtol=0, atol=0, equal_nan=True)
+
+
+@pytest.mark.parametrize("path", PATHS)
+@pytest.mark.parametrize("reduce", ["sum", "min", "max"])
+@pytest.mark.parametrize("alias", [False, True], ids=["inplace", "data_alias"])
+def test_warm_nan_mutation(operators, path, reduce, alias):
+    ptr, idx, x = inputs(path)
+    target = x.data if alias else x
+    for _ in range(3):
+        result = invoke(operators, path, ptr, idx, x, reduce)
+    assert_result(result, path, ptr, idx, x, reduce)
+    # Both finite->NaN and NaN->finite must invalidate the NaN proof.
+    target[0].fill_(float("nan"))
+    result = invoke(operators, path, ptr, idx, x, reduce)
+    assert_result(result, path, ptr, idx, x, reduce)
+    target[0].fill_(2)
+    result = invoke(operators, path, ptr, idx, x, reduce)
+    assert_result(result, path, ptr, idx, x, reduce)
+
+
+@pytest.mark.parametrize("path", PATHS)
+@pytest.mark.parametrize("field,message", [
+    ("endpoint", "indptr must start at zero and end at nnz"),
+    ("range", "indptr values out of range"),
+    ("order", "indptr must be non-decreasing"),
+    ("index", "indices out of range"),
+])
+@pytest.mark.parametrize("alias", [False, True], ids=["inplace", "data_alias"])
+def test_warm_csr_mutation(operators, path, field, message, alias):
+    if path == "copy_rhs" and field == "index":
+        pytest.skip("copy_rhs does not dereference source index values")
+    ptr, idx, x = inputs(path)
+    for _ in range(3):
+        invoke(operators, path, ptr, idx, x, "sum")
+    target = idx if field == "index" else ptr
+    target = target.data if alias else target
+    if field == "endpoint":
+        target[0] = 1
+    elif field == "range":
+        target[1] = 4
+    elif field == "order":
+        target[1], target[2] = 3, 2
+    else:
+        target[0] = -1
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match=message):
+            invoke(operators, path, ptr, idx, x, "sum")
+
+
+@pytest.mark.parametrize("path", PATHS)
+@pytest.mark.parametrize("inference,noncontiguous,supplied_out", [
+    (True, False, False), (False, True, False), (False, False, True),
+])
+def test_layout_inference_and_out(operators, path, inference, noncontiguous,
+                                  supplied_out):
+    with torch.inference_mode(inference):
+        ptr, idx, x = inputs(path, noncontiguous)
+        out = None
+        if supplied_out:
+            out = torch.empty((3,) + tuple(x.shape[1:]), device=x.device,
+                              dtype=x.dtype)
+        for _ in range(3):
+            result = invoke(operators, path, ptr, idx, x, "max", out)
+        if supplied_out:
+            assert result.data_ptr() == out.data_ptr()
+        x[0].fill_(float("nan"))
+        result = invoke(operators, path, ptr, idx, x, "max", out)
+        assert_result(result, path, ptr, idx, x, "max")
+        idx[0] = -1
+        if path != "copy_rhs":
+            with pytest.raises(RuntimeError, match="indices out of range"):
+                invoke(operators, path, ptr, idx, x, "max", out)
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_nondefault_stream_mutation(operators, path):
+    ptr, idx, x = inputs(path)
+    invoke(operators, path, ptr, idx, x, "min")
+    stream = torch.npu.Stream()
+    stream.wait_stream(torch.npu.current_stream())
+    with torch.npu.stream(stream):
+        x.data[0].fill_(float("nan"))
+        result = invoke(operators, path, ptr, idx, x, "min")
+    stream.synchronize()
+    assert_result(result, path, ptr, idx, x, "min")
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_full_operator_warm_proofs(operators, path):
+    ptr, idx, x = inputs(path)
+    # CPU activities observe host-side ATen dispatch even for NPU tensors.
+    # Profile both calls in one scope, with no unrelated tensor work between
+    # them. A helper-only test cannot establish full-operator cache hits.
+    with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU]) as profile:
+        for _ in range(4):
+            invoke(operators, path, ptr, idx, x, "sum")
+    counts = {event.key: event.count for event in profile.key_averages()}
+    assert counts.get("aten::isnan", 0) == 1, counts
+    assert counts.get("aten::stack", 0) == 1, counts
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_fresh_input_proofs_are_recomputed(operators, path):
+    benchmark = runpy.run_path(str(Path(__file__).with_name("benchmark_unified_spmm.py")))
+    case = next(benchmark["iter_cases"]([path], ("fresh",)))
+    cpu_inputs = [benchmark["make_fresh_inputs"](torch, case, sample) for sample in range(4)]
+    device_inputs = [tuple(value.npu() for value in values) for values in cpu_inputs]
+    # Keep all identities/storage alive and do no tensor work between calls.
+    # This proves the benchmark's prepared-fresh workload is all cache misses,
+    # rather than repeatedly timing one already validated graph.
+    with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU]) as profile:
+        results = [invoke(operators, path, *values, "sum") for values in device_inputs]
+    counts = {event.key: event.count for event in profile.key_averages()}
+    assert counts.get("aten::isnan", 0) == 4, counts
+    assert counts.get("aten::stack", 0) == 4, counts
+    assert counts.get("aten::le", 0) == 0, counts
+    for result, values in zip(results, cpu_inputs):
+        assert_result(result, path, *values, "sum")
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_out_write_invalidates_other_inputs(operators, path):
+    ptr, idx, x = inputs(path)
+    writer = torch.full_like(x, float("nan"))
+    out_alias = x.data
+    for _ in range(3):
+        invoke(operators, path, ptr, idx, x, "max")
+    # out aliases an input from a PREVIOUS invocation, not the writer's inputs.
+    # The public result must reflect the write through the independent alias,
+    # without inspecting private version counters or cache implementation.
+    invoke(operators, path, ptr, idx, writer, "max", out_alias)
+    result = invoke(operators, path, ptr, idx, x, "max")
+    assert_result(result, path, ptr, idx, x, "max")
+
+
+def test_copy_rhs_proof_does_not_bypass_copy_lhs_bounds(operators):
+    ptr, idx, x = inputs("fp32")
+    idx.fill_(99)
+    for _ in range(3):
+        invoke(operators, "copy_rhs", ptr, idx, x, "sum")
+    with pytest.raises(RuntimeError, match="indices out of range"):
+        invoke(operators, "fp32", ptr, idx, x, "sum")
+
+
+@pytest.mark.parametrize("path", PATHS)
+@pytest.mark.parametrize("writer_kind", ["csr_value", "csr_tuple", "coo_value", "coo_tuple"])
+def test_other_native_operator_out_alias(operators, path, writer_kind):
+    from ops_gnn import _pybind
+
+    ptr, idx, x = inputs(path)
+    writer = torch.full_like(x, float("nan"))
+    writer_ptr = torch.arange(4, device=x.device, dtype=torch.int64)
+    writer_idx = torch.arange(3, device=x.device, dtype=torch.int64)
+    out_alias = x.data
+    for _ in range(3):
+        invoke(operators, path, ptr, idx, x, "max")
+    if writer_kind == "csr_value":
+        _pybind.segment_csr_value(writer, writer_ptr, out_alias, "sum")
+    elif writer_kind == "csr_tuple":
+        _pybind.segment_csr(writer, writer_ptr, out_alias, "sum", True)
+    elif writer_kind == "coo_value":
+        _pybind.segment_coo_value(writer, writer_idx, out_alias, 3,
+                                  _pybind.SEGMENT_COO_SUM)
+    else:
+        _pybind.segment_coo_forward(writer, writer_idx, out_alias, 3,
+                                    _pybind.SEGMENT_COO_SUM, True)
+    result = invoke(operators, path, ptr, idx, x, "max")
+    assert torch.isnan(x.cpu()).all()
+    assert_result(result, path, ptr, idx, x, "max")
+
+
+def proof_alias(value, kind):
+    if kind == "view":
+        return value.view_as(value)
+    # set_ creates an independent Tensor sharing storage, not a shared view
+    # version counter. Use only public Tensor/storage APIs in these tests.
+    return torch.empty(0, device=value.device, dtype=value.dtype).set_(
+        value.untyped_storage(), value.storage_offset(), value.size(), value.stride())
+
+
+@pytest.mark.parametrize("path", PATHS)
+@pytest.mark.parametrize("alias_kind", ["view", "storage"])
+def test_warm_nan_alias_mutation(operators, path, alias_kind):
+    ptr, idx, x = inputs(path)
+    alias = proof_alias(x, alias_kind)
+    for _ in range(3):
+        invoke(operators, path, ptr, idx, x, "max")
+    for value in (float("nan"), 2):
+        alias[0].fill_(value)
+        result = invoke(operators, path, ptr, idx, x, "max")
+        assert_result(result, path, ptr, idx, x, "max")
+
+
+@pytest.mark.parametrize("path", PATHS)
+@pytest.mark.parametrize("field", ["pointer", "index"])
+@pytest.mark.parametrize("alias_kind", ["view", "storage"])
+def test_warm_csr_alias_mutation(operators, path, field, alias_kind):
+    if path == "copy_rhs" and field == "index":
+        pytest.skip("copy_rhs does not dereference source index values")
+    ptr, idx, x = inputs(path)
+    alias = proof_alias(ptr if field == "pointer" else idx, alias_kind)
+    for _ in range(3):
+        invoke(operators, path, ptr, idx, x, "sum")
+    alias[0] = 1 if field == "pointer" else -1
+    message = ("indptr must start at zero and end at nnz" if field == "pointer"
+               else "indices out of range")
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match=message):
+            invoke(operators, path, ptr, idx, x, "sum")
+    alias[0] = 0
+    result = invoke(operators, path, ptr, idx, x, "sum")
+    assert_result(result, path, ptr, idx, x, "sum")
+
+
+@pytest.mark.parametrize("path", PATHS)
+@pytest.mark.parametrize("layout", ["data_rebind", "storage_offset", "stride"])
+def test_warm_feature_rebind(operators, path, layout):
+    ptr, idx, x = inputs(path)
+    shape = tuple(x.shape)
+    if layout == "storage_offset":
+        replacement = torch.full((shape[0] + 1,) + shape[1:], float("nan"),
+                                 device=x.device, dtype=x.dtype)[1:]
+    elif layout == "stride":
+        replacement = torch.full(shape[:-1] + (shape[-1] * 2,), float("nan"),
+                                 device=x.device, dtype=x.dtype)[..., ::2]
+    else:
+        replacement = torch.full_like(x, float("nan"))
+    for _ in range(3):
+        invoke(operators, path, ptr, idx, x, "max")
+    x.data = replacement
+    result = invoke(operators, path, ptr, idx, x, "max")
+    assert_result(result, path, ptr, idx, x, "max")
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_inference_proofs_are_recomputed(operators, path):
+    with torch.inference_mode():
+        ptr, idx, x = inputs(path)
+        assert x.is_inference() and ptr.is_inference() and idx.is_inference()
+        with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU]) as profile:
+            for _ in range(2):
+                result = invoke(operators, path, ptr, idx, x, "sum")
+        counts = {event.key: event.count for event in profile.key_averages()}
+        assert counts.get("aten::isnan", 0) == 2, counts
+        assert counts.get("aten::stack", 0) == 2, counts
+        assert_result(result, path, ptr, idx, x, "sum")
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_external_operation_invalidates_proofs(operators, path):
+    ptr, idx, x = inputs(path)
+    with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU]) as profile:
+        for _ in range(2):
+            invoke(operators, path, ptr, idx, x, "sum")
+        # The observer intentionally invalidates even on unrelated ATen work.
+        unrelated = torch.ones(1, device=x.device)
+        for _ in range(2):
+            result = invoke(operators, path, ptr, idx, x, "sum")
+    counts = {event.key: event.count for event in profile.key_averages()}
+    assert counts.get("aten::isnan", 0) == 2, counts
+    assert counts.get("aten::stack", 0) == 2, counts
+    assert unrelated.item() == 1
+    assert_result(result, path, ptr, idx, x, "sum")
+
+
+@pytest.mark.parametrize("path", ["fp16", "fp32", "batched_fp16"])
+def test_warm_csr_source_count_change(operators, path):
+    ptr, idx, x = inputs(path)
+    smaller = x[:1]
+    for _ in range(3):
+        invoke(operators, path, ptr, idx, x, "sum")
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="indices out of range"):
+            invoke(operators, path, ptr, idx, smaller, "sum")
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_csr_error_priority_after_warm_proof(operators, path):
+    ptr, idx, x = inputs(path)
+    for _ in range(3):
+        invoke(operators, path, ptr, idx, x, "sum")
+    # Simultaneous endpoint, pointer-range/order and index errors must still
+    # report the original first failing criterion on repeated invalid calls.
+    ptr.data.copy_(torch.tensor([1, 4, 2, 3], device=ptr.device))
+    idx.data.fill_(-1)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="indptr must start at zero and end at nnz"):
+            invoke(operators, path, ptr, idx, x, "sum")
+
+
+@pytest.mark.parametrize("path", PATHS)
+@pytest.mark.parametrize("middle", [-1, 4])
+def test_csr_range_error_precedes_order_and_index_errors(operators, path, middle):
+    ptr, idx, x = inputs(path)
+    for _ in range(2):
+        invoke(operators, path, ptr, idx, x, "sum")
+    # Endpoints are valid, but range and order fail together. On copy_lhs
+    # the source indices are also invalid. The cold fallback must report range.
+    ptr.data.copy_(torch.tensor([0, middle, 2, 3], device=ptr.device))
+    idx.data.fill_(-1)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="indptr values out of range"):
+            invoke(operators, path, ptr, idx, x, "sum")
+
+
+@pytest.mark.parametrize("path", PATHS)
+def test_many_tensor_identities(operators, path):
+    # Exercise more than the cache's 256 identities through public operators.
+    # This checks results after churn, not private cache size or eviction order.
+    cases = [inputs(path) for _ in range(260)]
+    for ptr, idx, x in cases:
+        invoke(operators, path, ptr, idx, x, "max")
+    ptr, idx, x = cases[0]
+    del cases
+    x.data[0].fill_(float("nan"))
+    result = invoke(operators, path, ptr, idx, x, "max")
+    assert_result(result, path, ptr, idx, x, "max")

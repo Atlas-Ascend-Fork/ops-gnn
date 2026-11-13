@@ -208,7 +208,8 @@ private:
         uint32_t filled = 1;
         while (filled < runRows) {
             const uint32_t copies = runRows - filled < filled ? runRows - filled : filled;
-            DataCopy(words[firstWord + filled * wordsPerRow], words[firstWord], copies * wordsPerRow);
+            // UB row replication must use the vector pipe in this AIV-only kernel.
+            Copy(words[firstWord + filled * wordsPerRow], words[firstWord], copies * wordsPerRow);
             PipeBarrier<PIPE_V>();
             filled += copies;
         }

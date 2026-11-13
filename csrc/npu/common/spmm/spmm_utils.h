@@ -26,6 +26,7 @@
 #include <torch/extension.h>
 #include "acl/acl.h"
 #include "torch_npu/csrc/core/npu/NPUStream.h"
+#include "common/spmm/host_proof_cache.h"
 #endif
 
 #include "tiling/platform/platform_ascendc.h"
@@ -129,21 +130,7 @@ inline void CheckSpmmCsr(const torch::Tensor& indptr,
                          const torch::Tensor& indices,
                          const SpmmHostShape& shape, const char* api)
 {
-    TORCH_CHECK(indptr.select(0, 0).item<int64_t>() == 0 &&
-                indptr.select(0, shape.rows).item<int64_t>() == shape.edges,
-                api, ": indptr must start at zero and end at nnz");
-    TORCH_CHECK(indptr.ge(0).logical_and(indptr.le(shape.edges)).all().item<bool>(),
-                api, ": indptr values out of range");
-    if (shape.rows) {
-        TORCH_CHECK(indptr.slice(0, 1).ge(
-                        indptr.slice(0, 0, shape.rows)).all().item<bool>(),
-                    api, ": indptr must be non-decreasing");
-    }
-    if (shape.edges) {
-        TORCH_CHECK(indices.ge(0).logical_and(
-                        indices.lt(shape.sources)).all().item<bool>(),
-                    api, ": indices out of range");
-    }
+    CheckCachedSpmmCsr(indptr, indices, shape.rows, shape.sources, shape.edges, api);
 }
 
 inline uint64_t GetSpmmPlatform(const SpmmHostShape& shape,
@@ -183,7 +170,7 @@ inline torch::Tensor LaunchSpmmCopyLhs(const torch::Tensor& indptr,
     auto ptr = indptr.to(at::kInt).contiguous();
     auto idx = indices.to(at::kInt).contiguous();
     auto features = x.contiguous();
-    uint32_t hasNan = x.numel() && x.isnan().any().item<bool>();
+    uint32_t hasNan = CachedHasNan(x);
     auto stream = c10_npu::getCurrentNPUStream(x.get_device()).stream();
     if (x.dim() == 3) {
         batchLaunch(blocks, stream, features.data_ptr(), result.data_ptr(),
@@ -208,6 +195,7 @@ inline torch::Tensor RunSpmmCopyLhs(const torch::Tensor& indptr,
     SpmmHostShape shape = GetSpmmShape(indptr, indices, x);
     CheckSpmmLimits(shape, indptr.numel(), api);
     CheckSpmmOut(out, x, indptr, indices, shape, api);
+    SpmmProofScope proofs(out.has_value());
     CheckSpmmCsr(indptr, indices, shape, api);
     uint32_t blocks = 0;
     uint64_t ubBytes = GetSpmmPlatform(shape, blocks, api);

@@ -180,14 +180,15 @@ private:
         LocalTensor<uint32_t> featureWords = featureLocal.ReinterpretCast<uint32_t>();
         LocalTensor<uint32_t> repeatWords = repeatLocal.ReinterpretCast<uint32_t>();
         const uint32_t wordsPerRow = copyBytes / sizeof(uint32_t);
-        DataCopy(repeatWords, featureWords, wordsPerRow);
+        // Both tensors are in UB: keep this on the vector pipe, not UB-to-L1 MTE.
+        Copy(repeatWords, featureWords, wordsPerRow);
         PipeBarrier<PIPE_V>();
         // Double the prepared rows each step to avoid one UB copy per output row.
         uint32_t filledRows = 1;
         while (filledRows < preparedRows) {
             const uint32_t copyRows = (preparedRows - filledRows) < filledRows
                 ? (preparedRows - filledRows) : filledRows;
-            DataCopy(repeatWords[filledRows * wordsPerRow], repeatWords, copyRows * wordsPerRow);
+            Copy(repeatWords[filledRows * wordsPerRow], repeatWords, copyRows * wordsPerRow);
             PipeBarrier<PIPE_V>();
             filledRows += copyRows;
         }

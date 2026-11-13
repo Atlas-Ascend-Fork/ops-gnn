@@ -129,6 +129,22 @@ def test_float64_l2_preserves_raw_bits_and_nan_payload():
     assert torch.equal(actual_bits, expected_bits)
 
 
+@pytest.mark.parametrize("feature_count", [8, 40, 256])
+def test_aligned_repeat_buffer_preserves_raw_bits(feature_count):
+    """Exercise UB vector replication, including a repeat-buffer boundary."""
+    _require_npu()
+    patterns = torch.tensor(
+        [0, -9223372036854775808, 0x7FF8000000000042, 0x3FF0000000000001],
+        dtype=torch.int64,
+    )
+    bits = patterns.repeat(4 * feature_count // patterns.numel()).reshape(4, feature_count)
+    lengths = torch.tensor([4097, 0, 1, 4099], dtype=torch.int64)
+    indptr = torch.cat([torch.zeros(1, dtype=torch.int64), lengths.cumsum(0)])
+    actual = gather_csr(bits.view(torch.float64).to("npu"), indptr.to("npu"))
+    expected = torch.repeat_interleave(bits, lengths, dim=0)
+    assert torch.equal(actual.cpu().view(torch.int64), expected)
+
+
 def test_int64_l2_preserves_values_outside_int32_range():
     _require_npu()
     src = torch.tensor(

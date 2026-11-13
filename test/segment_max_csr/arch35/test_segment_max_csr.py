@@ -21,6 +21,24 @@ _GOLDEN = runpy.run_path(Path(__file__).with_name("golden.py"))
 segment_max_csr_cpu = _GOLDEN["segment_max_csr_cpu"]
 
 
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32, torch.int16, torch.int32])
+@pytest.mark.parametrize("features", [7, 64, 2049])
+def test_legacy_first_row_vector_copy_preserves_bits(dtype, features):
+    """Singleton segments copy UB data, covering padded tails and multiple tiles."""
+    if not hasattr(torch, "npu") or not torch.npu.is_available():
+        pytest.skip("requires an available Ascend NPU")
+    torch.npu.set_device(int(os.environ.get("NPU_DEVICE_ID", "0")))
+    if torch.empty((), dtype=dtype).element_size() == 2:
+        patterns = torch.tensor([0, -32768, 0x7E42, 0x3C01], dtype=torch.int16)
+    else:
+        patterns = torch.tensor([0, -2147483648, 0x7FC00042, 0x3F800001], dtype=torch.int32)
+    bits = patterns.repeat(features).reshape(4, features)
+    src = bits.view(dtype).to("npu")
+    indptr = torch.arange(5, dtype=torch.int32, device="npu")
+    actual = ops_gnn.segment_max_csr_legacy(src, indptr)
+    assert torch.equal(actual.cpu().view(patterns.dtype), bits)
+
+
 @pytest.mark.parametrize('shape', [(1,), (1, 8), (2, 4), (3, 8)])
 def test_legacy_rejects_optional_out_shape(shape):
     torch.npu.set_device(int(os.environ.get('NPU_DEVICE_ID', '0')))

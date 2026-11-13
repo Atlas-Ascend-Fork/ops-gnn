@@ -221,6 +221,17 @@ def test_gather_coo_repeated_indices_cross_slabs_and_batch_tail(dtype, logical_f
     _assert_against_references(src, index, actual)
 
 
+@pytest.mark.parametrize("logical_features", (8, 64, 256))
+def test_gather_coo_repeated_slab_preserves_nan_payload(logical_features):
+    """Aligned slab replication is a bit copy, not floating-point arithmetic."""
+    patterns = torch.tensor([0, -2147483648, 0x7FC00042, 0x3F800001], dtype=torch.int32)
+    bits = patterns.repeat(8 * logical_features // patterns.numel()).reshape(2, 4, logical_features)
+    index = torch.tensor([0] * 4097 + [1] + [3] * 2051, dtype=torch.int64).repeat(2, 1)
+    actual = ops_gnn.gather_coo(bits.view(torch.float32).to("npu"), index.to("npu"))
+    expected = bits.gather(1, index.unsqueeze(-1).expand(-1, -1, logical_features))
+    assert torch.equal(actual.cpu().view(torch.int32), expected)
+
+
 def test_gather_coo_rank_one_and_rank_eight():
     _run_case((13,), (17,))
     _run_case((2, 2, 2, 2, 2, 2, 8, 3), (2, 2, 2, 2, 2, 2, 7))

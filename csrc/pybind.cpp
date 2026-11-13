@@ -18,6 +18,7 @@
 #include "segment_csr/op_host/segment_csr.h"
 #include "segment_logsumexp/op_host/segment_logsumexp.h"
 #ifdef OPSGNN_DAV_2201
+#include "common/spmm/host_proof_cache.h"
 #include "sddmm_csr/op_host/sddmm_csr.h"
 #include "spmm_max/op_host/spmm_max.h"
 #include "spmm_min/op_host/spmm_min.h"
@@ -78,6 +79,11 @@ struct ExternalCsrProofBoundary {
     ~ExternalCsrProofBoundary() { ops_gnn::invalidate_segment_csr_proofs(); }
 };
 
+struct ExternalSpmmProofBoundary {
+#ifdef OPSGNN_DAV_2201
+    ops_gnn::sparse::SpmmExternalWriteScope writeScope;
+#endif
+};
 
 void BindSegmentCoo(py::module_& m)
 {
@@ -87,7 +93,7 @@ void BindSegmentCoo(py::module_& m)
     m.attr("SEGMENT_COO_MAX") = static_cast<int32_t>(SEGMENT_COO_MAX);
     m.def("segment_coo_forward", &segment_coo_forward, py::arg("src"), py::arg("index"),
           py::arg("out"), py::arg("dim_size"), py::arg("reduce"), py::arg("return_arg") = true,
-          py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary>());
+          py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary, ExternalSpmmProofBoundary>());
 }
 
 #ifndef OPSGNN_DAV_2201
@@ -119,14 +125,14 @@ void RegisterSegmentCsr(py::module_& module)
     module.def("segment_csr", &ops_gnn::segment_csr,
         py::arg("src"), py::arg("indptr"), py::arg("out") = py::none(),
         py::arg("reduce") = "sum", py::arg("return_arg") = true,
-        py::call_guard<py::gil_scoped_release>());
+        py::call_guard<py::gil_scoped_release, ExternalSpmmProofBoundary>());
     module.def("segment_csr_value",
         [](torch::Tensor src, torch::Tensor indptr,
            c10::optional<torch::Tensor> out, const std::string& reduce) {
             return ops_gnn::segment_csr(std::move(src), std::move(indptr),
                                        std::move(out), reduce, false)[0];
         }, py::arg("src"), py::arg("indptr"), py::arg("out") = py::none(),
-        py::arg("reduce") = "sum", py::call_guard<py::gil_scoped_release>());
+        py::arg("reduce") = "sum", py::call_guard<py::gil_scoped_release, ExternalSpmmProofBoundary>());
 }
 
 #ifndef OPSGNN_DAV_2201
@@ -152,6 +158,7 @@ void BindSegmentLogSumExp(py::module_& m)
 #ifdef OPSGNN_DAV_2201
 void BindArch22(py::module_& m)
 {
+    ops_gnn::sparse::spmm_proof_detail::EnsureObserver();
     m.attr("npu_arch") = "dav-2201";
     BindSegmentCoo(m);
     BindSegmentLogSumExp(m);
@@ -161,12 +168,12 @@ void BindArch22(py::module_& m)
               return std::get<0>(segment_coo_forward(std::move(src), std::move(index),
                                    std::move(out), dimSize, reduce, false));
           }, py::arg("src"), py::arg("index"), py::arg("out"), py::arg("dim_size"),
-          py::arg("reduce"), py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary>());
+          py::arg("reduce"), py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary, ExternalSpmmProofBoundary>());
     m.def("sddmm_csr", &opsgnn::SddmmCsrForward, py::arg("indptr"), py::arg("indices"),
           py::arg("lhs"), py::arg("rhs"), py::arg("op") = "dot",
           py::arg("lhs_target") = 0, py::arg("rhs_target") = 2,
           py::arg("out") = py::none(), "CSR SDDMM on Ascend NPU",
-          py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary>());
+          py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary, ExternalSpmmProofBoundary>());
     m.def("spmm_max_csr", &opsgnn::SpmmMaxCsr, py::arg("indptr"), py::arg("indices"),
           py::arg("x"), py::arg("out") = py::none(), "CSR SpMM max on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
     m.def("spmm_min_csr", &opsgnn::SpmmMinCsr, py::arg("indptr"), py::arg("indices"),

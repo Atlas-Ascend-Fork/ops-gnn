@@ -9,6 +9,7 @@
  */
 
 #include "unified_spmm.h"
+#include "common/spmm/host_proof_cache.h"
 #include <algorithm>
 #include <cstdint>
 #include <limits>
@@ -71,19 +72,8 @@ void CheckMetadata(const torch::Tensor& indptr, const torch::Tensor& indices,
 void CheckCsr(const torch::Tensor& indptr, const torch::Tensor& indices,
               int64_t m, int64_t featureRows, int64_t nnz, uint32_t message)
 {
-    TORCH_CHECK(indptr.select(0, 0).item<int64_t>() == 0 &&
-                indptr.select(0, m).item<int64_t>() == nnz,
-                "unified_spmm_csr: indptr must start at zero and end at nnz");
-    TORCH_CHECK(indptr.ge(0).logical_and(indptr.le(nnz)).all().item<bool>(),
-                "unified_spmm_csr: indptr values out of range");
-    if (m) {
-        TORCH_CHECK(indptr.slice(0, 1).ge(indptr.slice(0, 0, m)).all().item<bool>(),
-                    "unified_spmm_csr: indptr must be non-decreasing");
-    }
-    if (message == UNIFIED_SPMM_COPY_LHS && nnz) {
-        TORCH_CHECK(indices.ge(0).logical_and(indices.lt(featureRows)).all().item<bool>(),
-                    "unified_spmm_csr: indices out of range");
-    }
+    ops_gnn::sparse::CheckCachedSpmmCsr(indptr, indices, m, featureRows, nnz,
+                                      "unified_spmm_csr", message == UNIFIED_SPMM_COPY_LHS);
     if (message == UNIFIED_SPMM_COPY_RHS) {
         TORCH_CHECK(featureRows == nnz,
                     "unified_spmm_csr: copy_rhs requires x.size(0) == indices.numel()");
@@ -137,6 +127,7 @@ torch::Tensor UnifiedSpmmCsr(const torch::Tensor& indptr, const torch::Tensor& i
     TORCH_CHECK(op != "copy_rhs" || x.scalar_type() == at::kFloat,
                 "unified_spmm_csr: copy_rhs supports only float32");
     c10::DeviceGuard guard(x.device());
+    ops_gnn::sparse::SpmmProofScope proofs(out.has_value());
     int64_t k = x.size(0);
     int64_t nnz = indices.numel();
     CheckCsr(indptr, indices, m, k, nnz, messageCode);
@@ -153,7 +144,7 @@ torch::Tensor UnifiedSpmmCsr(const torch::Tensor& indptr, const torch::Tensor& i
     auto features = x.contiguous();
     uint32_t dtype = x.scalar_type() == at::kFloat ?
                      UNIFIED_SPMM_DTYPE_FP32 : UNIFIED_SPMM_DTYPE_FP16;
-    uint32_t hasNan = x.numel() && x.isnan().any().item<bool>();
+    uint32_t hasNan = ops_gnn::sparse::CachedHasNan(x);
     std::vector<int32_t> hostTiling = {
         static_cast<int32_t>(m), static_cast<int32_t>(k), static_cast<int32_t>(n),
         static_cast<int32_t>(nnz), static_cast<int32_t>(ubBytes),

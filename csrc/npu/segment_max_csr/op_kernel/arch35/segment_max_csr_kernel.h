@@ -193,7 +193,8 @@ private:
 
             WaitFlag<HardEvent::MTE2_V>(eventIdMte2ToV_0);
 
-            DataCopy(outLocal, srcLocal, MAX_DEAL_NUM);
+            // Copy the first row bit-for-bit within UB on the vector pipe.
+            Copy(outLocal, srcLocal, MAX_DEAL_NUM);
 
             WriteOutput(outBase + offset, MAX_DEAL_NUM);
         }
@@ -206,7 +207,7 @@ private:
 
         WaitFlag<HardEvent::MTE2_V>(eventIdMte2ToV_0);
 
-        DataCopy(outLocal, srcLocal, KtaillengthCopy);
+        Copy(outLocal, srcLocal, KtaillengthCopy);
 
         WriteOutput(outBase + tailOffset, Ktaillength);
     }
