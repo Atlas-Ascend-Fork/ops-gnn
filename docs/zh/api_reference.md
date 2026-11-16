@@ -313,6 +313,51 @@ segment_logsumexp(src, indptr, out=None)  # Tensor
 
 `indptr[0] > 0` 时前导行不属于任何段，会被忽略；本算子要求
 `indptr[-1] == src.size(0)`，不接受段外的尾部行（比 `segment_csr` 更严格）。
+### scatter_softmax — 分组 softmax
+
+在 Ascend A2/A3（arch22）与 Ascend 950（arch35）上按 `index` 分组计算
+softmax，参数与 `torch_scatter.scatter_softmax` 一致（`dim` 默认 0，`index` 限定为一维）：
+
+```python
+scatter_softmax(src, index, dim=0, dim_size=None)  # Tensor
+```
+
+对每个分组 `g`，沿 `dim` 计算数值稳定的 softmax：
+
+```text
+out[i] = exp(src[i] - max_g) / sum_j exp(src[j] - max_g)
+```
+
+其中 `max_g` 是元素 `i` 所属分组的最大值，`j` 遍历该分组的全部元素；输出
+形状、dtype 和设备均与 `src` 相同。
+
+| 参数 | 约束 |
+| --- | --- |
+| `src` | NPU 张量；支持 float16、float32、bfloat16 |
+| `index` | 同设备 1 维 int32/int64 张量；长度必须等于 `src.size(dim)`，取值非负且小于 `dim_size` |
+| `dim` | 沿其计算 softmax 的维度，支持负维度，默认 0 |
+| `dim_size` | 分组数；省略时取 `index.max() + 1`，可大于该值以保留空分组 |
+
+实现为独立的设备侧算子（`csrc/npu/scatter_softmax`），arch22（A2/A3）与
+arch35（950）共用同一份 AscendC 内核源码。`index` 不要求有序，逐组归约由 MTE3
+原子单元完成（当整个归约工作区能放进 UB 时改为核内累加、末尾一次原子回写）：
+前向三遍（逐组求最大值 → 计算 `exp(src - max)` 并逐组累加 → 归一化），反向两遍
+（逐组累加 `out * grad` → `out * (grad - sum)`）。所有归约在 float32 中完成，
+fp16/bf16 的单组长度不受 65504 上限限制；反向按分组 softmax 的 Jacobian 解析
+计算，因此支持 autograd，可用于 GAT 等训练场景。空分组不产生输出元素；整组为
+`-inf` 时输出 `NaN`；分组内含 `+inf` 时该特征列整列为 `NaN`（逐特征列独立判定），
+均与 PyTorch `softmax` 语义一致。
+
+> 精度与开销：逐组归约使用 fp32 工作区，大小为
+> `2 × 分组数 × 尾部元素数 × 4` 字节（最大值与和），因此显存占用随分组数线性
+> 增长。同一分组内元素的累加顺序由原子操作决定，由此带来的浮点舍入差异远小于
+> 源 dtype 的容差；内核不使用 `argsort`/`bincount`，`index` 无序时也有稳定的
+> 复杂度。`exp` 与输出仍按源 dtype 舍入，独立 golden 使用 float64 参考。
+>
+> 调度：每个核负责一段连续的行，按批（最多 8 行，按 UB 预算自适应）装载、计算、
+> 写回，三个流水阶段每批只同步一次；当 `batch × 分组数 × 对齐后的尾部元素数`
+> 不超过 16 KB 时，归约在核内 UB 累加，末尾每核只向显存回写一次，避免多核同时
+> 原子更新同一行。
 
 ```python
 import torch
@@ -320,14 +365,16 @@ import torch_npu
 import ops_gnn
 
 src = torch.tensor([[1., 2.], [3., 4.], [5., 6.]], device="npu")
-indptr = torch.tensor([0, 2, 3], dtype=torch.int64, device="npu")
-result = ops_gnn.segment_logsumexp(src, indptr)
-# tensor([[3.1269, 4.1269], [5.0000, 6.0000]], device='npu:0')
+index = torch.tensor([0, 1, 1], dtype=torch.int64, device="npu")
+result = ops_gnn.scatter_softmax(src, index, dim=0, dim_size=2)
+# 分组 0: [[1., 2.]]                 -> [[1., 1.]]
+# 分组 1: [[3., 4.], [5., 6.]]       -> [[0.1192, 0.1192], [0.8808, 0.8808]]
 ```
 
-> 精度：段内最大值、`sum(exp(src - max))` 与 `log` 全部在 float32 中完成，
-> `exp` 与输出按源 dtype 舍入，因此单段长度不受 fp16 的 65504 上限限制；
-> 独立 golden 使用 float64 累加。
+> 说明：前向的逐组归约在 float32 中完成，因此 fp16/bf16 的单组长度不受 65504
+> 上限限制；`exp` 与输出仍按源 dtype 舍入。独立 golden 使用 float64 参考。
+> 测试位于 `test/scatter_softmax/`，性能脚本为
+> `test/scatter_softmax/benchmark_scatter_softmax.py`。
 
 ---
 

@@ -328,6 +328,60 @@ so `src.size(0)` must not exceed `2**31 - 1`.
 When `indptr[0] > 0`, leading rows belong to no segment and are ignored. This
 operator requires `indptr[-1] == src.size(0)` and does not accept trailing rows
 outside the segments, which is stricter than `segment_csr`.
+### scatter_softmax — Grouped Softmax
+
+Computes a grouped softmax along `dim` on Ascend A2/A3 (arch22) and Ascend
+950 (arch35). The call surface matches `torch_scatter.scatter_softmax`:
+
+```python
+scatter_softmax(src, index, dim=0, dim_size=None)  # Tensor
+```
+
+For every group `g`, the numerically stable softmax along `dim` is:
+
+```text
+out[i] = exp(src[i] - max_g) / sum_j exp(src[j] - max_g)
+```
+
+where `max_g` is the maximum of the group that `i` belongs to and `j` runs
+over the elements of that group. The output keeps the shape, dtype and device
+of `src`.
+
+| Argument | Contract |
+| --- | --- |
+| `src` | NPU Tensor; float16, float32, or bfloat16 |
+| `index` | Same-device 1-D int32/int64 Tensor; length must equal `src.size(dim)`; non-negative and smaller than `dim_size` |
+| `dim` | Dimension along which the softmax is computed; negative values are accepted; defaults to 0 |
+| `dim_size` | Number of groups; defaults to `index.max() + 1` and may be larger to keep empty groups |
+
+The operator is a dedicated device-side implementation
+(`csrc/npu/scatter_softmax`) shared by arch22 (A2/A3) and arch35 (950). Since
+`index` need not be sorted, the per-group reduction is accumulated by the MTE3
+atomic unit (or, when the whole reduction workspace fits in UB, by a private
+per-core accumulator flushed once at the end of the pass): three forward passes
+(per-group maximum, `exp(src - max)` plus its per-group sum, normalization) and
+two backward passes (per-group sum of `out * grad`, then `out * (grad - sum)`).
+Every reduction is evaluated in float32, so a long fp16/bf16 group is not
+limited by the 65504 sum ceiling; the backward pass evaluates the
+grouped-softmax Jacobian analytically, so autograd is available for GAT-style
+training. Empty groups produce no output elements; a group whose values are all
+`-inf` yields `NaN`, and a group containing `+inf` yields an all-`NaN` feature
+column. Both match PyTorch `softmax` semantics.
+
+> Precision and cost: the per-group reductions use an fp32 workspace of
+> `2 x groups x trailing elements x 4` bytes (maximum and sum), so memory grows
+> linearly with the number of groups. The accumulation order inside a group is
+> decided by the atomic unit; the resulting rounding difference is far below the
+> source-dtype tolerance. The kernel needs no `argsort`/`bincount`, so an
+> unsorted `index` keeps a stable cost. `exp` and the output still round in the
+> source dtype, and the standalone golden uses a float64 reference.
+>
+> Scheduling: a core owns a contiguous chunk of rows and buffers a batch of them
+> (up to 8, sized from the UB budget) so that the load, compute and store stages
+> synchronise once per batch instead of once per row. When
+> `batch x groups x padded trailing elements` stays within 16 KB, the reduction
+> passes accumulate in UB and each core writes the workspace back once, which
+> keeps many cores from serialising on the same workspace line.
 
 ```python
 import torch
@@ -335,15 +389,17 @@ import torch_npu
 import ops_gnn
 
 src = torch.tensor([[1., 2.], [3., 4.], [5., 6.]], device="npu")
-indptr = torch.tensor([0, 2, 3], dtype=torch.int64, device="npu")
-result = ops_gnn.segment_logsumexp(src, indptr)
-# tensor([[3.1269, 4.1269], [5.0000, 6.0000]], device='npu:0')
+index = torch.tensor([0, 1, 1], dtype=torch.int64, device="npu")
+result = ops_gnn.scatter_softmax(src, index, dim=0, dim_size=2)
+# group 0: [[1., 2.]]                 -> [[1., 1.]]
+# group 1: [[3., 4.], [5., 6.]]       -> [[0.1192, 0.1192], [0.8808, 0.8808]]
 ```
 
-> Precision: the per-segment maximum, `sum(exp(src - max))` and `log` all run in
-> float32, while `exp` and the output round in the source dtype, so a segment is
-> not limited by the fp16 65504 ceiling; the standalone golden accumulates in
-> float64.
+> Precision: the per-group reductions are evaluated in float32, so an fp16/bf16
+> group is not limited by the 65504 sum ceiling; `exp` and the output still
+> round in the source dtype. The standalone golden uses a float64 reference.
+> Tests live in `test/scatter_softmax/` and the performance script is
+> `test/scatter_softmax/benchmark_scatter_softmax.py`.
 
 ---
 
