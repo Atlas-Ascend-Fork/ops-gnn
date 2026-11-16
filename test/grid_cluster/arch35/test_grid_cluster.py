@@ -161,6 +161,19 @@ def test_truncation_and_noncontiguous():
     check(pos, torch.ones(2), torch.zeros(2), torch.full((2,), 4.0))
 
 
+@pytest.mark.parametrize("dims, axis", [(1, 0), (3, 0), (3, 1), (3, 2)])
+def test_out_of_range_quotient_returns_int64_min(dims, axis):
+    upper = torch.tensor(float(2**63), dtype=torch.float32)
+    just_below_upper = torch.nextafter(upper, torch.zeros_like(upper))
+    quotients = torch.tensor([1e19, -1e19, upper.item(), just_below_upper.item()],
+                             dtype=torch.float32)
+    # Isolate each axis so overflow results cannot cancel in the cluster ID.
+    pos = torch.zeros((quotients.numel(), dims), dtype=torch.float32)
+    pos[:, axis] = quotients
+    bounds = torch.zeros(dims, dtype=torch.float32)
+    check(pos, torch.ones_like(bounds), bounds, bounds)
+
+
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("dims", [2, 3, 16, 32, 64])
 def test_adversarial_division(dtype, dims):

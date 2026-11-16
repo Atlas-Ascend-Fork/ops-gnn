@@ -94,6 +94,9 @@ __simt_callee__ inline int64_t GridIndex(T value, T origin, T size)
     T delta = GridSubtract(value, origin);
     float q = GridDivide(static_cast<float>(delta), static_cast<float>(size));
     if constexpr (Round) q = static_cast<float>(static_cast<T>(q));
+    if (!(q >= -0x1p63f && q < 0x1p63f)) {
+        return static_cast<int64_t>(0x8000000000000000ULL);
+    }
     return static_cast<int64_t>(q);
 }
 
@@ -108,6 +111,9 @@ __simt_callee__ inline int64_t GridIndexReciprocal(T value, T origin, T size, fl
     float q = a * reciprocal;
     q = AscendC::Simt::Fma(AscendC::Simt::Fma(-q, static_cast<float>(size), a), reciprocal, q);
     if constexpr (Round) q = static_cast<float>(static_cast<T>(q));
+    if (!(q >= -0x1p63f && q < 0x1p63f)) {
+        return static_cast<int64_t>(0x8000000000000000ULL);
+    }
     return static_cast<int64_t>(q);
 }
 
