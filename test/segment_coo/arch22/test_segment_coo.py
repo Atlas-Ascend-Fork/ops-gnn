@@ -88,9 +88,9 @@ def npu_api():
     import ops_gnn
 
     torch.npu.set_device(int(os.getenv("NPU_DEVICE_ID", "0")))
-    assert torch.npu.get_device_name().startswith(
-        "Ascend910B"
-    ), "A2 acceptance requires an Ascend A2 NPU"
+    name = torch.npu.get_device_name()
+    assert any(model in name for model in ("910B", "910C", "910_93")), \
+        f"acceptance requires an Ascend A2/A3 NPU, found {name}"
     torch.manual_seed(SEED)
     torch.set_num_threads(int(os.getenv("OMP_NUM_THREADS", "4")))
     return ops_gnn
