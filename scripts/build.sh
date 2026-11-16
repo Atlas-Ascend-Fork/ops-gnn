@@ -141,6 +141,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+case "$BUILD_TYPE" in
+    Debug|Release) ;;
+    *) log_error "不支持的构建类型: $BUILD_TYPE（支持 Debug、Release）" ;;
+esac
 case "$NPU_ARCH" in
     ""|dav-3510|dav-2201) ;;
     *) log_error "不支持的 NPU 架构: $NPU_ARCH（支持 dav-3510、dav-2201）" ;;
@@ -295,7 +299,8 @@ build_python() {
     cd "$PROJECT_ROOT"
 
     # 开发模式安装同时编译原生库并保存可分发的 wheel 包。
-    log_info "安装 Python 包到开发模式..."
+    log_info "安装 Python 包到开发模式 (构建类型: $BUILD_TYPE)..."
+    export OPSGNN_CMAKE_BUILD_TYPE="$BUILD_TYPE"
     if pip_output=$($PYTHON_CMD -m pip install -e . --no-build-isolation 2>&1); then
         :
     elif [[ "$pip_output" == *"externally-managed-environment"* ]]; then

@@ -26,6 +26,7 @@ KERNEL_LABELS = {"A2": "A2-A3", "A3": "A2-A3", "A2-A3": "A2-A3", "950": "950"}
 BUILD_ENVIRONMENT = (
     "BUILD_DOCS", "NPU_ARCH", "TARGET_NPU_ARCH", "CANN_TARGET", "NPU_SMI_BIN",
     "OPSGNN_PREBUILT_DIR", "OPSGNN_PREBUILT_ROOT", "OPSGNN_SOURCE_ROOT",
+    "OPSGNN_CMAKE_BUILD_TYPE",
 )
 
 
@@ -205,6 +206,20 @@ class TestPackaging(unittest.TestCase):
                     run.call_args_list[1].args[0],
                     ["cmake", "--build", f"build/cmake_python_{target}", "--parallel", "4"],
                 )
+
+    def test_cmake_uses_requested_python_build_type(self):
+        for build_type in (None, "Debug", "Release"):
+            with self.subTest(build_type=build_type):
+                environment = {"CANN_TARGET": "950"}
+                if build_type is not None:
+                    environment["OPSGNN_CMAKE_BUILD_TYPE"] = build_type
+                module, _, directory = self.load_setup(environment)
+                os.environ["ASCEND_HOME_PATH"] = str(directory / "cann")
+                with patch.object(module.subprocess, "run") as run:
+                    module.build_with_cmake("950")
+                configure_args = run.call_args_list[0].args[0]
+                build_type_args = [arg for arg in configure_args if arg.startswith("-DCMAKE_BUILD_TYPE=")]
+                self.assertEqual(build_type_args, [f"-DCMAKE_BUILD_TYPE={build_type or 'Release'}"])
 
     def test_prebuilt_reuse_keeps_device_names(self):
         for target, architecture in (("a2", "dav-2201"), ("a3", "dav-2201"), ("950", "dav-3510")):

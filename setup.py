@@ -52,6 +52,8 @@ def build_with_cmake(cann_target):
         raise EnvironmentError("ASCEND_HOME_PATH environment variable not set. Please source set_env.sh first.")
 
     print(f'NPU 架构: {npu_arch}')
+    build_type = os.environ.get('OPSGNN_CMAKE_BUILD_TYPE', 'Release')
+    print(f'构建类型: {build_type}')
     cmake_build_dir = f'build/cmake_python_{cann_target}'
     # 删除 CMakeCache.txt，避免 pip 拷贝源码到临时目录后
     # cmake 检测到缓存的源路径与当前路径不一致而报错
@@ -64,7 +66,7 @@ def build_with_cmake(cann_target):
         'cmake',
         '-DWITH_PYTHON=ON',
         '-DOPSGNN_BUILD_WHEEL=OFF',
-        '-DCMAKE_BUILD_TYPE=Release',
+        f'-DCMAKE_BUILD_TYPE={build_type}',
         f'-DNPU_ARCH={npu_arch}',
         f'-DCANN_TARGET={cann_target}',
         '-S', '.',
