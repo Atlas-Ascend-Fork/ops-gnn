@@ -91,13 +91,22 @@ at::Tensor nearest_npu(const at::Tensor& x, const at::Tensor& y,
 {
     uint32_t batches = ValidateInputs(x, y, ptr_x, ptr_y);
     c10_npu::OptionalNPUGuard guard(x.device());
-    auto out = at::empty({x.size(0)}, x.options().dtype(at::kLong));
     if (x.size(0) == 0) {
-        return out;
+        return at::empty({0}, x.options().dtype(at::kLong));
     }
     TORCH_CHECK(y.size(0) > 0, "nearest: y must contain a point when x is nonempty");
+    // A scalar FP16 query needs no feature reduction. Use the device-wide
+    // primitives instead of scanning a large candidate set with one warp.
+    if (x.scalar_type() == at::kHalf && x.size(0) == 1 && x.size(1) == 1 &&
+        y.size(0) >= 32768 && !ptr_x.has_value()) {
+        auto delta = y.to(at::kFloat).reshape({-1}) -
+                     x.to(at::kFloat).reshape({});
+        delta.mul_(delta);
+        return delta.argmin().reshape({1});
+    }
     TORCH_CHECK(x.numel() <= std::numeric_limits<int64_t>::max() / 4 - y.numel() - x.size(0) - y.size(0),
                 "nearest: workspace size overflow");
+    auto out = at::empty({x.size(0)}, x.options().dtype(at::kLong));
     auto xc = x.contiguous();
     auto yc = y.contiguous();
     auto work = at::empty({x.numel() + y.numel() + x.size(0) + y.size(0)},

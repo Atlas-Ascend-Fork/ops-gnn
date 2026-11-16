@@ -602,3 +602,45 @@ class TestNearestOfficial:
         batch_y = torch.zeros(8, dtype=torch.long)
         with pytest.raises(ValueError):
             ops_gnn.nearest(x.npu(), y.npu(), batch_x=batch_x.npu(), batch_y=batch_y.npu())
+
+
+@pytest.mark.parametrize('count', [32767, 32768, 32769, 131072])
+@pytest.mark.parametrize('noncontiguous', [False, True])
+@pytest.mark.parametrize('one_dimensional', [False, True])
+def test_scalar_half_large_candidates(count, noncontiguous, one_dimensional):
+    torch.npu.set_device(int(os.getenv('NPU_DEVICE_ID', '0')))
+    yc = torch.linspace(-10, 10, count * (2 if noncontiguous else 1)).half()
+    y = yc.npu()
+    if noncontiguous:
+        yc, y = yc[::2], y[::2]
+    xc = torch.tensor([0.125], dtype=torch.float16)
+    x = xc.npu()
+    expected = ((yc.float() - xc.float()[0]) ** 2).argmin().reshape(1)
+    result = ops_gnn.nearest(x if one_dimensional else x[:, None],
+                             y if one_dimensional else y[:, None])
+    assert result.dtype == torch.int64 and result.device == x.device
+    assert torch.equal(result.cpu(), expected)
+    assert torch.equal(x.cpu(), xc) and torch.equal(y.cpu(), yc)
+
+
+@pytest.mark.parametrize('count', [32768, 131072])
+def test_scalar_half_large_candidate_ties(count):
+    torch.npu.set_device(int(os.getenv('NPU_DEVICE_ID', '0')))
+    x = torch.zeros(1, dtype=torch.float16, device='npu')
+    y = torch.full((count,), 5., dtype=torch.float16, device='npu')
+    y[13], y[-1] = -1., 1.
+    assert ops_gnn.nearest(x, y).cpu().tolist() == [13]
+    y.zero_()
+    assert ops_gnn.nearest(x, y).cpu().tolist() == [0]
+
+
+def test_scalar_half_large_candidates_nondefault_stream():
+    torch.npu.set_device(int(os.getenv('NPU_DEVICE_ID', '0')))
+    stream = torch.npu.Stream()
+    with torch.npu.stream(stream):
+        x = torch.zeros(1, 1, dtype=torch.float16, device='npu')
+        y = torch.ones(32768, 1, dtype=torch.float16, device='npu')
+        y[1234].zero_()
+        consumed = ops_gnn.nearest(x, y) + 1
+    stream.synchronize()
+    assert consumed.cpu().tolist() == [1235]
