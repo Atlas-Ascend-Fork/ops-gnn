@@ -40,15 +40,19 @@ void CheckInt64Vector(const torch::Tensor& tensor, const char* name)
 
 uint32_t ProbabilityThreshold(long double probability)
 {
-    if (probability <= 0.0) {
+    if (probability <= 0.0L) {
         return 0;
     }
-    if (probability >= 1.0) {
+    if (probability >= 1.0L) {
         return std::numeric_limits<uint32_t>::max();
     }
     uint64_t acceptedCount = static_cast<uint64_t>(
         std::floor(probability * static_cast<long double>(UINT32_RANGE)));
-    acceptedCount = acceptedCount == 0 ? 1 : acceptedCount;
+    TORCH_CHECK(acceptedCount > 0,
+                "random_walk: normalized acceptance probability ",
+                static_cast<double>(probability),
+                " is below the 1/2**32 resolution of the 32-bit sampler; "
+                "p and q are too extreme to preserve relative transition weights");
     return static_cast<uint32_t>(acceptedCount - 1);
 }
 

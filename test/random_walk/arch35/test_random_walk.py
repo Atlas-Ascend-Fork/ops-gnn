@@ -149,6 +149,15 @@ def test_extreme_finite_bias_does_not_overflow_normalization():
     assert result.tolist() == [[0, 0, 0]]
 
 
+@pytest.mark.parametrize("p,q", [(2.0 ** 40, 2.0 ** 39), (1.0, 2.0 ** 40)])
+def test_sub_resolution_bias_is_rejected_on_npu(_select_npu_device, p, q):
+    row = torch.tensor([0, 1, 1], dtype=torch.int64, device="npu")
+    col = torch.tensor([1, 0, 2], dtype=torch.int64, device="npu")
+    start = torch.tensor([0], dtype=torch.int64, device="npu")
+    with pytest.raises(RuntimeError, match="resolution"):
+        ops_gnn.random_walk(row, col, start, 2, p=p, q=q)
+
+
 
 
 @pytest.fixture(scope="module")
