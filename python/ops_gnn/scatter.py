@@ -202,12 +202,14 @@ def _index_hot_target(index: torch.Tensor) -> int:
         return cached[2]
 
     cpu_index = index.detach().cpu()
-    counts = torch.bincount(cpu_index)
+    # bincount allocates max(index) + 1 counters. unique sorts the input and
+    # uses memory that scales with index.numel(), even for very large target IDs.
+    unique_targets, counts = torch.unique(cpu_index, return_counts=True)
     hot_target = -1
-    if counts.numel() > 0:
-        hot_count, hot_index = counts.max(dim=0)
+    if unique_targets.numel() > 0:
+        hot_count, hot_pos = counts.max(dim=0)
         if int(hot_count) * 2 > index.numel():
-            hot_target = int(hot_index)
+            hot_target = int(unique_targets[hot_pos])
 
     if len(_INDEX_HOT_TARGET_CACHE) >= _INDEX_BOUNDS_CACHE_LIMIT:
         stale = [key for key, value in _INDEX_HOT_TARGET_CACHE.items()

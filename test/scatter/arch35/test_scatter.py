@@ -27,7 +27,7 @@ from ops_gnn import (
     scatter_mul,
     scatter_sum,
 )
-from ops_gnn.scatter import _warned_l2
+from ops_gnn.scatter import _index_hot_target, _warned_l2
 
 _GOLDEN = runpy.run_path(Path(__file__).with_name("golden.py"))
 reduce_selected = _GOLDEN["reduce_selected"]
@@ -1041,3 +1041,39 @@ class TestScatterGoldenIntegerMean:
         else:
             expected = scatter(source, index, dim=0, dim_size=4, reduce=mode)
             assert torch.equal(actual, expected)
+
+
+@pytest.mark.parametrize("reduce", ["sum", "mean", "min", "max"])
+# Regression: a few huge target ids must not make the hot-target
+# probe allocate one counter per possible target (torch.bincount expands to
+# max(index)+1).  The probe switches to unique(return_counts=True), so keep
+# the probe result and the reduction outputs correct for outlier-laden indices.
+def test_hot_target_probe_survives_outlier_target_ids(reduce):
+    torch.npu.set_device(DEVICE_ID)
+    rows = 4096
+    src = torch.randn(rows, 4, dtype=torch.float32)
+    index = torch.zeros(rows, dtype=torch.long)
+    index[0] = 2_000_000  # outlier target; the majority target stays 0
+    assert _index_hot_target(index.npu()) == 0
+
+    expected = torch.zeros(2_000_001, 4, dtype=torch.float32)
+    if reduce == "sum":
+        expected[0] = src[1:].sum(0)
+    elif reduce == "mean":
+        expected[0] = src[1:].mean(0)
+    elif reduce == "min":
+        expected[0] = src[1:].min(0).values
+    else:
+        expected[0] = src[1:].max(0).values
+    expected[2_000_000] = src[0]
+
+    fn = _scatter_fn(reduce)
+    actual = fn(src.npu(), index.npu(), dim=0)
+    if reduce in ("min", "max"):
+        _assert_match(actual[0], expected, torch.float32)
+        # The outlier target has a single contributor (position 0).
+        assert torch.equal(
+            actual[1][2_000_000].cpu(), torch.zeros(4, dtype=torch.int64)
+        )
+    else:
+        _assert_match(actual, expected, torch.float32)
