@@ -202,6 +202,32 @@ def test_dispatcher_entry():
     assert torch.ops.torch_cluster.nearest(x, y, ptr, ptr).cpu().tolist() == [0, 1]
 
 
+@pytest.mark.parametrize("px,py", [
+    ([1, 2], [0, 2]),    # first entry must be zero
+    ([0, 1], [0, 2]),    # ptr_x must end at n
+    ([0, 2], [0, 1]),    # ptr_y must end at m
+    ([0, 2, 1], [0, 1, 3]),  # non-decreasing
+    ([0, 1, 2, 2], [0, 1, 1, 2]),  # empty y segment with nonempty x segment
+])
+def test_dispatcher_rejects_malformed_pointers(px, py):
+    x = torch.tensor([[0.], [9.]], device="npu")
+    y = torch.tensor([[1.], [10.]], device="npu")
+    ptr_x = torch.tensor(px, dtype=torch.long, device="npu")
+    ptr_y = torch.tensor(py, dtype=torch.long, device="npu")
+    with pytest.raises(RuntimeError):
+        torch.ops.torch_cluster.nearest(x, y, ptr_x, ptr_y)
+
+
+def test_dispatcher_accepts_empty_matched_segments():
+    # An x segment and its y segment may both be empty.
+    x = torch.tensor([[0.], [9.]], device="npu")
+    y = torch.tensor([[1.], [10.]], device="npu")
+    ptr_x = torch.tensor([0, 0, 2], dtype=torch.long, device="npu")
+    ptr_y = torch.tensor([0, 0, 2], dtype=torch.long, device="npu")
+    out = torch.ops.torch_cluster.nearest(x, y, ptr_x, ptr_y).cpu()
+    assert out.tolist() == [0, 1]
+
+
 def test_existing_dispatcher_schema():
     code = '''
 import torch

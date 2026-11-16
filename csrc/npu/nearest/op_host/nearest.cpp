@@ -21,6 +21,32 @@
 namespace opsgnn {
 namespace {
 
+void ValidatePointerLayout(const at::Tensor& ptr_x, const at::Tensor& ptr_y,
+                           int64_t n, int64_t m)
+{
+    const auto host_x = ptr_x.cpu();
+    const auto host_y = ptr_y.cpu();
+    const int64_t* px = host_x.data_ptr<int64_t>();
+    const int64_t* py = host_y.data_ptr<int64_t>();
+    const int64_t len = host_x.numel();
+    auto check_layout = [len](const int64_t* v, int64_t total, const char* name) {
+        TORCH_CHECK(v[0] == 0, "nearest: ", name, "[0] must be 0, got ", v[0]);
+        TORCH_CHECK(v[len - 1] == total, "nearest: ", name,
+                    " must end with the point count ", total, ", got ", v[len - 1]);
+        for (int64_t i = 1; i < len; ++i) {
+            TORCH_CHECK(v[i] >= v[i - 1], "nearest: ", name,
+                        " must be non-decreasing at index ", i, ", got ",
+                        v[i - 1], " -> ", v[i]);
+        }
+    };
+    check_layout(px, n, "ptr_x");
+    check_layout(py, m, "ptr_y");
+    for (int64_t i = 1; i < len; ++i) {
+        TORCH_CHECK(py[i] != py[i - 1] || n == 0 || px[i] == px[i - 1],
+                    "nearest: y segment ", i - 1, " is empty while its x segment is not");
+    }
+}
+
 uint32_t ValidateInputs(const at::Tensor& x, const at::Tensor& y,
                         const c10::optional<at::Tensor>& ptr_x,
                         const c10::optional<at::Tensor>& ptr_y)
@@ -50,6 +76,7 @@ uint32_t ValidateInputs(const at::Tensor& x, const at::Tensor& y,
         TORCH_CHECK(ptr_x->numel() == ptr_y->numel() && ptr_x->numel() >= 2 &&
                     ptr_x->numel() <= std::numeric_limits<int32_t>::max(),
                     "nearest: pointers must have equal length >= 2");
+        ValidatePointerLayout(*ptr_x, *ptr_y, x.size(0), y.size(0));
         batches = static_cast<uint32_t>(ptr_x->numel() - 1);
     }
     return batches;
