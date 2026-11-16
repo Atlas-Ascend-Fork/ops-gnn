@@ -135,9 +135,6 @@ __attribute__((aiv)) __global__ __aicore__ void GraclusClusterKernel(
     __gm__ int64_t* node_perm, __gm__ int64_t* cluster,
     uint32_t numNodes, uint32_t hasWeight, uint32_t weightMode)
 {
-    if (AscendC::GetBlockIdx() != 0) {
-        return;
-    }
     InitClusters(cluster, numNodes);
     for (uint32_t permIdx = 0; permIdx < numNodes; ++permIdx) {
         ProcessNode(node_perm[permIdx], rowptr, col, weight, cluster, numNodes, hasWeight, weightMode);

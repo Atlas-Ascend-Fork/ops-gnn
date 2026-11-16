@@ -30,6 +30,23 @@ def test_tc01_small_graph_without_weight():
     _run_reference_and_npu(row, col, seed=11)
 
 
+@pytest.mark.parametrize("order, expected", [
+    ([0, 1, 2], [0, 1, 0]),
+    ([1, 0, 2], [0, 1, 1]),
+])
+def test_shared_neighbor_is_claimed_by_first_node(monkeypatch, order, expected):
+    _npu_or_skip()
+    permutation = torch.tensor(order)
+    monkeypatch.setattr(torch, "randperm", lambda size, *, device: permutation.to(device))
+    row = torch.tensor([0, 1], dtype=torch.long, device="npu")
+    col = torch.tensor([2, 2], dtype=torch.long, device="npu")
+    weight = torch.tensor([1.0, 2.0], device="npu")
+
+    result = ops_gnn.graclus_cluster(row, col, weight, num_nodes=3)
+
+    torch.testing.assert_close(result.cpu(), torch.tensor(expected))
+
+
 def test_npu_weighted_calls_advance_node_permutation_rng():
     _npu_or_skip()
     row = torch.tensor([0, 0, 1, 2], dtype=torch.long, device="npu")
