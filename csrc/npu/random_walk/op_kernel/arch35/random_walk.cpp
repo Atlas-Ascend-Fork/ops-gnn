@@ -255,37 +255,6 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(LAUNCH_THREADS) void RandomWalkNode2VecSimt(
     }
 }
 
-__simt_vf__ __aicore__ LAUNCH_BOUND(NODE2VEC_THREADS_PER_BLOCK) void ResolveWalkEdgesSimt(
-    __gm__ const int64_t* rowptr, __gm__ const int64_t* col, __gm__ const int64_t* nodeOut,
-    __gm__ int64_t* edgeOut, uint64_t startCount, uint32_t walkLength)
-{
-    uint64_t blockIndex = AscendC::Simt::GetBlockIdx();
-    uint64_t blockCount = AscendC::Simt::GetBlockNum();
-    uint64_t threadIndex = AscendC::Simt::GetThreadIdx();
-    uint64_t threadCount = AscendC::Simt::GetThreadNum();
-    uint64_t globalThread = blockIndex * threadCount + threadIndex;
-    uint64_t globalStride = blockCount * threadCount;
-    uint64_t total = startCount * static_cast<uint64_t>(walkLength);
-
-    for (uint64_t index = globalThread; index < total; index += globalStride) {
-        uint64_t walk = index / walkLength;
-        uint32_t step = static_cast<uint32_t>(index - walk * walkLength);
-        uint64_t nodeBase = walk * (static_cast<uint64_t>(walkLength) + 1);
-        int64_t current = nodeOut[nodeBase + step];
-        int64_t next = nodeOut[nodeBase + step + 1];
-        int64_t selectedEdge = -1;
-        int64_t begin = rowptr[current];
-        int64_t end = rowptr[current + 1];
-        for (int64_t edge = begin; edge < end; ++edge) {
-            if (col[edge] == next) {
-                selectedEdge = edge;
-                break;
-            }
-        }
-        edgeOut[index] = selectedEdge;
-    }
-}
-
 __attribute__((aiv)) __global__ __aicore__ void RandomWalkUniformNodeKernel(
     __gm__ const int64_t* rowptr, __gm__ const int64_t* col, __gm__ const int64_t* start,
     __gm__ int64_t* nodeOut, uint64_t startCount, uint32_t walkLength, uint64_t seed, uint64_t offset)
@@ -303,18 +272,6 @@ __attribute__((aiv)) __global__ __aicore__ void RandomWalkUniformEdgeKernel(
     AscendC::Simt::VF_CALL<RandomWalkUniformSimt<true>>(
         AscendC::Simt::Dim3{UNIFORM_THREADS_PER_BLOCK}, rowptr, col, start, nodeOut, edgeOut,
         startCount, walkLength, seed, offset);
-}
-
-__attribute__((aiv)) __global__ __aicore__ void RandomWalkUniformViaNode2VecEdgeKernel(
-    __gm__ const int64_t* rowptr, __gm__ const int64_t* col, __gm__ const int64_t* start,
-    __gm__ int64_t* nodeOut, __gm__ int64_t* edgeOut, uint64_t startCount, uint32_t walkLength,
-    uint64_t seed, uint64_t offset, uint32_t returnThreshold, uint32_t neighborThreshold,
-    uint32_t distantThreshold, bool neighborsSorted)
-{
-    AscendC::Simt::VF_CALL<RandomWalkNode2VecSimt<true, UNIFORM_THREADS_PER_BLOCK>>(
-        AscendC::Simt::Dim3{UNIFORM_THREADS_PER_BLOCK}, rowptr, col, start, nodeOut, edgeOut,
-        startCount, walkLength, seed, offset, returnThreshold, neighborThreshold, distantThreshold,
-        neighborsSorted);
 }
 
 __attribute__((aiv)) __global__ __aicore__ void RandomWalkNode2VecNodeKernel(
@@ -339,15 +296,6 @@ __attribute__((aiv)) __global__ __aicore__ void RandomWalkNode2VecEdgeKernel(
         AscendC::Simt::Dim3{NODE2VEC_THREADS_PER_BLOCK}, rowptr, col, start, nodeOut, edgeOut,
         startCount, walkLength, seed, offset, returnThreshold, neighborThreshold, distantThreshold,
         neighborsSorted);
-}
-
-__attribute__((aiv)) __global__ __aicore__ void ResolveWalkEdgesKernel(
-    __gm__ const int64_t* rowptr, __gm__ const int64_t* col, __gm__ const int64_t* nodeOut,
-    __gm__ int64_t* edgeOut, uint64_t startCount, uint32_t walkLength)
-{
-    AscendC::Simt::VF_CALL<ResolveWalkEdgesSimt>(
-        AscendC::Simt::Dim3{NODE2VEC_THREADS_PER_BLOCK}, rowptr, col, nodeOut, edgeOut,
-        startCount, walkLength);
 }
 
 }  // namespace
