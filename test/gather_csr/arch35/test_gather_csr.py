@@ -283,6 +283,16 @@ def test_uncovered_prefix_is_deterministically_zeroed():
     assert torch.equal(actual.cpu(), torch.tensor([0, 0, 3, 3, 5, 5], dtype=torch.int32))
 
 
+def test_zero_tensor_with_out_zeroes_uncovered_prefix():
+    _require_npu()
+    src = torch.empty((0,), dtype=torch.int32, device="npu")
+    indptr = torch.tensor([2], dtype=torch.int64, device="npu")
+    out = torch.tensor([7, 9], dtype=torch.int32, device="npu")
+    result = gather_csr(src, indptr, out)
+    assert result.data_ptr() == out.data_ptr()
+    assert torch.equal(out.cpu(), torch.zeros(2, dtype=torch.int32))
+
+
 def test_src_out_alias_uses_snapshot():
     _require_npu()
     src = _to_npu([4, 3, 2, 1], torch.int32)

@@ -189,15 +189,21 @@ torch::Tensor HandleEmptyInput(const torch::Tensor& src, const torch::Tensor& in
                                const ValidatedArguments& args)
 {
     int64_t expectedRows = 0;
+    bool hasUncoveredPrefix = false;
     if (indptr.numel() > 0) {
         const uint64_t segmentCount = static_cast<uint64_t>(indptr.size(-1) - 1);
         const uint64_t ptrBatchCount = CheckedProduct(indptr.sizes(), 0, args.dim, "indptr");
-        expectedRows = ValidateIndptr(indptr, ptrBatchCount, segmentCount).outputRows;
+        const auto ptrInfo = ValidateIndptr(indptr, ptrBatchCount, segmentCount);
+        expectedRows = ptrInfo.outputRows;
+        hasUncoveredPrefix = ptrInfo.hasUncoveredPrefix;
     }
     if (args.hasOut) {
         TORCH_CHECK(args.out.size(args.dim) == expectedRows,
                     "gather_csr: out.size(", args.dim, ") must equal indptr endpoint ", expectedRows,
                     " for an empty src, got ", args.out.size(args.dim));
+        if (hasUncoveredPrefix) {
+            args.out.zero_();
+        }
         return args.out;
     }
     auto shape = src.sizes().vec();
