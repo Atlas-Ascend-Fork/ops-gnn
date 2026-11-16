@@ -10,6 +10,7 @@
 
 __all__ = ["random_walk"]
 
+import math
 import weakref
 from typing import Optional, Tuple, Union
 
@@ -174,6 +175,27 @@ def _parse_arguments(args: tuple, kwargs: dict) -> tuple:
     return tuple(values[name] for name in names)
 
 
+def _empty_walk(row: Tensor, start: Tensor, walk_length: int, p: float, q: float,
+                return_edge_indices: bool) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    if start.device.type != "npu":
+        raise RuntimeError("rowptr must be an NPU tensor")
+    if walk_length >= 2**32:
+        raise RuntimeError("walk_length exceeds uint32 range")
+    if row.numel() >= 2**32:
+        raise RuntimeError("random_walk currently supports at most 2**32-1 edges")
+    for name, bias in (("p", p), ("q", q)):
+        if not math.isfinite(bias) or bias <= 0:
+            raise RuntimeError(f"{name} must be finite and greater than zero")
+
+    if walk_length == 0:
+        nodes = start.reshape(start.numel(), 1).clone()
+    else:
+        nodes = start.new_empty((0, walk_length + 1))
+    if return_edge_indices:
+        return nodes, start.new_empty((start.numel(), walk_length))
+    return nodes
+
+
 def random_walk(*args, **kwargs) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Samples uniform or node2vec-biased walks from a COO graph on NPU.
 
@@ -183,6 +205,9 @@ def random_walk(*args, **kwargs) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """
     row, col, start, walk_length, p, q, coalesced, num_nodes, return_edge_indices = _parse_arguments(args, kwargs)
     num_nodes = _validate_inputs(row, col, start, walk_length, num_nodes)
+    if walk_length == 0 or start.numel() == 0:
+        return _empty_walk(row, start, walk_length, float(p), float(q), bool(return_edge_indices))
+
     rowptr, col_work = _prepare_csr(row, col, num_nodes, coalesced)
     start_work = start.contiguous()
 

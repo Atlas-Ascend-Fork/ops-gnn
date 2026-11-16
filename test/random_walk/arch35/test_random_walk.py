@@ -10,6 +10,7 @@
 
 import math
 import os
+from importlib import import_module
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import sys
@@ -236,6 +237,34 @@ def _run_and_check(edge_count: int, walk_length: int, starts: int):
 
 @pytest.mark.usefixtures("_select_npu_device")
 class TestRandomWalk:
+    @staticmethod
+    @pytest.mark.parametrize("starts,steps", [([0, 1], 0), ([], 3)])
+    @pytest.mark.parametrize("return_edges", [False, True])
+    def test_empty_work_skips_csr(monkeypatch, starts, steps, return_edges):
+        module = import_module("ops_gnn.random_walk")
+
+        def unexpected_csr(*args):
+            pytest.fail("empty walks must not prepare CSR")
+
+        monkeypatch.setattr(module, "_prepare_csr", unexpected_csr)
+        row = torch.tensor([0], dtype=torch.long, device="npu")
+        col = torch.tensor([1], dtype=torch.long, device="npu")
+        start = torch.tensor(starts, dtype=torch.long, device="npu")
+        result = ops_gnn.random_walk(
+            row, col, start, steps, return_edge_indices=return_edges,
+        )
+        nodes, edges = result if return_edges else (result, None)
+        assert nodes.shape == (len(starts), steps + 1)
+        assert nodes.device == start.device and nodes.dtype == start.dtype
+        if steps == 0:
+            torch.testing.assert_close(nodes.flatten(), start)
+            assert nodes.data_ptr() != start.data_ptr()
+        if edges is not None:
+            assert edges.shape == (len(starts), steps)
+            assert edges.device == start.device and edges.dtype == start.dtype
+        with pytest.raises(RuntimeError, match="p must be finite and greater than zero"):
+            ops_gnn.random_walk(row, col, start, steps, p=0)
+
     @staticmethod
     @pytest.mark.parametrize("edge_count,walk_length,starts", TEST_CONFIGS)
     def test_configs(edge_count: int, walk_length: int, starts: int):
