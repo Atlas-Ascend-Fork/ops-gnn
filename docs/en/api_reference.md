@@ -433,7 +433,7 @@ def radius_graph(
 | `y` | Tensor [M,F] | in | Query point set |
 | `r` | float | in | Search radius (>0) |
 | `batch_x` / `batch_y` | Tensor | in | Batch membership (must be sorted) |
-| `max_num_neighbors` | int | in | Max neighbors per query (default 32) |
+| `max_num_neighbors` | int | in | Max neighbors per query (default 32); must be positive, the `-1` unlimited mode is unsupported |
 | `ignore_same_index` | bool | in | Skip `i == q` self-loops |
 | `loop` / `flow` | bool/str | in | radius_graph self-loop and direction semantics |
 

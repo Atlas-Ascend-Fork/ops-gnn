@@ -43,34 +43,7 @@ def _parse_radius_arguments(args: Tuple, kwargs: dict) -> tuple:
     return tuple(values[name] for name in _RADIUS_ARG_NAMES)
 
 
-def radius(*args, **kwargs) -> Tensor:
-    r"""Finds all points in :obj:`x` within distance :obj:`r` of each point in
-    :obj:`y` on NPU.
-
-    Public signature follows :func:`torch_cluster.radius`:
-
-    Args:
-        x: source points, shape ``[n, num_features]``.
-        y: query points, shape ``[m, num_features]``.
-        r: search radius.
-        batch_x: optional per-point batch ids for :obj:`x` ``[n]``.
-        batch_y: optional per-point batch ids for :obj:`y` ``[m]``.
-        max_num_neighbors: maximum number of neighbors to return per query.
-        num_workers: unused, kept for interface compatibility.
-        batch_size: number of batches (inferred from batch ids when unset).
-        ignore_same_index: exclude self-connections ``i == j``.
-    """
-    (x, y, r, batch_x, batch_y, max_num_neighbors, num_workers, batch_size,
-     ignore_same_index) = _parse_radius_arguments(args, kwargs)
-
-    if x.numel() == 0 or y.numel() == 0:
-        return torch.empty(2, 0, dtype=torch.long, device=x.device)
-
-    x = x.reshape(-1, 1) if x.dim() == 1 else x
-    y = y.reshape(-1, 1) if y.dim() == 1 else y
-    x = x.contiguous()
-    y = y.contiguous()
-
+def _resolve_batch_size(x, y, batch_x, batch_y, batch_size):
     if batch_size is None:
         batch_size = 1
         if batch_x is not None:
@@ -85,6 +58,45 @@ def radius(*args, **kwargs) -> Tensor:
             batch_size = max(batch_size, int(batch_y.max()) + 1)
     if batch_size <= 0:
         raise ValueError("radius: batch_size must be positive")
+    return batch_size
+
+
+def radius(*args, **kwargs) -> Tensor:
+    r"""Finds all points in :obj:`x` within distance :obj:`r` of each point in
+    :obj:`y` on NPU.
+
+    Public signature follows :func:`torch_cluster.radius`:
+
+    Args:
+        x: source points, shape ``[n, num_features]``.
+        y: query points, shape ``[m, num_features]``.
+        r: search radius.
+        batch_x: optional per-point batch ids for :obj:`x` ``[n]``.
+        batch_y: optional per-point batch ids for :obj:`y` ``[m]``.
+        max_num_neighbors: maximum number of neighbors to return per query;
+            must be positive (torch_cluster's ``-1`` all-neighbor mode is not
+            supported).
+        num_workers: unused, kept for interface compatibility.
+        batch_size: number of batches (inferred from batch ids when unset).
+        ignore_same_index: exclude self-connections ``i == j``.
+    """
+    (x, y, r, batch_x, batch_y, max_num_neighbors, num_workers, batch_size,
+     ignore_same_index) = _parse_radius_arguments(args, kwargs)
+
+    if max_num_neighbors <= 0:
+        raise ValueError(
+            "radius(): max_num_neighbors must be positive; torch_cluster's -1 "
+            "(unlimited) mode is not supported")
+
+    if x.numel() == 0 or y.numel() == 0:
+        return torch.empty(2, 0, dtype=torch.long, device=x.device)
+
+    x = x.reshape(-1, 1) if x.dim() == 1 else x
+    y = y.reshape(-1, 1) if y.dim() == 1 else y
+    x = x.contiguous()
+    y = y.contiguous()
+
+    batch_size = _resolve_batch_size(x, y, batch_x, batch_y, batch_size)
 
     ptr_x: Optional[Tensor] = None
     ptr_y: Optional[Tensor] = None

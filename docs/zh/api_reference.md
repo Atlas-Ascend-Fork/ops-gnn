@@ -407,7 +407,7 @@ def radius_graph(
 | `y` | Tensor [M,F] | 输入 | 查询点集 |
 | `r` | float | 输入 | 搜索半径（>0） |
 | `batch_x` / `batch_y` | Tensor | 输入 | batch 归属（需已排序） |
-| `max_num_neighbors` | int | 输入 | 每查询保留的邻居上限（默认 32） |
+| `max_num_neighbors` | int | 输入 | 每查询保留的邻居上限（默认 32），必须为正整数；不支持 `-1` 不限模式 |
 | `ignore_same_index` | bool | 输入 | 跳过 `i == q` 自环 |
 | `loop` / `flow` | bool/str | 输入 | radius_graph 自环与方向语义 |
 

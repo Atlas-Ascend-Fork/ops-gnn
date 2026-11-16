@@ -236,6 +236,13 @@ def test_batch_radius(device):
     _assert_edges(edge, x, y, _QuerySpec(1.5, 4, (batch_x, batch_y)))
 
 
+@pytest.mark.parametrize("value", [0, -1])
+def test_max_num_neighbors_must_be_positive(value):
+    x = torch.zeros(1, 1)
+    with pytest.raises(ValueError, match="max_num_neighbors must be positive"):
+        radius(x, x, 1.0, max_num_neighbors=value)
+
+
 def test_max_num_neighbors_truncation(device):
     torch.manual_seed(7)
     x = torch.rand(128, 3, device=device)
