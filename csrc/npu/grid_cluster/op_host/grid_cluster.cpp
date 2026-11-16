@@ -12,6 +12,8 @@
 #include "torch_npu/csrc/core/npu/NPUGuard.h"
 #include "torch_npu/csrc/core/npu/NPUStream.h"
 
+#include <cmath>
+
 namespace opsgnn {
 at::Tensor grid_cluster_npu(at::Tensor pos, at::Tensor size,
     std::optional<at::Tensor> optionalStart, std::optional<at::Tensor> optionalEnd)
@@ -30,8 +32,14 @@ at::Tensor grid_cluster_npu(at::Tensor pos, at::Tensor size,
     if (optionalStart) check(*optionalStart);
     if (optionalEnd) check(*optionalEnd);
     c10_npu::OptionalNPUGuard guard(pos.device());
-    TORCH_CHECK(size.gt(0).logical_and(at::isfinite(size)).all().item<bool>(),
-        "grid: size must be positive and finite in every dimension");
+    {
+        at::Tensor size_cpu = size.to(at::kCPU).to(at::kDouble).contiguous();
+        const double* size_data = size_cpu.data_ptr<double>();
+        for (int64_t i = 0; i < size_cpu.numel(); ++i) {
+            TORCH_CHECK(size_data[i] > 0 && std::isfinite(size_data[i]),
+                "grid: size must be positive and finite in every dimension");
+        }
+    }
     auto out = at::empty({pos.size(0)}, pos.options().dtype(at::kLong));
     if (pos.size(0) == 0) return out;
     auto p = pos.contiguous();

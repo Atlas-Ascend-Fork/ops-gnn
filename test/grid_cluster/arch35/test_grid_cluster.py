@@ -246,3 +246,17 @@ def test_invalid_size_rejected(num_points, invalid_size):
     size = torch.tensor([1.0, invalid_size, 1.0], device="npu")
     with pytest.raises(RuntimeError, match="size must be positive and finite"):
         ops_gnn.grid_cluster(pos, size)
+
+
+@pytest.mark.skipif(DEVICE == "cpu", reason="NPU input validation")
+def test_noncontiguous_size_validation():
+    pos = torch.tensor([[4.0, 6.0, 8.0]], device="npu")
+    start = torch.zeros(3, device="npu")
+    size_storage = torch.tensor([2.0, -1.0, 3.0, float("nan"), 4.0], device="npu")
+    size = size_storage[::2]
+    expected = grid_cluster_cpu(pos.cpu(), size.cpu(), start.cpu())
+    assert torch.equal(ops_gnn.grid_cluster(pos, size, start).cpu(), expected)
+
+    size_storage = torch.tensor([2.0, 1.0, 3.0, 1.0, -1.0], device="npu")
+    with pytest.raises(RuntimeError, match="size must be positive and finite"):
+        ops_gnn.grid_cluster(pos, size_storage[::2], start)
