@@ -13,6 +13,7 @@
 """PyTorch-compatible Ascend NPU KNN APIs."""
 
 from inspect import Signature, signature as inspect_signature
+from operator import index
 from typing import NamedTuple, Optional
 
 import torch
@@ -70,9 +71,32 @@ def knn(*args, **kwargs) -> Tensor:
     return _knn_impl(query)
 
 
+def _validate_empty_query(query: _KnnArguments) -> None:
+    x, y, k, batch_x, batch_y, _, _, batch_size = query
+    if x.dim() not in (1, 2) or y.dim() not in (1, 2):
+        raise ValueError("knn: x and y must be one- or two-dimensional")
+    if x.device != y.device or x.device.type != "npu":
+        raise ValueError("knn: x and y must be on the same NPU device")
+    if (1 if x.dim() == 1 else x.size(1)) != (1 if y.dim() == 1 else y.size(1)):
+        raise ValueError("knn: x and y feature dimensions must match")
+    if x.dtype != y.dtype or x.dtype not in (torch.float16, torch.float32):
+        raise ValueError("knn: x and y must have the same float16 or float32 dtype")
+    if index(k) <= 0:
+        raise ValueError("knn: k must be positive")
+    for name, batch, points in (("batch_x", batch_x, x), ("batch_y", batch_y, y)):
+        if batch is not None and batch.numel() != points.size(0):
+            raise ValueError(f"knn: {name} length must equal the point count")
+    if batch_size is not None:
+        if index(batch_size) <= 0:
+            raise ValueError("knn: batch_size must be positive")
+        if batch_size > 1 and (batch_x is None or batch_y is None):
+            raise ValueError("knn: batch_x and batch_y are required when batch_size > 1")
+
+
 def _knn_impl(query: _KnnArguments) -> Tensor:
     x, y, k, batch_x, batch_y, cosine, num_workers, batch_size = query
     if x.numel() == 0 or y.numel() == 0:
+        _validate_empty_query(query)
         return torch.empty(2, 0, dtype=torch.long, device=x.device)
 
     x = x.view(-1, 1) if x.dim() == 1 else x
@@ -123,6 +147,8 @@ def _knn_graph_impl(graph: _GraphArguments) -> Tensor:
         raise ValueError(
             "knn_graph: flow must be 'source_to_target' or "
             "'target_to_source'")
+    if index(graph.k) <= 0:
+        raise ValueError("knn_graph: k must be positive")
     query = _KnnArguments(
         x=graph.x, y=graph.x, k=graph.k + int(not graph.loop),
         batch_x=graph.batch, batch_y=graph.batch, cosine=graph.cosine,

@@ -227,6 +227,48 @@ def test_empty_inputs(ops_gnn, dtype, n, m):
 
 @pytest.mark.npu
 @pytest.mark.usefixtures('npu_environment')
+@pytest.mark.parametrize('case,message', [
+    ('k', 'k must be positive'),
+    ('rank', 'one- or two-dimensional'),
+    ('device', 'same NPU device'),
+    ('features', 'feature dimensions'),
+    ('dtype', 'same float16 or float32 dtype'),
+    ('batch_x', 'batch_x length'),
+    ('batch_y', 'batch_y length'),
+    ('batch_size', 'batch_size must be positive'),
+])
+def test_empty_input_still_validates_arguments(ops_gnn, case, message):
+    x = torch.empty((0, 3), device='npu')
+    y = torch.empty((2, 3), device='npu')
+    kwargs = {'k': 1}
+    if case == 'k':
+        kwargs['k'] = 0
+    elif case == 'rank':
+        x = x.unsqueeze(0)
+    elif case == 'device':
+        y = y.cpu()
+    elif case == 'features':
+        y = y[:, :2]
+    elif case == 'dtype':
+        y = y.half()
+    elif case == 'batch_x':
+        kwargs.update(batch_x=torch.zeros(1, dtype=torch.long, device='npu'), batch_size=1)
+    elif case == 'batch_y':
+        kwargs.update(batch_y=torch.zeros(1, dtype=torch.long, device='npu'), batch_size=1)
+    else:
+        kwargs['batch_size'] = 0
+
+    with pytest.raises(ValueError, match=message):
+        ops_gnn.knn(x, y, **kwargs)
+
+
+def test_empty_graph_rejects_zero_k(knn_module):
+    with pytest.raises(ValueError, match='k must be positive'):
+        knn_module.knn_graph(torch.empty(0, 3), 0)
+
+
+@pytest.mark.npu
+@pytest.mark.usefixtures('npu_environment')
 @pytest.mark.parametrize('dtype', DTYPES)
 @pytest.mark.parametrize('n,f', [(1024, 64), (4096, 128), (8192, 256),
                                 (512, 768), (10000, 3), (20000, 128), (32000, 3)])
