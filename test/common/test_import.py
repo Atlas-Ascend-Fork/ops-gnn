@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 from types import ModuleType
+from typing import Optional
 import unittest
 from unittest.mock import patch
 
@@ -39,6 +40,23 @@ def test_version():
     """测试版本号"""
     import ops_gnn
     assert ops_gnn.__version__ == '0.1.0'
+
+
+def test_arch22_type_exports():
+    import ops_gnn
+    import torch
+
+    if 'bspmm' not in ops_gnn.__all__:
+        return
+
+    from ops_gnn import OptTensor, Tensor
+
+    assert Tensor is torch.Tensor
+    assert OptTensor == Optional[torch.Tensor]
+    namespace = {}
+    exec('from ops_gnn import *', namespace)
+    assert namespace.get('Tensor') is Tensor
+    assert namespace.get('OptTensor') == OptTensor
 
 
 def test_arch22_index_exports():

@@ -15,6 +15,7 @@ import sys
 import torch
 
 from ._device import select_target
+from .typing import Tensor, OptTensor
 
 __version__ = '0.1.0'
 
@@ -68,6 +69,8 @@ if _pybind.npu_arch == 'dav-2201':
         'segment_logsumexp',
         'segment_coo', 'segment_sum_coo', 'segment_add_coo',
         'segment_mean_coo', 'segment_min_coo', 'segment_max_coo',
+        'Tensor',
+        'OptTensor',
     ]
 else:
     from .segment_csr import (
@@ -105,7 +108,6 @@ else:
     from .torch_sparse_utils import (
         non_diag_mask, torch_sparse_random_walk, torch_sparse_random_walk_with_rand,
     )
-    from .typing import Tensor, OptTensor
 
     __all__ = [
         'non_diag_mask',
