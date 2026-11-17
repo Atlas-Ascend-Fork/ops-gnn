@@ -109,8 +109,8 @@ void LaunchKernel(const torch::Tensor& A, torch::Tensor& out, const MatrixExpTil
     torch::Tensor ws = torch::empty(
         {static_cast<int64_t>(tiling.coreNum) * static_cast<int64_t>(perCoreFloats)},
         A.options().dtype(at::kFloat));
-    // 单位矩阵常量（nPad16 方阵，尾行/行尾为零，AIV 用于 E0 = I + (sigma/K)*A 与
-    // Horner 每轮的 I 重置）。经 GetEyeConst 进程级缓存持有。
+    // 单位矩阵常量（nPad16 方阵，尾行/行尾为零，AIV 在输出阶段组装 E = I + M 用）。
+    // 经 GetEyeConst 进程级缓存持有。
     const uint32_t nPad16 = ((tiling.n + 15U) / 16U) * 16U;
     torch::Tensor eye = GetEyeConst(A.options(), nPad16, A.get_device());
 

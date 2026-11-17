@@ -40,10 +40,14 @@ exp(A) = sum_{k=0}^{inf} A^k / k!
 ```text
 1. 取 s = max(0, ceil(log2( ||A||_F / theta )))，令 A' = A / 2^s，保证 ||A'||_F <= theta
    （Frobenius 范数；Taylor 余项界对任意次乘性范数成立，无需折算 1-范数，见 3.1）
-2. exp(A') = sum_{k=0}^{K} A'^k / k!，按 Horner 嵌套乘法求值（共 K-1 次 Matmul）：
-       E = I + (A'/K)·I = I + A'/K      # 利用 (A'/K)·I = A'/K：Muls+Adds 即可，免 1 次 Matmul
-       for k = K-1 .. 1:   E = I + (A' / k) * E        # 每步一次 n×n Matmul
-3. exp(A) = exp(A')^(2^s)：将 E 连续平方 s 次（每步一次 Matmul）
+2. 拆分恒等项：全程维护 M = E - I（identity 不进矩阵乘，只在输出时加回一次），
+   exp(A') - I = sum_{k=1}^{K} A'^k / k!，按 Horner 嵌套乘法求值（共 K-1 次 Matmul）：
+       M = A'/K                          # Muls 即可，免 1 次 Matmul
+       for k = K-1 .. 1:   M = (A' + A'·M) / k       # 每步一次 n×n Matmul
+   若将 E = I + M 直接参与乘法/平方，fp32 下 (1+x)² - x² 型大数对消随平方次数
+   超线性放大（幂零矩阵 A = c·[[1,1],[-1,-1]] 实测 err 达数百），拆分后 M@M 中
+   ±x·x 项精确对消为 0，恒等项只在最终输出 E = I + M 时累加一次
+3. exp(A) = exp(A')^(2^s)：将 M 连续按 M = 2M + M@M 平方 s 次（每步一次 Matmul）
 ```
 
 ### 1.4 接口定义
@@ -136,16 +140,17 @@ GM (A, batch × n×n)
   │ AIV: DataCopyPad (MTE2) → Cast (fp16/bf16 → fp32)
   ▼
 UB (A, float32, nPad 方阵)                                  [AIV]
-  │ AIV: 范数统计 → s/σ；meta 槽写 s；A 中转 + E0 写 GM ws
+  │ AIV: 范数统计 → s/σ；meta 槽写 s；A 中转 + M0 写 GM ws
   ▼
-GM ws 每核 [A nPad² | E nPad² | tmp nPad² | meta 8]          [AIV MTE3 写 / AIC 读]
+GM ws 每核 [A nPad² | M nPad² | tmp nPad² | meta 8]          [AIV MTE3 写 / AIC 读]
   │ AIC: CopyGM2L1 (ND→NZ/ZN) → L1 → L0A/L0B
   ▼
-L0C = A@E_j（Mmad × 8 轮 Horner）+ E@E（× s 轮平方）           [AIC]
-  │ AIC: fixpipe 写回 ws tmp 区；Horner 轮间 AIV 读 tmp → Muls(σ/k) + E←I + Add → 写 ws E 区
+L0C = A@M_j（Mmad × 8 轮 Horner）+ M@M（× s 轮平方）           [AIC]
+  │ AIC: fixpipe 写回 ws tmp 区；Horner 轮间 AIV 读 tmp → Add(A+tmp) + Muls(σ/k) → 写 ws M 区；
+  │ 平方轮间 AIV 读 tmp → Muls(2) + Add → 写 ws M 区
   ▼
-GM ws (E / tmp 区)
-  │ AIV: 读 tmp（s>0 时）→ Cast（fp16/bf16 输出）
+GM ws (M / tmp 区)
+  │ AIV: E = I + M（eye 装入 + Add，恒等项只在输出累加一次）→ Cast（fp16/bf16 输出）
   ▼
 GM (out)
 ```
@@ -192,6 +197,13 @@ s 由范数决定：Taylor 余项界 `e^{||A||}·||A||^{K+1}/(K+1)!` 对任意**
 翻倍，`err_final ≈ 2^s · err₀`（err₀ 为 Taylor 阶段舍入，约数个 fp32
 eps ≈ 5e-7）。s > 4（`||A||_F ≳ 8`）后 1e-5 级容差在数学上不可达——
 torch 的 Padé 实现同样受此限制。
+
+**拆分恒等项（split-identity）**：Taylor 与平方全程维护 M = E − I，identity
+不进任何矩阵乘、只在最终输出加回一次。若 E = I + M 直接参与平方，fp32 下
+`(1+x)² − x²` 的大数对消使幂零矩阵（A² = 0，理想输出 I + A）误差随平方
+次数超线性放大（A = c·[[1,1],[−1,−1]]、c ≈ 500 实测逐元素误差达数百）；
+拆分后 M@M 中 ±x·x 项精确对消为 0，幂零场景输出 bit-exact。该改写不增
+Matmul 次数（仍为 K−1+s 次），仅将恒等项的累加从每轮移到输出一次。
 
 **精度验收契约（按 `||A||_F` 分桶）**：
 
@@ -241,7 +253,7 @@ n = 128: fp32 3 * 128² * 4B = 192 KiB ✅；fp16/bf16 另加 ioBuf 32 KiB = 224
 
 ```cpp
 // 算法常量在 matrix_exp_kernel.h 内编译期定义：MATRIX_EXP_THETA=0.5、
-// MATRIX_EXP_HORNER_ROUNDS=8（K=9 阶，E0 免 1 次 Matmul）、MATRIX_EXP_S_MAX=30。
+// MATRIX_EXP_HORNER_ROUNDS=8（K=9 阶）、MATRIX_EXP_S_MAX=30。
 
 struct MatrixExpTilingData {
     uint64_t batchSize;       // 批量矩阵个数 = prod(A.shape[:-2])
@@ -274,17 +286,18 @@ struct MatrixExpTilingData {
    `Te::MakeCopy(Te::CopyL0C2GM{}).with(Te::FixpipeParams{3})`（fixpipe 写回）；
    L0C 布局显式 BLOCK_CUBE=16（fp32 下 LayoutTraitDefault 会算成 C0=8）；
    Mmad/Fixpipe unitFlag 均为 3（FINAL_ACCUMULATION，单发累加与写回须同为 3）。
-3. **fp32 的 UB→L1 直通不存在**（`CopyPaddedUBToL1` 仅 fp16/bf16）：AIV 更新后的 E
+3. **fp32 的 UB→L1 直通不存在**（`CopyPaddedUBToL1` 仅 fp16/bf16）：AIV 更新后的 M
    经 GM workspace 中转回 AIC（布局见下），由 AIC 用 `Te::Copy(CopyGM2L1{})` 重排后供 Mmad；
    Mmad 结果经 fixpipe 写回 GM workspace tmp 区。fp32 全链路计算态不变。
-4. **数据与同步协议**（GM workspace 每核 `[A nPad² | E nPad² | tmp nPad² | meta 8]`
+4. **数据与同步协议**（GM workspace 每核 `[A nPad² | M nPad² | tmp nPad² | meta 8]`
    fp32，nPad=ceil(n/16)·16，三区均 nPad 方阵布局，host 按 coreNum 分配；A 区为 AIV
    中转的对齐 A（见注记 5），meta 槽由 AIV 写 s、AIC 标量读）：CrossCore MODE4 flag
    （AIV_READY/AIC_DONE 各 2 slot 轮换）锁步——AIC Set DONE 绑 PIPE_FIX、Wait 绑
    PIPE_MTE2；AIV Set READY 绑 PIPE_MTE3、Wait 绑 PIPE_MTE2。每矩阵 flag 严格配对：
-   READY = 8+(s>0) 次、DONE = 8+(s>0) 次，尾轮 s==0 时 AIC 不再等待、AIV 持有最终 E
-   直接输出；空闲核与 n==1 路径两侧均不做任何 flag 交互（无死锁、无残留）。
-   AIC 核内事件独立 eventID 共 8 个：MTE2_MTE1/MTE1_M/M_FIX/FIX_MTE2/MTE2_S 跨 pipe
+   READY = 8+(s>0)+(s-1) 次、DONE = 8+s 次（Horner 8 + 平方每轮 1），s==0 时 Horner
+   尾轮 AIC 不再等待、AIV 持有最终 M 加 I 后输出；空闲核与 n==1 路径两侧均不做任何
+   flag 交互（无死锁、无残留）。
+   AIC 核内事件独立 eventID 共 7 个：MTE2_MTE1/MTE1_M/M_FIX/MTE2_S 跨 pipe
    交接 + M_MTE1/FIX_M/MTE1_MTE2 单缓冲反向依赖（首轮预发）；AIV 核内 7 个：
    MTE2_V/V_MTE3/V_S/V_MTE2/S_MTE2/MTE2_MTE3/MTE3_V 完成对。
    **meta 跨核可见性（真机实证）**：AIC Scalar 单元读 GM 命中核内 DCache、与 AIV
@@ -293,8 +306,8 @@ struct MatrixExpTilingData {
    `DataCacheCleanAndInvalid<float, CacheLine::SINGLE_CACHE_LINE, DcciDst::CACHELINE_OUT>(metaGm_)`
    失效行强制重取 GM；volatile 仅防编译器 CSE、不解决硬件 DCache（实测单独无效），
    保留作双保险。
-5. **n 非 16 倍数**：E0 用 host 生成的 nPad16 方阵单位矩阵（eye 常量，尾行/行尾零）
-   初始化；ws 的 A/E/tmp 三区均采用 **nPad 方阵布局**（非紧凑 n×n）——AIC 侧
+5. **n 非 16 倍数**：输出阶段用 host 生成的 nPad16 方阵单位矩阵（eye 常量，尾行/
+   行尾零）加回恒等项 E = I + M；ws 的 A/M/tmp 三区均采用 **nPad 方阵布局**（非紧凑 n×n）——AIC 侧
    CopyGM2L1(ND→NZ) 的 d_value 与 fixpipe 行宽均要求 ≥ 32B（fp32 即 8 元素），紧凑
    布局 n < 8 时触发 device error 507015，且 AIC 无 V pipe 无法自行重排用户 GM
    紧凑张量，A 由 AIV 中转至对齐 A 区（数学上等价 nPad 阶零填充矩阵）；Mmad 的
@@ -342,15 +355,17 @@ MatrixExpTilingData ComputeTiling(uint64_t batchSize, uint32_t n, uint32_t dtSiz
                 得出（bound 初值 0.25，每轮 ×4）；σ = 2^-s（精确二次幂）
 3. 缩放折叠:    不做独立的缩放趟；A 保持原始值，2^-s 折叠进 Horner 各步标量；
                 AIV 将 A（nPad 方阵）中转至 ws A 区（对齐要求见 3.4 注记 5）
-4. Horner（K-1 = 8 次 Matmul，多项式达 K=9 阶；AIC 出积、AIV 更新 E，按注记 4 flag 锁步）:
-                E = I + (σ/K)·A          # AIV：eye 常量 + Muls + Add，免 1 次 Matmul
+4. Horner（K-1 = 8 次 Matmul，多项式达 K=9 阶；拆分恒等项，AIC 出积、AIV 更新 M，按注记 4 flag 锁步）:
+                M = (σ/K)·A              # AIV：Muls，identity 不参与（见 3.1 拆分恒等项）
                 for k = K-1 .. 1:
-                    Mmad(A@E_j) → ws tmp  # AIC：A 常驻 L0A，E 每轮重装 L0B
-                    E = I + (σ/k)·(A@E_j) # AIV：读 ws tmp → Muls(σ/k) + E←I + Add → 写 ws E
-5. 平方（纯 AIC）: for i = 0 .. s-1:  Mmad(E@E) → ws tmp。i=0 读 ws E 区、i>0 读
-                ws tmp（FIX_MTE2 事件保证上一轮 fixpipe 写完成后再读）；每轮结果均写
-                ws tmp（非乒乓，单点写回 + 事件排序即可保证顺序）
-6. 写回:        s>0 时 AIV 等 AIC DONE 后从 ws tmp 读回；Cast（D_T ≠ float 时）→
+                    Mmad(A@M_j) → ws tmp  # AIC：A 常驻 L0A，M 每轮重装 L0B
+                    M = (σ/k)·(A + A@M_j) # AIV：读 ws tmp → Add(A+tmp) + Muls(σ/k) → 写 ws M
+5. 平方（AIC 出积 + AIV 组装，按注记 4 flag 锁步）: for i = 0 .. s-1:
+                Mmad(M@M) → ws tmp       # AIC：i=0 读 ws M 区（Horner 尾轮 READY），i>0 等 AIV READY
+                M = 2M + M@M             # AIV：读 ws tmp → Muls(2) + Add；非末轮写回 ws M 区并回 READY
+                （identity 拆分后 M@M 中 ±x·x 精确对消，无 (I+M)² 型大数对消；每轮结果写
+                ws tmp，AIC 写 tmp 与 AIV 读 tmp 由 AIC DONE flag 排序）
+6. 写回:        AIV 组装 E = I + M（eye 装入 tmp 缓冲 + Add）→ Cast（D_T ≠ float 时）→
                 逐行 DataCopyPad UB → GM(out_b)
 ```
 
@@ -364,33 +379,34 @@ M_MTE1/FIX_M/MTE1_MTE2 反向依赖事件对跨矩阵串行复用，矩阵级双
 |---------|-------------|-----------------|---------|---------|---------|
 | 数据搬入 | DataCopyPad\<T\> | GM→UB 逐行（blockCount=n）+ dstStride 控制行距 nPad | ✅ 已真机核验 | 3510 rightPadding 仅支持 ≤1 个 32B 对齐块尾填充、UB→GM srcStride 非对齐均触发 device error 507015（实测 n=2..7/17 崩）→ padding=0 + dstStride / 逐行搬出 | DataCopy（全 32B 对齐时可用，ws 区间搬运采用） |
 | dtype 提升 | Cast\<fp32, T\> | 入 CAST_NONE / 出 CAST_RINT | ✅ 已真机核验 | fp16/bf16 → fp32 | - |
-| 逐元素标量乘/加 | Muls\<float\> / Adds\<float\> / Add\<float\> | (dst, src, scalar/value, count) | ✅ 已真机核验 | count = bufElems(=max(nPad², 8192)，尾区零填充)；Horner 各步 scalar = σ/k（缩放折叠）；E←I 经 Adds(eBuf, eye 常驻, 0.0) 拷贝 | - |
+| 逐元素标量乘/加 | Muls\<float\> / Adds\<float\> / Add\<float\> | (dst, src, scalar/value, count) | ✅ 已真机核验 | count = bufElems(=max(nPad², 8192)，尾区零填充)；Horner 各步 scalar = σ/k（缩放折叠）；平方步 Muls(2)+Add；输出步 E = I + M 经 eye 装入 + Add | - |
 | 范数归约 | 树形折半 Add\<float\>（3510 无 (dst,src,ws,count) 形式 WholeReduceSum） | 折半步长 8 元素对齐（src2 偏移须 32B 对齐，否则错误码 340）；尾段 ≤16 元素转标量累加 | ✅ 已真机核验 | 无需 sharedTmpBuffer；norm² 直接与 (0.5·2^s)² 比较，无 Sqrt | Abs 后逐块累加 |
 | 标量化定 s | LocalTensor GetValue（S pipe 标量累加）+ while(normSq > bound) 等价比较 | - | ✅ 已真机核验 | s 为逐矩阵标量，控制平方循环次数；经 Duplicate + DataCopy 写 ws meta 槽（AIC 读前须 DCache 失效，见 3.4 注记 4） | - |
 | n=1 指数 | Exp\<float\> | (dst, src, count)，分块 8192 元素 | ✅ 已真机核验 | n=1 快速路径专用（纯 AIV，不交互 flag） | Taylor 路径兜底 |
-| 单位阵对角写 | host 生成 eye 常量（nPad16 方阵）→ DataCopyPad 全块拷贝 | - | ✅ 已采用（迭代一） | 尾行/行尾零兼作 pad 区清零；Muls+Add 实现 E0 = I + (σ/9)A | Dup 跨步写对角（真机核验后再评估） |
+| 单位阵对角写 | host 生成 eye 常量（nPad16 方阵）→ DataCopyPad 全块拷贝 | - | ✅ 已采用（迭代一） | 尾行/行尾零兼作 pad 区清零；输出步 Add 实现 E = I + M（恒等项只在输出加回，见 3.1 拆分恒等项） | Dup 跨步写对角（真机核验后再评估） |
 | 矩阵乘 | Mmad（CANN SDK tensor_api `AscendC::Te`，950 无 matmul::Matmul 高阶 API） | `Te::MmadParams{nPad, nPad, nPad, unitFlag=3, cmatrixInitVal=true}`；`Te::Copy(CopyGM2L1{})` ND→NZ/ZN | ✅ 已真机核验（n=2..128 分桶精度全绿） | L0C 布局显式 BLOCK_CUBE=16（fp32 下 LayoutTraitDefault 会算成 C0=8）；m/n/k 传 nPad；Mmad/Fixpipe unitFlag 同为 3 | n 较小时用 Vector 点积实现（性能差，保底） |
 | 数据搬出 | Cast\<T, fp32\>（CAST_RINT）+ DataCopyPad\<T\> | 同搬入，方向 UB→GM（逐行） | ✅ 已真机核验 | - | - |
-| 同步 | SetFlag/WaitFlag（核内事件对，AIC 8 / AIV 7 个独立 eventID）+ CrossCore MODE4 flag（AIC↔AIV 锁步） | HardEvent 枚举 | ✅ 已真机核验 | AIV 侧 GetBlockIdx() 须除以 GetTaskRation() 换算逻辑 block（rawIdx 含 subblockid，不换算会导致奇数 block 无人处理/挂死，SDK 生产 kernel 同法） | - |
+| 同步 | SetFlag/WaitFlag（核内事件对，AIC 7 / AIV 7 个独立 eventID）+ CrossCore MODE4 flag（AIC↔AIV 锁步） | HardEvent 枚举 | ✅ 已真机核验 | AIV 侧 GetBlockIdx() 须除以 GetTaskRation() 换算逻辑 block（rawIdx 含 subblockid，不换算会导致奇数 block 无人处理/挂死，SDK 生产 kernel 同法） | - |
 
 
 #### 3.4.5 数据流设计
 
 ```
 逐矩阵（AIC/AIV 按 3.4 注记 4 flag 协议锁步）：
-1. AIV: GM(A_i) → UB(fp32)；范数 → s/σ；A 中转 → ws A 区；E0 → ws E 区；s → ws meta 槽
-2. AIC: ws A/E → L1(NZ/ZN) → L0A/L0B → Mmad → L0C → fixpipe → ws tmp 区
-   AIV: ws tmp → UB → E 更新 → ws E 区（Horner 每轮，共 8 轮）
-3. 平方 s 轮（纯 AIC）：ws E/tmp 区 → Mmad(E@E) → ws tmp 区
-4. AIV: ws tmp（s>0）或 UB eF32（s==0）→ Cast → GM(out_i)
+1. AIV: GM(A_i) → UB(fp32)；范数 → s/σ；A 中转 → ws A 区；M0 = (σ/9)A → ws M 区；s → ws meta 槽
+2. AIC: ws A/M → L1(NZ/ZN) → L0A/L0B → Mmad → L0C → fixpipe → ws tmp 区
+   AIV: ws tmp → UB → M 更新 → ws M 区（Horner 每轮，共 8 轮）
+3. 平方 s 轮：AIC ws M 区 → Mmad(M@M) → ws tmp 区；AIV ws tmp → UB → M ← 2M + M@M
+   （非末轮写回 ws M 区供 AIC 下一轮读取）
+4. AIV: E = I + M（UB eye 常量 + Add）→ Cast → GM(out_i)
 ```
 
 #### 3.4.6 内存管理
 
 | 内存区域 | 大小计算（n ≤ 128） | 说明 |
 |---------|--------------------|------|
-| **UB aBuf** | max(nPad², 8192)×4B（n=128 时 64 KB） | 输入矩阵 fp32 计算态 / eye 常驻 |
-| **UB eBuf** | 同 aBuf | E 累加结果（UB 计算态，写 ws 前驻留） |
+| **UB aBuf** | max(nPad², 8192)×4B（n=128 时 64 KB） | 输入矩阵 fp32 计算态（Horner 各轮与 A 相加，全程常驻） |
+| **UB mBuf** | 同 aBuf | M = E - I 累加结果（UB 计算态，写 ws 前驻留） |
 | **UB tmpBuf** | 同 aBuf | AIC 积中转读回 / 范数平方 |
 | **UB ioBuf** | max(nPad², 8192)×sizeof(T)（fp16/bf16 32 KB；fp32 无此块） | 原始 dtype 搬入 / 输出 Cast 暂存 |
 | **UB metaBuf** | 8×4B = 32 B | s 标量中转（Duplicate → DataCopy 写 ws meta 槽） |
@@ -434,7 +450,7 @@ M_MTE1/FIX_M/MTE1_MTE2 反向依赖事件对跨矩阵串行复用，矩阵级双
 - 迭代一现状为**矩阵间单缓冲串行**（AIC 侧 L0A/L0B 单缓冲经 M_MTE1/FIX_M/
   MTE1_MTE2 反向依赖事件对跨矩阵复用）；矩阵级双缓冲（下一矩阵 A 搬入与当前
   Horner 首个 Mmad 重叠）为**迭代二优化项**——MIX 数据流下 UB 需求须按
-  aBuf/eBuf/tmpBuf/ioBuf 四块重估（fp32 n=128 时 4×64KB = 256KB > 248KB 超限）；
+  aBuf/mBuf/tmpBuf/ioBuf 四块重估（fp32 n=128 时 4×64KB = 256KB > 248KB 超限）；
 - 核内事件对保证各 pipe 段串行正确（AIC：MTE1/MTE2/M/FIX/S；AIV：MTE2/V/MTE3/S），
   Cube(AIC)↔Vector(AIV) 经 CrossCore MODE4 flag 锁步（3.4 注记 4），缓冲反复用
   与 segment_max_csr 的 event 配对风格一致；

@@ -36,7 +36,6 @@ constexpr uint8_t MATRIX_EXP_AIC_DONE_FLAG = 2;     // slot 2/3 轮换
 constexpr uint8_t EVT_AIC_MTE2_MTE1 = 0;
 constexpr uint8_t EVT_AIC_MTE1_M = 1;
 constexpr uint8_t EVT_AIC_M_FIX = 2;
-constexpr uint8_t EVT_AIC_FIX_MTE2 = 3;
 constexpr uint8_t EVT_AIC_M_MTE1 = 4;
 constexpr uint8_t EVT_AIC_FIX_M = 5;
 constexpr uint8_t EVT_AIC_MTE1_MTE2 = 6;

@@ -51,13 +51,13 @@ public:
         __gm__ float* wsBase = reinterpret_cast<__gm__ float*>(wsPtr + blockIdx * wsStrideFloats * 4);
         const uint64_t nPad2 = static_cast<uint64_t>(nPad_) * nPad_;
         wsAGm_.SetGlobalBuffer(wsBase + MATRIX_EXP_WS_A_OFF_FLOATS(n_), nPad2);
-        wsEGm_.SetGlobalBuffer(wsBase + MATRIX_EXP_WS_E_OFF_FLOATS(n_), nPad2);
+        wsMGm_.SetGlobalBuffer(wsBase + MATRIX_EXP_WS_E_OFF_FLOATS(n_), nPad2);
         wsTmpGm_.SetGlobalBuffer(wsBase + MATRIX_EXP_WS_TMP_OFF_FLOATS(n_), nPad2);
         metaGm_.SetGlobalBuffer(wsBase + MATRIX_EXP_WS_META_OFF_FLOATS(n_), MATRIX_EXP_WS_META_FLOATS);
         eyeGm_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(eye), nPad_ * nPad_);
 
         pipe_->InitBuffer(bufA_, bufElems_ * sizeof(float));
-        pipe_->InitBuffer(bufE_, bufElems_ * sizeof(float));
+        pipe_->InitBuffer(bufM_, bufElems_ * sizeof(float));
         pipe_->InitBuffer(bufTmp_, bufElems_ * sizeof(float));
         pipe_->InitBuffer(bufMeta_, MATRIX_EXP_WS_META_FLOATS * sizeof(float));
         if constexpr (sizeof(T) != sizeof(float)) {
@@ -161,7 +161,7 @@ private:
     __aicore__ inline void ProcessOneMatrix(uint64_t b)
     {
         auto aF32 = bufA_.Get<float>();
-        auto eF32 = bufE_.Get<float>();
+        auto mF32 = bufM_.Get<float>();
         auto tmpF32 = bufTmp_.Get<float>();
         auto metaF32 = bufMeta_.Get<float>();
 
@@ -175,9 +175,10 @@ private:
         uint32_t s = 0;
         float sigma = 1.0f;
         ComputeScaling(aF32, tmpF32, metaF32, s, sigma);
-        InitE0(aF32, eF32, metaF32, sigma);
-        RunHornerRounds(aF32, eF32, tmpF32, s, sigma);
-        WriteOutput(eF32, tmpF32, s);
+        InitM0(aF32, mF32, metaF32, sigma);
+        RunHornerRounds(aF32, mF32, tmpF32, s, sigma);
+        RunSquaringRounds(mF32, tmpF32, s);
+        WriteOutput(mF32, tmpF32);
     }
 
     // 阶段 1：A -> UB(fp32) 并中转 ws A 区。fp16/bf16 经 ioBuf Cast；尾行/行尾补零
@@ -195,7 +196,7 @@ private:
             SyncMte2V();
             SyncMte2Mte3();  // MTE2 写完 aF32，MTE3 才可读出（MTE2/MTE3 并行）
             DataCopy(wsAGm_, aF32, nPad2);
-            SyncMte3V();     // MTE3 读走 aF32，V 才可改写（E0 段 Muls 原地缩放）
+            SyncMte3V();     // MTE3 读走 aF32，V 才可读 aF32（InitM0/Horner 相加）
         } else {
             auto ioT = bufIo_.Get<T>();
             // 上一矩阵 WriteOutput 经 ioT 搬出（MTE3 读）完成后才可清零复用，须 MTE3->V
@@ -207,7 +208,7 @@ private:
             Cast(aF32, ioT, RoundMode::CAST_NONE, bufElems_);
             SyncVMte3();     // V 写完 aF32，MTE3 才可读出
             DataCopy(wsAGm_, aF32, nPad2);
-            SyncMte3V();     // MTE3 读走 aF32，V 才可改写（E0 段 Muls 原地缩放）
+            SyncMte3V();     // MTE3 读走 aF32，V 才可读 aF32（InitM0/Horner 相加）
         }
     }
 
@@ -247,67 +248,83 @@ private:
         SetFlag<HardEvent::S_MTE2>(EVT_AIV_S_MTE2);
     }
 
-    // 阶段 3：E0 = I + (sigma/9) * A（eye 为 nPad_ 方阵，尾行/行尾零）。
-    // 缩放结果写 aF32 原地（tmpF32 不得再被 V 写，S 读依赖见 ComputeScaling）。
-    __aicore__ inline void InitE0(LocalTensor<float>& aF32, LocalTensor<float>& eF32,
+    // 阶段 3：M0 = (sigma/9) * A（拆分恒等项：全程维护 M = E - I，identity 不参与
+    // 矩阵乘，只在最终输出加回一次，避免幂零/大范数场景 (1+x)^2 - x^2 型大数对消，
+    // 见幂零回归用例）。aF32 常驻不缩放，供每轮 Horner 直接相加。
+    __aicore__ inline void InitM0(const LocalTensor<float>& aF32, LocalTensor<float>& mF32,
                                   const LocalTensor<float>& metaF32, float sigma)
     {
-        DataCopyPad(eF32, eyeGm_,
-                    DataCopyExtParams{nPad_, nPad_ * sizeof(float), 0, 0, 0},
-                    DataCopyPadExtParams<float>{false, 0, 0, 0});
-        SyncMte2V();
-        Muls(aF32, aF32, sigma / static_cast<float>(MATRIX_EXP_HORNER_ROUNDS + 1), bufElems_);
-        Add(eF32, eF32, aF32, bufElems_);
+        // 上一矩阵 CopyUbToWs/WriteOutput 对 mF32 的 MTE3 读完成后，V 才可改写
+        SyncMte3V();
+        Muls(mF32, aF32, sigma / static_cast<float>(MATRIX_EXP_HORNER_ROUNDS + 1), bufElems_);
         SyncVMte3();
         DataCopy(metaGm_, metaF32, MATRIX_EXP_WS_META_FLOATS);
-        CopyUbToWs(wsEGm_, eF32);
-        SetAivReady(readyCnt_);  // E0 + meta 就绪
+        CopyUbToWs(wsMGm_, mF32);
+        SetAivReady(readyCnt_);  // M0 + meta 就绪
     }
 
-    // 阶段 4：Horner 8 轮嵌套递推：E_{j+1} = I + (sigma/k_j) * (A @ E_j)，k_j = 8..1。
-    // 每轮从 identity 重新累加（非乘积形式）；I 由首轮从 eyeGm_ 装入 aF32 常驻
-    //（A 已用完；装载经 WaitAicDone -> AIC DONE <- READY <- V 完成链自动排序）。
-    __aicore__ inline void RunHornerRounds(LocalTensor<float>& aF32, LocalTensor<float>& eF32,
+    // 阶段 4：Horner 8 轮嵌套递推（拆分恒等项形式）：
+    //     M_{j+1} = (sigma/k_j) * (A + A @ M_j)，k_j = 8..1
+    // 8 轮后 M = sum_{k=1..9} (sigma*A)^k / k!。A 由 StageInputToWs 装入 aF32 常驻。
+    __aicore__ inline void RunHornerRounds(const LocalTensor<float>& aF32, LocalTensor<float>& mF32,
                                            LocalTensor<float>& tmpF32, uint32_t s, float sigma)
     {
         for (uint32_t j = 0; j < MATRIX_EXP_HORNER_ROUNDS; ++j) {
             WaitAicDone(doneCnt_);
             if (j == 0) {
-                // MTE2 等 S 读完 tmpF32（见 ComputeScaling SetFlag），再重写 tmpF32 / 覆盖 aF32。
+                // MTE2 等 S 读完 tmpF32（见 ComputeScaling SetFlag），再重写 tmpF32。
                 WaitFlag<HardEvent::S_MTE2>(EVT_AIV_S_MTE2);
-                DataCopyPad(aF32, eyeGm_,
-                            DataCopyExtParams{nPad_, nPad_ * sizeof(float), 0, 0, 0},
-                            DataCopyPadExtParams<float>{false, 0, 0, 0});
             }
             CopyWsToUb(tmpF32, wsTmpGm_);
             SyncMte2V();
-            Muls(tmpF32, tmpF32, sigma / static_cast<float>(MATRIX_EXP_HORNER_ROUNDS - j),
+            Add(mF32, aF32, tmpF32, bufElems_);  // A + A@M_j
+            Muls(mF32, mF32, sigma / static_cast<float>(MATRIX_EXP_HORNER_ROUNDS - j),
                  bufElems_);
-            Adds(eF32, aF32, 0.0f, bufElems_);           // E <- I（UB 常驻拷贝）
-            Add(eF32, eF32, tmpF32, bufElems_);          // E <- I + (sigma/k) * (A@E_j)
             SyncVMte3();
-            CopyUbToWs(wsEGm_, eF32);
+            CopyUbToWs(wsMGm_, mF32);
             if ((j + 1 < MATRIX_EXP_HORNER_ROUNDS) || (s > 0)) {
                 SetAivReady(readyCnt_);
             }
         }
     }
 
-    // 阶段 5：尾轮输出。s==0 用 eF32（AIC 尾轮 DONE 仅被消费不使用）；s>0 取 AIC 最终 tmp。
-    __aicore__ inline void WriteOutput(LocalTensor<float>& eF32, LocalTensor<float>& tmpF32, uint32_t s)
+    // 阶段 5：平方 s 轮（拆分恒等项）：M <- 2M + M@M。AIC 算 M@M 写 ws tmp 区，
+    // 本侧取回后与 UB 常驻 M 组装（M@M 中 ±x*x 精确对消为 0，误差不被平方放大），
+    // 写回 ws E 区供 AIC 下一轮读取；末轮结果留在 mF32，无需写回。
+    __aicore__ inline void RunSquaringRounds(LocalTensor<float>& mF32, LocalTensor<float>& tmpF32,
+                                             uint32_t s)
     {
-        if (s > 0) {
-            WaitAicDone(doneCnt_);
+        for (uint32_t i = 0; i < s; ++i) {
+            WaitAicDone(doneCnt_);  // AIC 本轮 M@M 已写入 ws tmp 区
             CopyWsToUb(tmpF32, wsTmpGm_);
             SyncMte2V();
+            Muls(mF32, mF32, 2.0f, bufElems_);   // 2M
+            Add(mF32, mF32, tmpF32, bufElems_);  // 2M + M@M
+            if (i + 1 < s) {
+                SyncVMte3();
+                CopyUbToWs(wsMGm_, mF32);
+                SetAivReady(readyCnt_);  // 非末轮才回喂 AIC
+            }
         }
-        const LocalTensor<float>& src = (s > 0) ? tmpF32 : eF32;
+    }
+
+    // 阶段 6：输出 E = I + M。恒等项只在最终输出累加一次（s==0 时 M 在 mF32，
+    // 来自 Horner 尾轮；s>0 时 M 同样在 mF32，来自平方尾轮的 2M + M@M）。
+    __aicore__ inline void WriteOutput(const LocalTensor<float>& mF32, LocalTensor<float>& tmpF32)
+    {
+        // V 末次写 tmpF32（Horner 尾轮 Muls）完成后，MTE2 才可装入 eye
+        SyncVMte2();
+        DataCopyPad(tmpF32, eyeGm_,
+                    DataCopyExtParams{nPad_, nPad_ * sizeof(float), 0, 0, 0},
+                    DataCopyPadExtParams<float>{false, 0, 0, 0});
+        SyncMte2V();
+        Add(tmpF32, tmpF32, mF32, bufElems_);  // E = I + M
         if constexpr (sizeof(T) == sizeof(float)) {
             SyncVMte3();
-            CopyUbToGm(outGm_, src);
+            CopyUbToGm(outGm_, tmpF32);
         } else {
             auto ioT = bufIo_.Get<T>();
-            Cast(ioT, src, RoundMode::CAST_RINT, bufElems_);
+            Cast(ioT, tmpF32, RoundMode::CAST_RINT, bufElems_);
             SyncVMte3();
             CopyUbToGm(outGm_, ioT);
         }
@@ -357,14 +374,14 @@ private:
 
     TPipe* pipe_;
     TBuf<TPosition::VECCALC> bufA_;
-    TBuf<TPosition::VECCALC> bufE_;
+    TBuf<TPosition::VECCALC> bufM_;
     TBuf<TPosition::VECCALC> bufTmp_;
     TBuf<TPosition::VECCALC> bufMeta_;
     TBuf<TPosition::VECCALC> bufIo_;
     GlobalTensor<T> aGm_;
     GlobalTensor<T> outGm_;
     GlobalTensor<float> wsAGm_;
-    GlobalTensor<float> wsEGm_;
+    GlobalTensor<float> wsMGm_;
     GlobalTensor<float> wsTmpGm_;
     GlobalTensor<float> metaGm_;
     GlobalTensor<float> eyeGm_;

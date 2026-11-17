@@ -46,10 +46,18 @@ The implementation uses **scaling-and-squaring + Taylor expansion (Horner evalua
 1. Take s = max(0, ceil(log2( ||A||_F / theta ))), let A' = A / 2^s, so ||A'||_F <= theta
    (Frobenius norm; the Taylor remainder bound holds for any submultiplicative norm,
    no need to convert to the 1-norm, see 3.1)
-2. exp(A') = sum_{k=0}^{K} A'^k / k!, evaluated by Horner nested multiplication (K-1 Matmuls):
-       E = I + (A'/K)·I = I + A'/K      # uses (A'/K)·I = A'/K: Muls+Adds suffice, saves 1 Matmul
-       for k = K-1 .. 1:   E = I + (A' / k) * E        # one n×n Matmul per step
-3. exp(A) = exp(A')^(2^s): square E s consecutive times (one Matmul per step)
+2. Split out the identity term: maintain M = E - I throughout (the identity never
+   enters a Matmul and is added back once only at output),
+   exp(A') - I = sum_{k=1}^{K} A'^k / k!, evaluated by Horner nested multiplication (K-1 Matmuls):
+       M = A'/K                          # Muls suffice, saves 1 Matmul
+       for k = K-1 .. 1:   M = (A' + A'·M) / k       # one n×n Matmul per step
+   If E = I + M directly participates in multiplication/squaring, the fp32
+   (1+x)² - x² catastrophic cancellation is amplified superlinearly with the
+   number of squarings (the nilpotent matrix A = c·[[1,1],[-1,-1]] measured
+   element-wise errors in the hundreds); after the split, the ±x·x terms in M@M
+   cancel exactly to 0, and the identity term is accumulated once only at the
+   final output E = I + M
+3. exp(A) = exp(A')^(2^s): square M s consecutive times via M = 2M + M@M (one Matmul per step)
 ```
 
 ### 1.4 Interface Definition
@@ -145,17 +153,18 @@ GM (A, batch × n×n)
   │ AIV: DataCopyPad (MTE2) → Cast (fp16/bf16 → fp32)
   ▼
 UB (A, float32, nPad square)                                 [AIV]
-  │ AIV: norm statistics → s/σ; write s into the meta slot; A staging + E0 written to GM ws
+  │ AIV: norm statistics → s/σ; write s into the meta slot; A staging + M0 written to GM ws
   ▼
-GM ws per core [A nPad² | E nPad² | tmp nPad² | meta 8]      [AIV MTE3 writes / AIC reads]
+GM ws per core [A nPad² | M nPad² | tmp nPad² | meta 8]      [AIV MTE3 writes / AIC reads]
   │ AIC: CopyGM2L1 (ND→NZ/ZN) → L1 → L0A/L0B
   ▼
-L0C = A@E_j (Mmad × 8 Horner rounds) + E@E (× s squaring rounds)   [AIC]
+L0C = A@M_j (Mmad × 8 Horner rounds) + M@M (× s squaring rounds)   [AIC]
   │ AIC: fixpipe writes back to the ws tmp region; between Horner rounds the AIV reads tmp
-  │      → Muls(σ/k) + E←I + Add → writes the ws E region
+  │      → Add(A+tmp) + Muls(σ/k) → writes the ws M region;
+  │ between squaring rounds the AIV reads tmp → Muls(2) + Add → writes the ws M region
   ▼
-GM ws (E / tmp regions)
-  │ AIV: read tmp (when s>0) → Cast (fp16/bf16 output)
+GM ws (M / tmp regions)
+  │ AIV: E = I + M (eye loaded in + Add, the identity term is accumulated once only at output) → Cast (fp16/bf16 output)
   ▼
 GM (out)
 ```
@@ -208,6 +217,17 @@ each squaring roughly doubles the relative error, `err_final ≈ 2^s · err₀`
 (`||A||_F ≳ 8`), 1e-5-level tolerances are mathematically unreachable — the
 Padé implementation in torch suffers from the same limitation.
 
+**Splitting out the identity term (split-identity)**: the Taylor and squaring
+stages maintain M = E − I throughout; the identity never enters a Matmul and is
+added back once only at the final output. If E = I + M directly participates in
+squaring, the fp32 `(1+x)² − x²` catastrophic cancellation makes nilpotent
+matrices (A² = 0, ideal output I + A) fail with errors amplified superlinearly
+by the number of squarings (A = c·[[1,1],[−1,−1]], c ≈ 500, measured
+element-wise errors in the hundreds); after the split, the ±x·x terms in M@M
+cancel exactly to 0 and the nilpotent case is output bit-exact. This rewrite
+adds no Matmuls (still K−1+s) and only moves the identity accumulation from
+every round to once at output.
+
 **Accuracy acceptance contract (bucketed by `||A||_F`)**:
 
 | Input dtype | `\|\|A\|\|_F` range | Reference | Acceptance tolerance (order of magnitude) |
@@ -259,7 +279,7 @@ n = 128: fp32 3 * 128² * 4B = 192 KiB ✅; fp16/bf16 add ioBuf 32 KiB = 224 KiB
 
 ```cpp
 // Algorithm constants are compile-time defined in matrix_exp_kernel.h:
-// MATRIX_EXP_THETA=0.5, MATRIX_EXP_HORNER_ROUNDS=8 (K=9 order, E0 saves 1 Matmul),
+// MATRIX_EXP_THETA=0.5, MATRIX_EXP_HORNER_ROUNDS=8 (K=9 order),
 // MATRIX_EXP_S_MAX=30.
 
 struct MatrixExpTilingData {
@@ -297,23 +317,24 @@ and the implementation was revised per the following facts:
    LayoutTraitDefault would compute C0=8); Mmad/Fixpipe unitFlag are both 3
    (FINAL_ACCUMULATION; single-shot accumulation and write-back must both be 3).
 3. **No fp32 UB→L1 direct path exists** (`CopyPaddedUBToL1` is fp16/bf16 only):
-   the AIV-updated E round-trips through the GM workspace back to the AIC
+   the AIV-updated M round-trips through the GM workspace back to the AIC
    (layout below), which reorders it via `Te::Copy(CopyGM2L1{})` for Mmad;
    the Mmad result is written back to the GM workspace tmp region via
    fixpipe. The fp32 full-chain compute state is unchanged.
 4. **Data and synchronization protocol** (GM workspace per core
-   `[A nPad² | E nPad² | tmp nPad² | meta 8]` fp32, nPad=ceil(n/16)·16; all three
+   `[A nPad² | M nPad² | tmp nPad² | meta 8]` fp32, nPad=ceil(n/16)·16; all three
    regions are nPad-square layouts, allocated by coreNum on host; the A region
    holds the AIV-staged aligned A, see note 5; the meta slot is written by the
    AIV and scalar-read by the AIC): lockstep via CrossCore MODE4 flags
    (AIV_READY/AIC_DONE, 2 slots each, rotating) — the AIC Set-DONE is bound to
    PIPE_FIX and Wait to PIPE_MTE2; the AIV Set-READY is bound to PIPE_MTE3 and
-   Wait to PIPE_MTE2. Flags are strictly paired per matrix: READY = 8+(s>0)
-   times, DONE = 8+(s>0) times; in the final round with s==0 the AIC no longer
-   waits and the AIV holds the final E and outputs it directly; idle cores and
+   Wait to PIPE_MTE2. Flags are strictly paired per matrix:
+   READY = 8+(s>0)+(s-1) times, DONE = 8+s times (Horner 8 + one per squaring
+   round); with s==0 the Horner final round AIC no longer waits and the AIV
+   holds the final M, adds I and outputs; idle cores and
    the n==1 path make no flag interactions on either side (no deadlock, no
-   residue). The AIC has 8 independent in-core event IDs:
-   MTE2_MTE1/MTE1_M/M_FIX/FIX_MTE2/MTE2_S for cross-pipe handoff +
+   residue). The AIC has 7 independent in-core event IDs:
+   MTE2_MTE1/MTE1_M/M_FIX/MTE2_S for cross-pipe handoff +
    M_MTE1/FIX_M/MTE1_MTE2 single-buffer reverse-dependency (pre-issued in the
    first round); the AIV has 7: MTE2_V/V_MTE3/V_S/V_MTE2/S_MTE2/MTE2_MTE3/
    MTE3_V completion pairs.
@@ -327,9 +348,10 @@ and the implementation was revised per the following facts:
    to invalidate the line and force a GM refetch; volatile only prevents
    compiler CSE and does not fix the hardware DCache (measured ineffective
    alone), kept as a second line of defense.
-5. **n not a multiple of 16**: E0 is initialized with a host-generated
+5. **n not a multiple of 16**: the output stage adds the identity term
+   E = I + M using a host-generated
    nPad16-square identity matrix (an eye constant, zero tail rows/row tails);
-   all three ws regions A/E/tmp use the **nPad-square layout** (not compact
+   all three ws regions A/M/tmp use the **nPad-square layout** (not compact
    n×n) — the AIC-side CopyGM2L1(ND→NZ) d_value and the fixpipe row width both
    require ≥ 32B (8 elements for fp32); the compact layout triggers device
    error 507015 when n < 8, and the AIC, having no V pipe, cannot reorder the
@@ -386,17 +408,20 @@ MatrixExpTilingData ComputeTiling(uint64_t batchSize, uint32_t n, uint32_t dtSiz
 3. Scale folding: no separate scaling pass; A keeps its original values, 2^-s is folded into
                 the Horner per-step scalars; the AIV stages A (nPad square) into the ws A
                 region (alignment requirements in 3.4 note 5)
-4. Horner (K-1 = 8 Matmuls, polynomial to degree K=9; AIC produces products, AIV updates E,
-   lockstep via the flags of note 4):
-                E = I + (σ/K)·A          # AIV: eye constant + Muls + Add, saves 1 Matmul
+4. Horner (K-1 = 8 Matmuls, polynomial to degree K=9; identity split out, AIC produces
+   products, AIV updates M, lockstep via the flags of note 4):
+                M = (σ/K)·A              # AIV: Muls, the identity does not participate (see 3.1 split-identity)
                 for k = K-1 .. 1:
-                    Mmad(A@E_j) → ws tmp  # AIC: A resident in L0A, E reloaded into L0B each round
-                    E = I + (σ/k)·(A@E_j) # AIV: read ws tmp → Muls(σ/k) + E←I + Add → write ws E
-5. Squaring (pure AIC): for i = 0 .. s-1:  Mmad(E@E) → ws tmp. i=0 reads the ws E region,
-                i>0 reads ws tmp (the FIX_MTE2 event guarantees the previous round's fixpipe
-                write completes before the read); each round writes ws tmp (not ping-pong;
-                single-point write-back + event ordering suffices for ordering)
-6. Write-back:   when s>0 the AIV waits for the AIC DONE then reads back from ws tmp;
+                    Mmad(A@M_j) → ws tmp  # AIC: A resident in L0A, M reloaded into L0B each round
+                    M = (σ/k)·(A + A@M_j) # AIV: read ws tmp → Add(A+tmp) + Muls(σ/k) → write ws M
+5. Squaring (AIC produces products + AIV assembles, lockstep via the flags of note 4):
+                for i = 0 .. s-1:
+                Mmad(M@M) → ws tmp       # AIC: i=0 reads the ws M region (the Horner final round's READY), i>0 waits for the AIV READY
+                M = 2M + M@M             # AIV: read ws tmp → Muls(2) + Add; non-final rounds write back to the ws M region and re-signal READY
+                (after the identity split the ±x·x terms in M@M cancel exactly, no (I+M)²-style
+                catastrophic cancellation; each round's result is written to ws tmp, and the
+                AIC write to tmp and the AIV read of tmp are ordered by the AIC DONE flag)
+6. Write-back:   the AIV assembles E = I + M (eye loaded into the tmp buffer + Add) →
                 Cast (when D_T ≠ float) → row-by-row DataCopyPad UB → GM(out_b)
 ```
 
@@ -411,33 +436,34 @@ double-buffering is an Iteration-2 optimization, see 4.2).
 |---------|-------------|-----------------|---------|---------|---------|
 | Data load-in | DataCopyPad\<T\> | GM→UB row-wise (blockCount=n) + dstStride controls row pitch nPad | ✅ silicon-verified | 3510 rightPadding supports only ≤1 aligned tail block; UB→GM non-aligned srcStride triggers device error 507015 (measured crash at n=2..7/17) → padding=0 + dstStride / row-wise copy-out | DataCopy (usable when everything is 32B-aligned; used for ws region transfers) |
 | dtype promotion | Cast\<fp32, T\> | in CAST_NONE / out CAST_RINT | ✅ silicon-verified | fp16/bf16 → fp32 | - |
-| Element-wise scalar mul/add | Muls\<float\> / Adds\<float\> / Add\<float\> | (dst, src, scalar/value, count) | ✅ silicon-verified | count = bufElems (=max(nPad², 8192), zero-padded tail); Horner scalar = σ/k (scale folding); E←I via Adds(eBuf, eye resident, 0.0) copy | - |
+| Element-wise scalar mul/add | Muls\<float\> / Adds\<float\> / Add\<float\> | (dst, src, scalar/value, count) | ✅ silicon-verified | count = bufElems (=max(nPad², 8192), zero-padded tail); Horner scalar = σ/k (scale folding); squaring step Muls(2)+Add; output step E = I + M via eye loaded in + Add | - |
 | Norm reduction | tree halving Add\<float\> (the 3510 lacks the (dst,src,ws,count) WholeReduceSum form) | halving step aligned to 8 elements (src2 offset must be 32B-aligned, else error code 340); tail ≤16 elements accumulated as scalars | ✅ silicon-verified | no sharedTmpBuffer needed; norm² compared directly against (0.5·2^s)², no Sqrt | block-wise accumulation after Abs |
 | Scalarizing s | LocalTensor GetValue (S-pipe scalar accumulation) + while(normSq > bound) equivalence comparison | - | ✅ silicon-verified | s is a per-matrix scalar controlling the squaring loop count; written to the ws meta slot via Duplicate + DataCopy (the AIC must invalidate DCache before reading, see 3.4 note 4) | - |
 | n=1 exponential | Exp\<float\> | (dst, src, count), chunked by 8192 elements | ✅ silicon-verified | n=1 fast path only (pure AIV, no flag interaction) | Taylor path fallback |
-| Identity diagonal write | host-generated eye constant (nPad16 square) -> DataCopyPad full-block copy | - | ✅ adopted (Iteration 1) | tail rows/row tails zero double as pad clearing; Muls+Add realize E0 = I + (sigma/9)A | Dup strided diagonal write (revisit after silicon verification) |
+| Identity diagonal write | host-generated eye constant (nPad16 square) -> DataCopyPad full-block copy | - | ✅ adopted (Iteration 1) | tail rows/row tails zero double as pad clearing; the output-step Add realizes E = I + M (the identity term is added back once at output, see 3.1 split-identity) | Dup strided diagonal write (revisit after silicon verification) |
 | Matrix multiply | Mmad (CANN SDK tensor_api `AscendC::Te`; the 950 has no matmul::Matmul high-level API) | `Te::MmadParams{nPad, nPad, nPad, unitFlag=3, cmatrixInitVal=true}`; `Te::Copy(CopyGM2L1{})` ND→NZ/ZN | ✅ silicon-verified (n=2..128, accuracy green across buckets) | L0C layout explicitly BLOCK_CUBE=16 (for fp32, LayoutTraitDefault computes C0=8); m/n/k passed nPad; Mmad/Fixpipe unitFlag both 3 | Vector dot-product for small n (slow, fallback) |
 | Data copy-out | Cast\<T, fp32\> (CAST_RINT) + DataCopyPad\<T\> | same as load-in, direction UB→GM (row-wise) | ✅ silicon-verified | - | - |
-| Synchronization | SetFlag/WaitFlag (in-core event pairs, AIC 8 / AIV 7 independent eventIDs) + CrossCore MODE4 flags (AIC↔AIV lockstep) | HardEvent enums | ✅ silicon-verified | the AIV-side GetBlockIdx() must be divided by GetTaskRation() to get the logical block (rawIdx contains the subblock id; without conversion, odd blocks go unprocessed/hang; SDK production kernels do the same) | - |
+| Synchronization | SetFlag/WaitFlag (in-core event pairs, AIC 7 / AIV 7 independent eventIDs) + CrossCore MODE4 flags (AIC↔AIV lockstep) | HardEvent enums | ✅ silicon-verified | the AIV-side GetBlockIdx() must be divided by GetTaskRation() to get the logical block (rawIdx contains the subblock id; without conversion, odd blocks go unprocessed/hang; SDK production kernels do the same) | - |
 
 
 #### 3.4.5 Data-Flow Design
 
 ```
 Per matrix (AIC/AIV lockstep via the flag protocol of 3.4 note 4):
-1. AIV: GM(A_i) → UB(fp32); norm → s/σ; stage A → ws A region; E0 → ws E region; s → ws meta slot
-2. AIC: ws A/E → L1(NZ/ZN) → L0A/L0B → Mmad → L0C → fixpipe → ws tmp region
-   AIV: ws tmp → UB → E update → ws E region (each Horner round, 8 rounds total)
-3. s squaring rounds (pure AIC): ws E/tmp region → Mmad(E@E) → ws tmp region
-4. AIV: ws tmp (s>0) or UB eF32 (s==0) → Cast → GM(out_i)
+1. AIV: GM(A_i) → UB(fp32); norm → s/σ; stage A → ws A region; M0 = (σ/9)A → ws M region; s → ws meta slot
+2. AIC: ws A/M → L1(NZ/ZN) → L0A/L0B → Mmad → L0C → fixpipe → ws tmp region
+   AIV: ws tmp → UB → M update → ws M region (each Horner round, 8 rounds total)
+3. s squaring rounds: AIC ws M region → Mmad(M@M) → ws tmp region; AIV ws tmp → UB → M ← 2M + M@M
+   (non-final rounds write back to the ws M region for the AIC's next-round read)
+4. AIV: E = I + M (UB eye constant + Add) → Cast → GM(out_i)
 ```
 
 #### 3.4.6 Memory Management
 
 | Memory region | Size formula (n ≤ 128) | Notes |
 |---------|--------------------|------|
-| **UB aBuf** | max(nPad², 8192)×4B (64 KB at n=128) | input matrix fp32 compute state / eye resident |
-| **UB eBuf** | same as aBuf | E accumulation result (UB compute state, resident before writing ws) |
+| **UB aBuf** | max(nPad², 8192)×4B (64 KB at n=128) | input matrix fp32 compute state (added to A in every Horner round, resident throughout) |
+| **UB mBuf** | same as aBuf | M = E - I accumulation result (UB compute state, resident before writing ws) |
 | **UB tmpBuf** | same as aBuf | AIC product read-back staging / norm-square |
 | **UB ioBuf** | max(nPad², 8192)×sizeof(T) (32 KB for fp16/bf16; absent for fp32) | raw-dtype load-in / output Cast staging |
 | **UB metaBuf** | 8×4B = 32 B | s scalar transfer (Duplicate → DataCopy writes the ws meta slot) |
@@ -492,7 +518,7 @@ Per matrix (AIC/AIV lockstep via the flag protocol of 3.4 note 4):
   (overlapping the next matrix's A load-in with the current Horner's first
   Mmad) is an **Iteration-2 optimization item** — under the MIX data flow the
   UB requirement must be re-estimated for the four buffers
-  aBuf/eBuf/tmpBuf/ioBuf (fp32 n=128: 4×64KB = 256KB > 248KB exceeds the limit);
+  aBuf/mBuf/tmpBuf/ioBuf (fp32 n=128: 4×64KB = 256KB > 248KB exceeds the limit);
 - In-core event pairs guarantee serial correctness across pipe segments (AIC:
   MTE1/MTE2/M/FIX/S; AIV: MTE2/V/MTE3/S); Cube(AIC)↔Vector(AIV) lockstep via
   CrossCore MODE4 flags (3.4 note 4); the buffer-reuse style matches the

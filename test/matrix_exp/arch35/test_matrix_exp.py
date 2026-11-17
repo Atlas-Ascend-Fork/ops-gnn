@@ -180,6 +180,21 @@ def test_special_matrices():
     _assert_close(out, a, torch.float32)
 
 
+def test_nilpotent_matrix_fp32():
+    """Nilpotent A (A @ A == 0) keeps exp(A) == I + A exactly.
+
+    Scaling-and-squaring on E = I + M evaluates (1+x)**2 - x**2 with
+    x up to ~1000 in fp32 and the cancellation error grows superlinearly
+    per squaring round. Maintaining M = E - I (identity split out of
+    every matmul) keeps the ±x*x terms cancelling exactly in fp32.
+    """
+    base = torch.tensor([[1.0, 1.0], [-1.0, -1.0]])  # base @ base == 0
+    for c in (499.1, 1000.1):
+        a = (base * c).unsqueeze(0)
+        out = ops_gnn.matrix_exp(a.npu())
+        _assert_close(out, a, torch.float32)
+
+
 def test_batch_larger_than_cores():
     """batch 远大于核数：多轮矩阵循环复用缓冲与 flag 配对。"""
     a = _rand_matrix(64, 4, 0.3, torch.float32, seed=23)

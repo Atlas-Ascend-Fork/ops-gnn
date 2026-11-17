@@ -80,8 +80,6 @@ private:
         SetFlag<HardEvent::M_FIX>(EVT_AIC_M_FIX);
         WaitFlag<HardEvent::M_FIX>(EVT_AIC_M_FIX);
     }
-    __aicore__ inline void WaitFixMte2() { WaitFlag<HardEvent::FIX_MTE2>(EVT_AIC_FIX_MTE2); }
-    __aicore__ inline void SetFixMte2() { SetFlag<HardEvent::FIX_MTE2>(EVT_AIC_FIX_MTE2); }
     __aicore__ inline void WaitMUsedL0() { WaitFlag<HardEvent::M_MTE1>(EVT_AIC_M_MTE1); }
     __aicore__ inline void SetMUsedL0() { SetFlag<HardEvent::M_MTE1>(EVT_AIC_M_MTE1); }
     __aicore__ inline void WaitFixUsedL0c() { WaitFlag<HardEvent::FIX_M>(EVT_AIC_FIX_M); }
@@ -174,10 +172,10 @@ private:
     {
         __gm__ uint8_t* wsBase = wsPtr_ + GetBlockIdx() * wsStride_;
         __gm__ uint8_t* aGm = wsBase;                        // A 区（AIV 中转，nPad 布局）
-        __gm__ uint8_t* eGm = wsBase + wsEOff_;              // E 区
+        __gm__ uint8_t* mGm = wsBase + wsEOff_;              // M 区（M = E - I）
         __gm__ uint8_t* tmpGm = wsBase + wsTmpOff_;          // tmp 区
 
-        // 1) 等 AIV 的 A 中转 + E0（含 meta 槽 s）就绪；S pipe 标量读必须排在 READY 之后。
+        // 1) 等 AIV 的 A 中转 + M0（含 meta 槽 s）就绪；S pipe 标量读必须排在 READY 之后。
         //    标量单元读 GM 命中核内 DCache，与他核（AIV）MTE3 写入不保持一致：每核首读
         //    miss 取到新值后，后续矩阵永远 hit 陈旧行、沿用核首矩阵的 s，squaring 次数
         //    系统性错位（实测 out = E8(sigma_true)^(2^s_coreFirst)）。读前须
@@ -197,47 +195,43 @@ private:
         WaitMUsedL0();
         LoadL1AndL0a(aGm);
 
-        // 3) Horner 8 轮：tmp = A @ E_j；AIV 侧 E_{j+1} = E_j + (sigma/k_j) * tmp。
+        // 3) Horner 8 轮：tmp = A @ M_j；AIV 侧 M_{j+1} = (sigma/k_j) * (A + tmp)。
         for (uint32_t j = 0; j < MATRIX_EXP_HORNER_ROUNDS; ++j) {
             if (j > 0) {
                 WaitMUsedL0();  // 等上一轮 Mmad 读完 L0B（j=0 时 L0A 装载与 L0B 不冲突）
             }
-            LoadL1AndL0b(eGm);
+            LoadL1AndL0b(mGm);
             WaitFixUsedL0c();   // 上一轮 FIX 已读完 L0C
             Mmad();
             SyncMToFix();       // M_FIX 事件须在 Mmad 之后入 M 队列（早于 Mmad 会导致 FIX 抢读 L0C）
             StoreL0cToGm(tmpGm);
             SetAicDone(doneCnt_);
             if ((j + 1 < MATRIX_EXP_HORNER_ROUNDS) || (s > 0)) {
-                WaitAivReady(readyCnt_);  // 等 AIV 更新出的下一轮 E
+                WaitAivReady(readyCnt_);  // 等 AIV 更新出的下一轮 M
             }
         }
         if (s == 0) {
-            return;  // AIV 持有最终 E 直接输出，尾轮不发 READY、AIC 不再等待
+            return;  // AIV 持有最终 M 加 I 后输出，尾轮不发 READY、AIC 不再等待
         }
 
-        // 4) 平方 s 轮：E <- E @ E（纯 AIC）。i==0 读 E 区，之后读 tmp 区。
-        __gm__ uint8_t* src = eGm;
+        // 4) 平方 s 轮（拆分恒等项）：tmp = M @ M（AIC），AIV 组装 M <- 2M + tmp 后
+        //    经 ws M 区回传（i==0 的 READY 由 Horner 尾轮发出；末轮 AIV 不回传、
+        //    直接加 I 输出，AIC 不再等待）。
         for (uint32_t i = 0; i < s; ++i) {
             if (i > 0) {
-                WaitFixMte2();  // 上一轮 FIX 写完 GM tmp，MTE2 才可读
-                src = tmpGm;
+                WaitAivReady(readyCnt_);  // 上一轮 AIV 已组装并写回 M 区（同时保证 tmp 可覆写）
             }
-            // 同上：L0A/B 重装须置于装载之前——Horner 尾轮 Mmad 的 M_MTE1 Set 由
-            // 此处消费，否则 CopyL12L0A 与其竞争 L0A（实测大范数场景零星元素错）。
+            // 同上：L0A/B 重装须置于装载之前——上一轮 Mmad 的 M_MTE1 Set 由此处消费，
+            // 否则 CopyL12L0A/B 与其竞争 L0A/L0B（实测大范数场景零星元素错）。
             WaitMUsedL0();
-            LoadL1AndL0a(src);  // E 的 A 侧，覆盖已无用的 A
-            LoadL1AndL0b(src);
+            LoadL1AndL0a(mGm);
+            LoadL1AndL0b(mGm);
             WaitFixUsedL0c();
             Mmad();
             SyncMToFix();       // M_FIX 事件须在 Mmad 之后入 M 队列
             StoreL0cToGm(tmpGm);
-            if (i + 1 < s) {
-                SetFixMte2();
-            }
+            SetAicDone(doneCnt_);  // 每轮通知 AIV 取回 tmp 组装下一轮 M
         }
-        // 5) 通知 AIV 取最终结果。
-        SetAicDone(doneCnt_);
     }
 
     uint32_t n_;
