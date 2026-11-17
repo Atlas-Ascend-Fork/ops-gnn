@@ -489,6 +489,29 @@ def test_generic_equals_subops(reduce):
     assert torch.allclose(sub.cpu(), gen.cpu(), rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.parametrize("reduce", ["min", "max"])
+def test_value_only_extrema_do_not_allocate_arg(reduce):
+    torch.manual_seed(9)
+    n, channels, nseg = 1 << 20, 64, 1024
+    src = torch.randn(n, channels)
+    sizes = torch.full((nseg,), n // nseg, dtype=torch.long)
+    sizes[-1] += n - (n // nseg) * nseg
+    indptr = torch.cat([torch.zeros(1, dtype=torch.long), sizes.cumsum(0)])
+    src_npu = src.npu()
+    indptr_npu = indptr.npu()
+    torch.npu.synchronize()
+    base = torch.npu.memory_allocated()
+    torch.npu.reset_peak_memory_stats()
+    res = ops_gnn.segment_csr(src_npu, indptr_npu, reduce=reduce)
+    torch.npu.synchronize()
+    peak = torch.npu.max_memory_allocated()
+    expect = segment_csr_cpu(src, indptr, reduce)
+    _close(res, expect, torch.float32)
+    out_bytes = res.numel() * res.element_size()
+    arg_bytes = nseg * channels * 8
+    assert peak - base < out_bytes + arg_bytes
+
+
 def test_out_in_place():
     src = torch.randn(256, 32)
     indptr = torch.tensor([0, 128, 256])

@@ -1665,11 +1665,6 @@ std::vector<torch::Tensor> segment_csr(torch::Tensor src, torch::Tensor indptr, 
 #ifdef OPSGNN_DAV_2201
     const InternalCsrOperations internalOperations(outOpt.has_value() && outOpt->defined());
 #endif
-#ifndef OPSGNN_DAV_2201
-    // Existing arch35 extrema kernels require an arg buffer even when Python
-    // returns values only. Keep the established 950 invocation unchanged.
-    returnArg = true;
-#endif
     const auto reduction = ParseReduction(reduce);
     const SegDims dims = CheckedDimensions(src, indptr);
     const int kind = KindFor(src);

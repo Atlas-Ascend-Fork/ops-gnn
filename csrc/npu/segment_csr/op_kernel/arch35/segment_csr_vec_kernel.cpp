@@ -367,6 +367,7 @@ public:
         k_ = channels;
         op_ = op;
         mean_ = mean;
+        hasArg_ = (op != 0 && arg != nullptr);
         const uint32_t per = (segments + GetBlockNum() - 1) / GetBlockNum();
         begin_ = per * GetBlockIdx() < segments ? per * GetBlockIdx() : segments;
         end_ = begin_ + per < segments ? begin_ + per : segments;
@@ -380,7 +381,7 @@ public:
         src_.SetGlobalBuffer(const_cast<__gm__ T*>(src), static_cast<uint64_t>(m) * k_);
         ptr_.SetGlobalBuffer(const_cast<__gm__ int64_t*>(ptr), segments + 1);
         out_.SetGlobalBuffer(out, static_cast<uint64_t>(segments) * k_);
-        if (op != 0)
+        if (op != 0 && arg != nullptr)
             arg_.SetGlobalBuffer(arg, static_cast<uint64_t>(segments) * k_);
         pipe->InitBuffer(input_, 2, tileBytes + 512);
         pipe->InitBuffer(saved_, 2048 * sizeof(typename RegisterType<T>::Value) + 256);
@@ -506,7 +507,7 @@ public:
                 DataCopyPad(
                     out_[static_cast<uint64_t>(current.segment) * k_], result_.Get<T>(),
                     DataCopyExtParams{1, elems * sizeof(T), 0, 0, 0});
-                if (op_ != 0)
+                if (hasArg_)
                     DataCopyPad(
                         arg_[static_cast<uint64_t>(current.segment) * k_], argResult_.Get<int64_t>(),
                         DataCopyExtParams{1, elems * 8, 0, 0, 0});
@@ -695,6 +696,7 @@ private:
     uint32_t m_, k_, begin_, end_, cached_, maxRows_, maxSegments_, planSeg_, planRow_;
     int op_;
     bool mean_;
+    bool hasArg_;
     bool uniform_;
     uint32_t uniformBase_, uniformLength_;
     event_t evCopyScalar_, evWrite_, evReuse_;

@@ -404,7 +404,9 @@ __simt_callee__ inline void ReduceScalarExtremum(
         }
     }
     out[outIdx] = Traits::Store(best);
-    argOut[outIdx] = bestRow;
+    if (argOut != nullptr) {
+        argOut[outIdx] = bestRow;
+    }
 }
 
 // --------------------------------------------------------------- scalar path
@@ -625,7 +627,9 @@ __simt_callee__ inline void FinishPacketExtrema(
     }
     for (int l = 0; l < VE; ++l) {
         out[outBase + l] = Traits::Store(state.b0[l]);
-        argOut[outBase + l] = state.r0[l];
+        if (argOut != nullptr) {
+            argOut[outBase + l] = state.r0[l];
+        }
     }
 }
 
