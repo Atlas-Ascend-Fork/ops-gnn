@@ -45,6 +45,11 @@ void ValidateInputs(const torch::Tensor& src, const torch::Tensor& indptr,
                 "indptr last dim must be >= 1, got ", indptr.size(indptrDim - 1));
     TORCH_CHECK(indptr.scalar_type() == at::ScalarType::Int,
                 "indptr must be int32, got ", indptr.scalar_type());
+    for (uint32_t axis = 0; axis + 1 < indptrDim; ++axis) {
+        TORCH_CHECK(indptr.size(axis) == 1 || indptr.size(axis) == src.size(axis),
+                    "segment_max_csr: indptr dimension ", axis, " with size ", indptr.size(axis),
+                    " cannot broadcast to src size ", src.size(axis));
+    }
     if (hasOptionalOut) {
         TORCH_CHECK(optional_out.scalar_type() == src.scalar_type(),
                     "optional_out dtype must match src, got ", optional_out.scalar_type(),
@@ -178,7 +183,19 @@ torch::Tensor segment_max_csr(torch::Tensor src, torch::Tensor indptr, torch::Te
         indptrPreProduct *= indptr.size(d);
     }
     uint32_t indptrLastDim = indptr.size(dim.indptrDim - 1);
-    uint32_t strideIndptr = (indptrPreProduct == dim.E_1) ? indptrLastDim : 0;
+    uint32_t strideIndptr;
+    if (indptrPreProduct == dim.E_1) {
+        strideIndptr = indptrLastDim;
+    } else if (indptrPreProduct == 1) {
+        strideIndptr = 0;
+    } else {
+        std::vector<int64_t> expandedShape(indptr.sizes().begin(), indptr.sizes().end());
+        for (uint32_t d = 0; d + 1 < dim.indptrDim; ++d) {
+            expandedShape[d] = src.size(d);
+        }
+        indptr = indptr.expand(expandedShape).contiguous();
+        strideIndptr = indptrLastDim;
+    }
 
     torch::Tensor out = torch::empty(outShape, src.options());
 

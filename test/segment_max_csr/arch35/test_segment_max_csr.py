@@ -211,6 +211,36 @@ def test_segment_max_csr_broadcast():
     assert torch.equal(result, expected)
 
 
+def test_segment_max_csr_partial_broadcast():
+    """Test partial broadcast of indptr (1x3 broadcast to 2x3 batch)"""
+    device_id = int(os.environ.get("NPU_DEVICE_ID", 0))
+    torch.npu.set_device(device_id)
+
+    src = torch.arange(1, 19, dtype=torch.float32, device='npu').reshape(2, 3, 3, 1)
+    indptr = torch.tensor([0, 1, 3, 0, 2, 3, 1, 2, 3], dtype=torch.int32,
+                          device='npu').view(1, 3, 3)
+
+    result = ops_gnn.segment_max_csr(src, indptr)
+
+    expected = segment_max_csr_cpu(src, indptr).to('npu')
+
+    assert result.device.type == 'npu'
+    assert result.shape == (2, 3, 2, 1)
+    assert torch.equal(result, expected)
+
+
+def test_segment_max_csr_rejects_mismatched_indptr_batch():
+    """Test indptr prefix dim neither 1 nor matching src raises"""
+    device_id = int(os.environ.get("NPU_DEVICE_ID", 0))
+    torch.npu.set_device(device_id)
+
+    src = torch.zeros(2, 3, 3, 1, dtype=torch.float32, device='npu')
+    indptr = torch.zeros(5, 3, 3, dtype=torch.int32, device='npu')
+
+    with pytest.raises(RuntimeError, match='cannot broadcast to src size'):
+        ops_gnn.segment_max_csr(src, indptr)
+
+
 def test_segment_max_csr_large():
     """测试较大规模数据"""
     device_id = int(os.environ.get("NPU_DEVICE_ID", 0))

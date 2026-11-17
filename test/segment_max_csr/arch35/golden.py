@@ -25,13 +25,15 @@ def segment_max_csr_cpu(src, indptr):
     inner = prod(src.shape[feature_dim:])
     source_rows = src.cpu().reshape(outer, src.shape[segment_dim], inner)
     result_rows = result.reshape(outer, n_segments, inner)
-    pointer_count = prod(indptr.shape[:-1])
-    pointer_rows = indptr.cpu().reshape(pointer_count, n_segments + 1)
+    expanded_shape = list(indptr.shape)
+    for axis in range(segment_dim):
+        if expanded_shape[axis] == 1:
+            expanded_shape[axis] = src.shape[axis]
+    pointer_rows = indptr.cpu().expand(expanded_shape).reshape(outer, n_segments + 1)
     for batch_idx in range(outer):
-        row_idx = batch_idx if pointer_count == outer else 0
         for seg in range(n_segments):
-            start = int(pointer_rows[row_idx, seg])
-            end = int(pointer_rows[row_idx, seg + 1])
+            start = int(pointer_rows[batch_idx, seg])
+            end = int(pointer_rows[batch_idx, seg + 1])
             if start < end:
                 result_rows[batch_idx, seg] = (
                     source_rows[batch_idx, start:end].max(dim=0).values
