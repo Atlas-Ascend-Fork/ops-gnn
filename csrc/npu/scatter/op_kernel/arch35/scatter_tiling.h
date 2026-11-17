@@ -32,24 +32,6 @@ enum ScatterIndexMode : uint32_t {
     SCATTER_INDEX_DIM_VECTOR = 1,
 };
 
-// add is normalized to sum by the Python adapter, so five reduction codes
-// cover all six public APIs.  Atomic keys are used only for sum/mean.
-enum ScatterTilingKey : uint32_t {
-    TILING_LANE_SUM = 0,
-    TILING_LANE_MUL = 1,
-    TILING_LANE_MEAN = 2,
-    TILING_LANE_MIN = 3,
-    TILING_LANE_MAX = 4,
-    TILING_ATOMIC_SUM = 10,
-    TILING_ATOMIC_MEAN = 12,
-    TILING_VECTOR_ATOMIC_SUM = 20,
-    TILING_VECTOR_ATOMIC_MEAN = 22,
-    TILING_F16_FLOAT_ATOMIC_SUM = 30,
-    TILING_F16_FLOAT_ATOMIC_MEAN = 32,
-    TILING_VECTOR_MIN = 43,
-    TILING_VECTOR_MAX = 44,
-};
-
 enum ScatterDType : uint32_t {
     SCATTER_FLOAT16 = 0,
     SCATTER_BFLOAT16 = 1,
@@ -72,7 +54,6 @@ struct ScatterTilingData {
     uint32_t reduce;
     uint32_t path;
     uint32_t indexMode;
-    uint32_t tilingKey;
     uint32_t blockNum;
     uint32_t hasOut;
     int64_t hotTarget;

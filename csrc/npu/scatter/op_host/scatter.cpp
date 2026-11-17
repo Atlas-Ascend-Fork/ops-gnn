@@ -209,22 +209,6 @@ uint32_t SelectBlockNum(const ScatterPlan& plan, const torch::Tensor& src)
     return blocks;
 }
 
-uint32_t SelectTilingKey(const ScatterPlan& plan, int64_t reduce)
-{
-    if (plan.vectorMinMaxPath) {
-        return reduce == SCATTER_MIN ? TILING_VECTOR_MIN : TILING_VECTOR_MAX;
-    }
-    if (plan.f16FloatAtomicPath) {
-        return reduce == SCATTER_MEAN ? TILING_F16_FLOAT_ATOMIC_MEAN :
-                                        TILING_F16_FLOAT_ATOMIC_SUM;
-    }
-    if (plan.vectorAtomicPath) {
-        return reduce == SCATTER_MEAN ? TILING_VECTOR_ATOMIC_MEAN :
-                                        TILING_VECTOR_ATOMIC_SUM;
-    }
-    return (plan.atomicPath ? 10U : 0U) + static_cast<uint32_t>(reduce);
-}
-
 ScatterTilingData BuildTiling(const ScatterPlan& plan,
                               const torch::Tensor& src,
                               const torch::Tensor& index,
@@ -247,7 +231,6 @@ ScatterTilingData BuildTiling(const ScatterPlan& plan,
           (plan.atomicPath ? SCATTER_ATOMIC : SCATTER_LANE_OWNER)));
     tiling.indexMode = plan.compactDimIndex ? SCATTER_INDEX_DIM_VECTOR :
                                               SCATTER_INDEX_FULL;
-    tiling.tilingKey = SelectTilingKey(plan, reduce);
     tiling.blockNum = SelectBlockNum(plan, src);
     tiling.hasOut = hasOut ? 1 : 0;
     tiling.hotTarget = hotTarget;
