@@ -14,32 +14,18 @@
 
 #include <cstdint>
 #include <limits>
-#include <mutex>
 #include <utility>
 #include <c10/core/DeviceGuard.h>
 
-#include <ATen/core/Generator.h>
-#include <torch_npu/csrc/aten/NPUGeneratorImpl.h>
 #include <torch_npu/csrc/core/npu/NPUStream.h>
 
+#include "random_walk/common/philox_host.h"
 #include "common/torch_sparse_shared_checks.h"
 #include "torch_sparse_random_walk/op_kernel/arch35/torch_sparse_random_walk.h"
 
 namespace opsgnn {
 
 namespace {
-
-// Philox refill produces 4 uint32 draws; the generator bookkeeping advances
-// by the same increment (mirrors the ops-gnn random_walk host).
-constexpr uint64_t RNG_CALL_INCREMENT = 4;
-
-std::pair<uint64_t, uint64_t> AcquirePhiloxState(c10::DeviceIndex deviceIndex)
-{
-    const at::Generator &generator = at_npu::detail::getDefaultNPUGenerator(deviceIndex);
-    auto *generatorImpl = at::check_generator<at_npu::NPUGeneratorImpl>(generator);
-    std::lock_guard<std::mutex> lock(generatorImpl->mutex_);
-    return generatorImpl->philox_engine_inputs(RNG_CALL_INCREMENT);
-}
 
 void ValidateWalkInputs(
     const torch::Tensor &rowptr,

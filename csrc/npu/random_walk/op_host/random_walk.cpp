@@ -10,24 +10,20 @@
 
 #include "random_walk.h"
 
+#include "random_walk/common/philox_host.h"
 #include "random_walk/op_kernel/arch35/random_walk.h"
-#include "torch_npu/csrc/aten/NPUGeneratorImpl.h"
 #include "torch_npu/csrc/core/npu/NPUStream.h"
-
-#include <ATen/core/Generator.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <mutex>
 
 namespace opsgnn {
 
 namespace {
 
 constexpr uint64_t UINT32_RANGE = 1ULL << 32;
-constexpr uint64_t RNG_CALL_INCREMENT = 4;
 
 void CheckInt64Vector(const torch::Tensor& tensor, const char* name)
 {
@@ -54,14 +50,6 @@ uint32_t ProbabilityThreshold(long double probability)
                 " is below the 1/2**32 resolution of the 32-bit sampler; "
                 "p and q are too extreme to preserve relative transition weights");
     return static_cast<uint32_t>(acceptedCount - 1);
-}
-
-std::pair<uint64_t, uint64_t> AcquirePhiloxState(c10::DeviceIndex deviceIndex)
-{
-    const at::Generator& generator = at_npu::detail::getDefaultNPUGenerator(deviceIndex);
-    auto* generatorImpl = at::check_generator<at_npu::NPUGeneratorImpl>(generator);
-    std::lock_guard<std::mutex> lock(generatorImpl->mutex_);
-    return generatorImpl->philox_engine_inputs(RNG_CALL_INCREMENT);
 }
 
 void ValidateRandomWalkInputs(
