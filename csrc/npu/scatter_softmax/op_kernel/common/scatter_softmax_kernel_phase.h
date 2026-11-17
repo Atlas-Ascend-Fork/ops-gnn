@@ -30,6 +30,13 @@
  * - or, when the whole reduction workspace fits in UB, through a private
  * per-core accumulator flushed once at the end of the pass, with the workspace
  * read from a resident copy instead of from GM row by row.
+ *
+ * The compile-time `Log` switch selects the log-softmax variant of the same
+ * pipeline (scatter_log_softmax): the maximum pass and the exponential sum are
+ * identical, the normalize pass writes `(src - maximum) - ln(sum)` and reads
+ * `src` instead of the stored exponential, and the backward reduces the plain
+ * gradient sum instead of `out * grad_out` because the log-domain Jacobian
+ * only needs `exp(out)` as a weight after the reduction.
  */
 
 namespace ScatterSoftmaxNpu {
@@ -121,7 +128,7 @@ __aicore__ inline void CopyWorkspaceCached(LocalTensor<float> dst, LocalTensor<f
 }
 
 // Brings the workspace of an earlier pass into UB once, before the row loop.
-template <ScatterSoftmaxPhase Phase, typename T>
+template <ScatterSoftmaxPhase Phase, bool Log, typename T>
 __aicore__ inline void LoadWorkspace(PhaseTensors<T>& t, const ScatterSoftmaxTilingData& tiling,
                                      PipelineSync& sync)
 {
@@ -131,6 +138,14 @@ __aicore__ inline void LoadWorkspace(PhaseTensors<T>& t, const ScatterSoftmaxTil
     const int32_t count = static_cast<int32_t>(tiling.workspaceElems);
     if constexpr (Phase == kPhaseExp) {
         DataCopy(t.cached, t.maximumGm, count);
+    } else if constexpr (Log && Phase == kPhaseNormalize) {
+        // The log-domain normalization subtracts the maximum and multiplies by
+        // nothing: it needs the maximum and the sum at the same time, so the
+        // cached copy holds the maximum and the (otherwise idle) accumulator
+        // buffer holds the sum. Both copies stay inside the two-workspace
+        // reservation the exp pass already asks for.
+        DataCopy(t.cached, t.maximumGm, count);
+        DataCopy(t.accum, t.sumGm, count);
     } else {
         DataCopy(t.cached, t.sumGm, count);
     }
@@ -250,8 +265,10 @@ __aicore__ inline void MaximumBatch(PhaseTensors<T>& t, const ScatterSoftmaxTili
     SyncEvent<HardEvent::MTE3_V>(sync.storeToCompute);
 }
 
-// out = exp(src - maximum) and sum[b][g][a] += out.
-template <typename T>
+// sum[b][g][a] += exp(src - maximum). In log mode the exponential itself is
+// never stored: the normalize pass recomputes the shifted source, so only the
+// sum crosses the pass boundary.
+template <bool Log, typename T>
 __aicore__ inline void ExpBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingData& tiling,
                                 PipelineSync& sync, uint64_t base, uint32_t count,
                                 uint64_t col, uint32_t valid, uint32_t width)
@@ -276,10 +293,14 @@ __aicore__ inline void ExpBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingDa
         WidenToFp32(t.wide[offset], t.narrow[offset], valid);
         Sub(t.wide[offset], t.wide[offset], t.wide2[offset], static_cast<int32_t>(valid));
         Exp(t.wide[offset], t.wide[offset], static_cast<int32_t>(valid));
-        NarrowFromFp32(t.narrow2[offset], t.wide[offset], valid);
+        if constexpr (!Log) {
+            NarrowFromFp32(t.narrow2[offset], t.wide[offset], valid);
+        }
     }
     SyncEvent<HardEvent::V_MTE3>(sync.computeToStore);
-    CopyRowsOut(t.outGm, t.narrow2, tiling, t.groups, base, count, col, valid);
+    if constexpr (!Log) {
+        CopyRowsOut(t.outGm, t.narrow2, tiling, t.groups, base, count, col, valid);
+    }
     if (tiling.localAccum != 0) {
         AccumulateRows<false>(t, tiling, t.wide, base, count, col, width);
     } else {
@@ -297,18 +318,36 @@ __aicore__ inline void ExpBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingDa
     SyncEvent<HardEvent::MTE3_V>(sync.storeToCompute);
 }
 
-// out /= sum. A zero sum propagates as NaN from the division itself.
-template <typename T>
+// out = exp(src - maximum) / sum in the softmax mode, and
+// out = (src - maximum) - ln(sum) in the log mode. A zero sum propagates as NaN
+// from the division itself; in log mode it turns the output into NaN through
+// `-inf - (-inf)`, which is what `torch.log_softmax` reports for a group of
+// `-inf`.
+template <bool Log, typename T>
 __aicore__ inline void NormalizeBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingData& tiling,
                                       PipelineSync& sync, uint64_t base, uint32_t count,
                                       uint64_t col, uint32_t valid, uint32_t width)
 {
     SyncEvent<HardEvent::V_MTE2>(sync.computeToLoad);
-    CopyRowsIn(t.narrow, t.outGm, tiling, base, count, col, valid);
-    if (tiling.localAccum != 0) {
-        CopyWorkspaceCached(t.wide2, t.cached, tiling, t.groups, base, count, col, width);
+    if constexpr (Log) {
+        // The stored exponential is not needed: the log output is recomputed
+        // from the source, which also keeps a group with an underflowed
+        // exponential sum from collapsing to `-inf` (see the kernel header).
+        CopyRowsIn(t.narrow, t.srcGm, tiling, base, count, col, valid);
+        if (tiling.localAccum != 0) {
+            CopyWorkspaceCached(t.wide2, t.cached, tiling, t.groups, base, count, col, width);
+            CopyWorkspaceCached(t.wide3, t.accum, tiling, t.groups, base, count, col, width);
+        } else {
+            CopyWorkspaceIn(t.wide2, t.maximumGm, tiling, t.groups, base, count, col, width);
+            CopyWorkspaceIn(t.wide3, t.sumGm, tiling, t.groups, base, count, col, width);
+        }
     } else {
-        CopyWorkspaceIn(t.wide2, t.sumGm, tiling, t.groups, base, count, col, width);
+        CopyRowsIn(t.narrow, t.outGm, tiling, base, count, col, valid);
+        if (tiling.localAccum != 0) {
+            CopyWorkspaceCached(t.wide2, t.cached, tiling, t.groups, base, count, col, width);
+        } else {
+            CopyWorkspaceIn(t.wide2, t.sumGm, tiling, t.groups, base, count, col, width);
+        }
     }
     SyncEvent<HardEvent::MTE2_V>(sync.loadToCompute);
     for (uint32_t k = 0; k < count; ++k) {
@@ -318,7 +357,13 @@ __aicore__ inline void NormalizeBatch(PhaseTensors<T>& t, const ScatterSoftmaxTi
         }
         const uint64_t offset = k * tiling.colTile;
         WidenToFp32(t.wide[offset], t.narrow[offset], valid);
-        Div(t.wide[offset], t.wide[offset], t.wide2[offset], static_cast<int32_t>(valid));
+        if constexpr (Log) {
+            Sub(t.wide[offset], t.wide[offset], t.wide2[offset], static_cast<int32_t>(valid));
+            Ln(t.wide3[offset], t.wide3[offset], static_cast<int32_t>(valid));
+            Sub(t.wide[offset], t.wide[offset], t.wide3[offset], static_cast<int32_t>(valid));
+        } else {
+            Div(t.wide[offset], t.wide[offset], t.wide2[offset], static_cast<int32_t>(valid));
+        }
         NarrowFromFp32(t.narrow[offset], t.wide[offset], valid);
     }
     SyncEvent<HardEvent::V_MTE3>(sync.computeToStore);
@@ -326,14 +371,18 @@ __aicore__ inline void NormalizeBatch(PhaseTensors<T>& t, const ScatterSoftmaxTi
     SyncEvent<HardEvent::MTE3_V>(sync.storeToCompute);
 }
 
-// sum[b][g][a] += out * grad_out.
-template <typename T>
+// sum[b][g][a] += out * grad_out, or += grad_out in log mode: the log-domain
+// Jacobian weights the reduced gradient by the probability afterwards, so the
+// reduction itself is the plain group sum of `grad_out`.
+template <bool Log, typename T>
 __aicore__ inline void GradSumBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingData& tiling,
                                     PipelineSync& sync, uint64_t base, uint32_t count,
                                     uint64_t col, uint32_t valid, uint32_t width)
 {
     SyncEvent<HardEvent::V_MTE2>(sync.computeToLoad);
-    CopyRowsIn(t.narrow, t.outGm, tiling, base, count, col, valid);
+    if constexpr (!Log) {
+        CopyRowsIn(t.narrow, t.outGm, tiling, base, count, col, valid);
+    }
     CopyRowsIn(t.narrow2, t.gradGm, tiling, base, count, col, valid);
     SyncEvent<HardEvent::MTE2_V>(sync.loadToCompute);
     for (uint32_t k = 0; k < count; ++k) {
@@ -342,9 +391,13 @@ __aicore__ inline void GradSumBatch(PhaseTensors<T>& t, const ScatterSoftmaxTili
         if (valid < width) {
             Duplicate(t.wide3[offset], 0.0F, static_cast<int32_t>(tiling.colTile));
         }
-        WidenToFp32(t.wide3[offset], t.narrow[offset], valid);
-        WidenToFp32(t.wide[offset], t.narrow2[offset], valid);
-        Mul(t.wide3[offset], t.wide3[offset], t.wide[offset], static_cast<int32_t>(valid));
+        if constexpr (Log) {
+            WidenToFp32(t.wide3[offset], t.narrow2[offset], valid);
+        } else {
+            WidenToFp32(t.wide3[offset], t.narrow[offset], valid);
+            WidenToFp32(t.wide[offset], t.narrow2[offset], valid);
+            Mul(t.wide3[offset], t.wide3[offset], t.wide[offset], static_cast<int32_t>(valid));
+        }
     }
     SyncEvent<HardEvent::V_MTE3>(sync.computeToStore);
     if (tiling.localAccum != 0) {
@@ -364,8 +417,9 @@ __aicore__ inline void GradSumBatch(PhaseTensors<T>& t, const ScatterSoftmaxTili
     SyncEvent<HardEvent::MTE3_V>(sync.storeToCompute);
 }
 
-// grad_src = out * (grad_out - sum[b][g][a]).
-template <typename T>
+// grad_src = out * (grad_out - sum[b][g][a]) in the softmax mode, and
+// grad_src = grad_out - exp(out) * sum[b][g][a] in the log mode.
+template <bool Log, typename T>
 __aicore__ inline void GradBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingData& tiling,
                                  PipelineSync& sync, uint64_t base, uint32_t count,
                                  uint64_t col, uint32_t valid, uint32_t width)
@@ -387,16 +441,26 @@ __aicore__ inline void GradBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingD
         const uint64_t offset = k * tiling.colTile;
         WidenToFp32(t.wide[offset], t.narrow[offset], valid);
         WidenToFp32(t.wide2[offset], t.narrow2[offset], valid);
-        Sub(t.wide2[offset], t.wide2[offset], t.wide3[offset], static_cast<int32_t>(valid));
-        Mul(t.wide[offset], t.wide[offset], t.wide2[offset], static_cast<int32_t>(valid));
-        NarrowFromFp32(t.narrow2[offset], t.wide[offset], valid);
+        if constexpr (Log) {
+            // dL/dx = grad_out - exp(out) * sum(grad_out): the group reduces the
+            // plain gradient sum, and only then is it weighted by the
+            // probability that `exp(out)` recovers.
+            Exp(t.wide[offset], t.wide[offset], static_cast<int32_t>(valid));
+            Mul(t.wide[offset], t.wide[offset], t.wide3[offset], static_cast<int32_t>(valid));
+            Sub(t.wide2[offset], t.wide2[offset], t.wide[offset], static_cast<int32_t>(valid));
+            NarrowFromFp32(t.narrow2[offset], t.wide2[offset], valid);
+        } else {
+            Sub(t.wide2[offset], t.wide2[offset], t.wide3[offset], static_cast<int32_t>(valid));
+            Mul(t.wide[offset], t.wide[offset], t.wide2[offset], static_cast<int32_t>(valid));
+            NarrowFromFp32(t.narrow2[offset], t.wide[offset], valid);
+        }
     }
     SyncEvent<HardEvent::V_MTE3>(sync.computeToStore);
     CopyRowsOut(t.gradSrcGm, t.narrow2, tiling, t.groups, base, count, col, valid);
     SyncEvent<HardEvent::MTE3_V>(sync.storeToCompute);
 }
 
-template <ScatterSoftmaxPhase Phase, typename T>
+template <ScatterSoftmaxPhase Phase, bool Log, typename T>
 __aicore__ inline void RunBatch(PhaseTensors<T>& tensors, const ScatterSoftmaxTilingData& tiling,
                                 PipelineSync& sync, uint64_t base, uint32_t count,
                                 uint64_t col, uint32_t valid, uint32_t width)
@@ -404,20 +468,20 @@ __aicore__ inline void RunBatch(PhaseTensors<T>& tensors, const ScatterSoftmaxTi
     if constexpr (Phase == kPhaseMaximum) {
         MaximumBatch(tensors, tiling, sync, base, count, col, valid, width);
     } else if constexpr (Phase == kPhaseExp) {
-        ExpBatch(tensors, tiling, sync, base, count, col, valid, width);
+        ExpBatch<Log>(tensors, tiling, sync, base, count, col, valid, width);
     } else if constexpr (Phase == kPhaseNormalize) {
-        NormalizeBatch(tensors, tiling, sync, base, count, col, valid, width);
+        NormalizeBatch<Log>(tensors, tiling, sync, base, count, col, valid, width);
     } else if constexpr (Phase == kPhaseGradSum) {
-        GradSumBatch(tensors, tiling, sync, base, count, col, valid, width);
+        GradSumBatch<Log>(tensors, tiling, sync, base, count, col, valid, width);
     } else {
-        GradBatch(tensors, tiling, sync, base, count, col, valid, width);
+        GradBatch<Log>(tensors, tiling, sync, base, count, col, valid, width);
     }
 }
 
 // Shared batch/tile driver: a core owns `rowChunk` consecutive rows, buffers
 // `rowBatch` of them at a time and walks every row along the feature axis in
 // 32-byte aligned tiles.
-template <ScatterSoftmaxPhase Phase, typename T>
+template <ScatterSoftmaxPhase Phase, bool Log, typename T>
 __aicore__ inline void RunRows(PhaseTensors<T>& tensors, const ScatterSoftmaxTilingData& tiling,
                                PipelineSync& sync)
 {
@@ -434,9 +498,9 @@ __aicore__ inline void RunRows(PhaseTensors<T>& tensors, const ScatterSoftmaxTil
         }
         LoadGroups(tensors, tiling, base, count, sync);
         for (uint64_t col = 0; col < tiling.after; col += tiling.colTile) {
-            RunBatch<Phase>(tensors, tiling, sync, base, count, col,
-                            TileLength(tiling.after, col, tiling.colTile),
-                            TileLength(tiling.afterPadded, col, tiling.colTile));
+            RunBatch<Phase, Log>(tensors, tiling, sync, base, count, col,
+                                 TileLength(tiling.after, col, tiling.colTile),
+                                 TileLength(tiling.afterPadded, col, tiling.colTile));
         }
     }
 }

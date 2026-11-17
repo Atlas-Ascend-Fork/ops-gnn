@@ -378,6 +378,66 @@ result = ops_gnn.scatter_softmax(src, index, dim=0, dim_size=2)
 
 ---
 
+### scatter_log_softmax — 分组 log-softmax
+
+在 Ascend A2/A3（arch22）与 Ascend 950（arch35）上按 `index` 分组计算
+log-softmax，参数与 `torch_scatter.scatter_log_softmax` 一致（`dim` 默认 0，
+`index` 限定为一维）：
+
+```python
+scatter_log_softmax(src, index, dim=0, dim_size=None)  # Tensor
+```
+
+对每个分组 `g`，沿 `dim` 计算数值稳定的 log-softmax：
+
+```text
+out[i] = (src[i] - max_g) - log(sum_j exp(src[j] - max_g))
+```
+
+其中 `max_g` 是元素 `i` 所属分组的最大值，`j` 遍历该分组的全部元素；输出
+形状、dtype 和设备均与 `src` 相同。
+
+| 参数 | 约束 |
+| --- | --- |
+| `src` | NPU 张量；支持 float16、float32、bfloat16 |
+| `index` | 同设备 1 维 int32/int64 张量；长度必须等于 `src.size(dim)`，取值非负且小于 `dim_size` |
+| `dim` | 沿其计算 log-softmax 的维度，支持负维度，默认 0 |
+| `dim_size` | 分组数；省略时取 `index.max() + 1`，可大于该值以保留空分组 |
+
+实现复用 `scatter_softmax` 的设备内核（`csrc/npu/scatter_softmax/op_kernel/common`），
+以编译期 log 模式打开同一套五遍流水：前向三遍（逐组求最大值 → 逐组累加
+`exp(src - max)` → 写 `(src - max) - log(sum)`），反向两遍（逐组累加
+`grad_out` → `grad_out - exp(out) * sum`）。归一化取分组和的对数而不是把指数
+相除：分组内的 `exp` 全部下溢时 `log(sum)` 仍可计算，整组不会塌缩；指数本身
+也不必写回显存，第二遍只贡献和。反向只需要 `grad_out` 的分组和，`exp(out)` 即为
+softmax 概率，在归约之后作为权重相乘，因此比 `scatter_softmax` 的反向少读一份
+张量。空分组不产生输出元素；整组为 `-inf` 时输出 `NaN`；分组内含 `+inf` 时该
+特征列整列为 `NaN`，均与 PyTorch `log_softmax` 一致。参考值
+`(src - max) - log(sum)` 超出 fp32 表示范围时输出 `-inf`。
+
+> 精度与开销：工作区布局、fp32 归约方式与 `scatter_softmax` 完全相同——逐组
+> 归约由 MTE3 原子单元完成，整个归约工作区不超过 16 KB 时改为核内累加、末尾
+> 一次原子回写；`index` 无序时复杂度仍然稳定。所有归约在 float32 中完成，
+> fp16/bf16 的单组长度不受 65504 上限限制；输出按源 dtype 舍入，独立 golden
+> 使用 float64 参考。调度同样按核划分连续的行块，每批最多 8 行。
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+src = torch.tensor([[1., 2.], [3., 4.], [5., 6.]], device="npu")
+index = torch.tensor([0, 1, 1], dtype=torch.int64, device="npu")
+result = ops_gnn.scatter_log_softmax(src, index, dim=0, dim_size=2)
+# 分组 0: [[1., 2.]]                 -> [[0., 0.]]
+# 分组 1: [[3., 4.], [5., 6.]]       -> [[-2.1269, -2.1269], [-0.1269, -0.1269]]
+```
+
+> 测试位于 `test/scatter_log_softmax/`，性能脚本为
+> `test/scatter_log_softmax/benchmark_scatter_log_softmax.py`。
+
+---
+
 ### radius / radius_graph — 半径内邻居搜索
 
 与 `torch_cluster.radius` / `radius_graph`（>= 1.6.0）接口完全一致的 NPU 实现，

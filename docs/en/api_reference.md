@@ -403,6 +403,71 @@ result = ops_gnn.scatter_softmax(src, index, dim=0, dim_size=2)
 
 ---
 
+### scatter_log_softmax — Grouped Log-Softmax
+
+Computes a grouped log-softmax along `dim` on Ascend A2/A3 (arch22) and Ascend
+950 (arch35). The call surface matches `torch_scatter.scatter_log_softmax`:
+
+```python
+scatter_log_softmax(src, index, dim=0, dim_size=None)  # Tensor
+```
+
+For every group `g`, the numerically stable log-softmax along `dim` is:
+
+```text
+out[i] = (src[i] - max_g) - log(sum_j exp(src[j] - max_g))
+```
+
+where `max_g` is the maximum of the group that `i` belongs to and `j` runs over
+the elements of that group. The output keeps the shape, dtype and device of
+`src`.
+
+| Argument | Contract |
+| --- | --- |
+| `src` | NPU Tensor; float16, float32, or bfloat16 |
+| `index` | Same-device 1-D int32/int64 Tensor; length must equal `src.size(dim)`; non-negative and smaller than `dim_size` |
+| `dim` | Dimension along which the log-softmax is computed; negative values are accepted; defaults to 0 |
+| `dim_size` | Number of groups; defaults to `index.max() + 1` and may be larger to keep empty groups |
+
+The operator reuses the grouped-softmax device kernel
+(`csrc/npu/scatter_softmax/op_kernel/common`) with its compile-time log mode
+enabled, so the five passes are the same: three forward passes (per-group
+maximum, `exp(src - max)` plus its per-group sum, then `(src - max) - log(sum)`)
+and two backward passes (per-group sum of `grad_out`, then
+`grad_out - exp(out) * sum`). Normalizing with the logarithm of the sum instead
+of dividing the exponentials keeps a group whose exponentials all underflow from
+collapsing, and the exponential itself never has to be written back to memory.
+The backward only reduces `grad_out`; `exp(out)` is the softmax probability and
+is applied as a weight after the reduction, so it reads one tensor less than the
+`scatter_softmax` backward. Empty groups produce no output elements; a group of
+`-inf` yields `NaN`, and a group containing `+inf` yields an all-`NaN` feature
+column. Both match PyTorch `log_softmax` semantics, and a value below the
+float32 range is reported as `-inf`.
+
+> Precision and cost: the workspace layout, the float32 reductions and the
+> scheduling knobs are the ones documented for `scatter_softmax` (MTE3 atomic
+> per-group accumulation, or a UB-resident accumulator when the workspace fits
+> in 16 KB; batches of up to 8 rows per core). `index` may be unsorted. The
+> output rounds in the source dtype and the standalone golden uses a float64
+> reference.
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+src = torch.tensor([[1., 2.], [3., 4.], [5., 6.]], device="npu")
+index = torch.tensor([0, 1, 1], dtype=torch.int64, device="npu")
+result = ops_gnn.scatter_log_softmax(src, index, dim=0, dim_size=2)
+# group 0: [[1., 2.]]                 -> [[0., 0.]]
+# group 1: [[3., 4.], [5., 6.]]       -> [[-2.1269, -2.1269], [-0.1269, -0.1269]]
+```
+
+> Tests live in `test/scatter_log_softmax/` and the performance script is
+> `test/scatter_log_softmax/benchmark_scatter_log_softmax.py`.
+
+---
+
 ### radius / radius_graph — Radius Neighbor Search
 
 NPU implementation interface-compatible with `torch_cluster.radius` /

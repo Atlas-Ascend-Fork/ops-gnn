@@ -15,6 +15,7 @@
 #include <pybind11/pybind11.h>
 #include <string>
 #include "gather_csr/op_host/gather_csr.h"
+#include "scatter_log_softmax/op_host/scatter_log_softmax.h"
 #include "scatter_softmax/op_host/scatter_softmax.h"
 #include "segment_coo/op_host/segment_coo.h"
 #include "segment_csr/op_host/segment_csr.h"
@@ -148,6 +149,21 @@ void BindScatterSoftmax(py::module_& module)
         py::arg("out"), py::arg("grad_out"), py::arg("index"),
         py::arg("dim"), py::arg("dim_size"),
         "Grouped softmax backward on NPU",
+        py::call_guard<py::gil_scoped_release>());
+}
+
+// The log-domain sibling shares the same kernel core, so it is bound on both
+// architectures as well.
+void BindScatterLogSoftmax(py::module_& module)
+{
+    module.def("scatter_log_softmax_forward", &opsgnn::scatter_log_softmax_forward,
+        py::arg("src"), py::arg("index"), py::arg("dim"), py::arg("dim_size"),
+        "Grouped log-softmax forward on NPU",
+        py::call_guard<py::gil_scoped_release>());
+    module.def("scatter_log_softmax_backward", &opsgnn::scatter_log_softmax_backward,
+        py::arg("out"), py::arg("grad_out"), py::arg("index"),
+        py::arg("dim"), py::arg("dim_size"),
+        "Grouped log-softmax backward on NPU",
         py::call_guard<py::gil_scoped_release>());
 }
 
@@ -296,9 +312,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     ops_gnn::initialize_segment_csr_proof_observer();
 #endif
     RegisterSegmentCsr(m);
-    // arch22 and arch35 share the scatter_softmax kernel, so it is bound
-    // once here instead of in both architecture entry points.
+    // arch22 and arch35 share the scatter_softmax / scatter_log_softmax
+    // kernels, so they are bound once here instead of in both architecture
+    // entry points.
     BindScatterSoftmax(m);
+    BindScatterLogSoftmax(m);
 #ifdef OPSGNN_DAV_2201
     BindArch22(m);
 #else

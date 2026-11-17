@@ -6,11 +6,15 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-"""Independent PyTorch reference for ``scatter_softmax``.
+"""Independent PyTorch reference of the grouped-softmax operators.
 
 The reference runs on CPU in float64, so it is not affected by the source
 dtype rounding. It deliberately does not import ``ops_gnn`` or
-``torch_scatter``, so functional tests can validate the operator on their own.
+``torch_scatter``, so functional tests can validate the operators on their own.
+The per-group reduction is the only part that differs between
+``scatter_softmax`` and ``scatter_log_softmax``, so the caller passes it in
+(``torch.softmax`` or ``torch.log_softmax``); each operator's ``golden.py``
+binds the matching one.
 """
 
 import torch
@@ -22,8 +26,10 @@ TOLERANCES = {
 }
 
 
-def reference(src: torch.Tensor, index, dim: int = 0, dim_size=None):
-    """Compute a grouped softmax on CPU in float64."""
+def grouped_reference(src: torch.Tensor, index, dim: int = 0, dim_size=None,
+                      reduce=None):
+    """Apply ``reduce`` to every group of ``src`` in float64 on CPU."""
+    reduce = torch.softmax if reduce is None else reduce
     if not isinstance(index, torch.Tensor):
         index = torch.tensor(index, dtype=torch.int64)
     idx = index.to(torch.int64).reshape(-1)
@@ -41,8 +47,22 @@ def reference(src: torch.Tensor, index, dim: int = 0, dim_size=None):
         if positions.numel() == 0:
             continue
         subset = values.index_select(dim, positions)
-        result.index_copy_(dim, positions, torch.softmax(subset, dim=dim))
+        result.index_copy_(dim, positions, reduce(subset, dim=dim))
     return result
+
+
+def make_reference(reduce):
+    """Return the float64 grouped reference that applies ``reduce``.
+
+    ``reduce`` is ``torch.softmax`` or ``torch.log_softmax``; each operator's
+    ``golden.py`` binds its own, so the three-line body of that file carries no
+    logic of its own.
+    """
+
+    def reference(src: torch.Tensor, index, dim: int = 0, dim_size=None):
+        return grouped_reference(src, index, dim, dim_size, reduce)
+
+    return reference
 
 
 def assert_close(actual: torch.Tensor, expected: torch.Tensor, dtype) -> None:

@@ -6,14 +6,10 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-"""Benchmark ``scatter_softmax`` on Ascend NPU.
+"""End-to-end latency benchmark shared by the grouped-softmax operators.
 
-Examples:
-    NPU_DEVICE_ID=0 python3 test/scatter_softmax/benchmark_scatter_softmax.py
-
-    # Long-group shape: 131072 edges in one group, above the fp16 sum limit.
-    NPU_DEVICE_ID=0 python3 test/scatter_softmax/benchmark_scatter_softmax.py \
-        --edges 131072 --features 64 --groups 1 --dtype float16
+The two operators accept the same arguments, so the command line and the
+measurement loop live here; each operator keeps a thin script that names it.
 """
 
 import argparse
@@ -35,8 +31,9 @@ def _build(edges, features, groups, dtype, device):
     return src.to(device), index.to(device)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
+def main(api_name: str) -> None:
+    parser = argparse.ArgumentParser(
+        description=f"Benchmark {api_name} on Ascend NPU.")
     parser.add_argument("--edges", type=int, default=1 << 20)
     parser.add_argument("--features", type=int, default=128)
     parser.add_argument("--groups", type=int, default=1 << 14)
@@ -50,29 +47,25 @@ def main() -> None:
     import torch_npu  # noqa: F401
     import ops_gnn
 
+    op = getattr(ops_gnn, api_name)
     device = f"npu:{int(os.getenv('NPU_DEVICE_ID', '0'))}"
     torch.npu.set_device(device)
     src, index = _build(args.edges, args.features, args.groups,
                         _DTYPES[args.dtype], device)
 
     for _ in range(args.warmup):
-        ops_gnn.scatter_softmax(src, index, dim_size=args.groups)
+        op(src, index, dim_size=args.groups)
     torch.npu.synchronize()
 
     start = torch.npu.Event(enable_timing=True)
     end = torch.npu.Event(enable_timing=True)
     start.record()
     for _ in range(args.iters):
-        ops_gnn.scatter_softmax(src, index, dim_size=args.groups)
+        op(src, index, dim_size=args.groups)
     end.record()
     torch.npu.synchronize()
 
     elapsed = start.elapsed_time(end) / args.iters
     logging.info(
-        "scatter_softmax edges=%d features=%d groups=%d dtype=%s: "
-        "%.3f ms/iter",
-        args.edges, args.features, args.groups, args.dtype, elapsed)
-
-
-if __name__ == "__main__":
-    main()
+        "%s edges=%d features=%d groups=%d dtype=%s: %.3f ms/iter",
+        api_name, args.edges, args.features, args.groups, args.dtype, elapsed)
