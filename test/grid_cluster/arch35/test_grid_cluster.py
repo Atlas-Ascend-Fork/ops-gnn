@@ -273,3 +273,50 @@ def test_noncontiguous_size_validation():
     size_storage = torch.tensor([2.0, 1.0, 3.0, 1.0, -1.0], device="npu")
     with pytest.raises(RuntimeError, match="size must be positive and finite"):
         ops_gnn.grid_cluster(pos, size_storage[::2], start)
+
+
+@pytest.mark.skipif(DEVICE == "cpu", reason="NPU default-bound reduction regression")
+@pytest.mark.parametrize("num_points", [262143, 262144, 262145])
+@pytest.mark.parametrize("dims", [16, 17, 32])
+def test_default_bounds_reduction_thresholds(num_points, dims):
+    """Keep grid IDs exact across the large-bound dispatch boundary."""
+    generator = torch.Generator().manual_seed(20261101)
+    pos = torch.rand(num_points, dims, generator=generator) * 4
+    # Exact extrema keep the expected grid stable across the reduction paths.
+    pos[0].zero_()
+    pos[1].fill_(4)
+    check(pos, torch.full((dims,), 2.))
+
+
+@pytest.mark.skipif(DEVICE == "cpu", reason="NPU reduction layout and stream regression")
+@pytest.mark.parametrize("bounds", [0, 1, 2, 3])
+@pytest.mark.parametrize("shape", [(131073, 17), (262144, 32)])
+def test_large_default_bounds_noncontiguous_stream(bounds, shape):
+    """Check the reported fallback and optimized path with strided inputs."""
+    num_points, dims = shape
+    pos_storage = torch.rand(
+        num_points, 2 * dims, generator=torch.Generator().manual_seed(20261101)) * 4
+    pos_storage[0].zero_()
+    pos_storage[1].fill_(4)
+    start_cpu = torch.zeros(dims) if bounds & 1 else None
+    end_cpu = torch.full((dims,), 4.) if bounds & 2 else None
+    expected = grid_cluster_cpu(
+        pos_storage[:, ::2], torch.full((dims,), 2.), start_cpu, end_cpu)
+    stream = torch.npu.Stream()
+    with torch.npu.stream(stream):
+        pos = pos_storage.to(DEVICE)[:, ::2]
+        size = torch.full((2 * dims,), 2., device=DEVICE)[::2]
+        start = torch.zeros(2 * dims, device=DEVICE)[::2] if bounds & 1 else None
+        end = torch.full((2 * dims,), 4., device=DEVICE)[::2] if bounds & 2 else None
+        assert not pos.is_contiguous() and not size.is_contiguous()
+        actual = ops_gnn.grid_cluster(pos, size, start, end)
+        consumed = actual + 1
+    stream.synchronize()
+    assert actual.dtype == torch.long and actual.device == pos.device
+    assert torch.equal(consumed.cpu(), expected + 1)
+    assert torch.equal(pos.cpu(), pos_storage[:, ::2])
+    assert torch.equal(size.cpu(), torch.full((dims,), 2.))
+    if start is not None:
+        assert torch.equal(start.cpu(), start_cpu)
+    if end is not None:
+        assert torch.equal(end.cpu(), end_cpu)

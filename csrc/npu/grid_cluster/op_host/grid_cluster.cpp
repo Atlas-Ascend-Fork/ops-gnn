@@ -48,8 +48,16 @@ at::Tensor grid_cluster_npu(at::Tensor pos, at::Tensor size,
     // represents their complete range exactly; cast only the reduced vectors back.
     auto reduction = ((!optionalStart || !optionalEnd) &&
         (dtype == at::kChar || dtype == at::kByte || dtype == at::kShort)) ? p.to(at::kInt) : p;
-    auto start = optionalStart ? optionalStart->contiguous() : std::get<0>(at::min(reduction, 0)).to(dtype);
-    auto end = optionalEnd ? optionalEnd->contiguous() : std::get<0>(at::max(reduction, 0)).to(dtype);
+    // Limit value-only bounds to large FP32 16/32-D inputs. Other shapes
+    // retain min/max, including the reported 131073-by-17 regression.
+    const bool valuesOnly = dtype == at::kFloat && pos.size(0) >= 262144 &&
+        (dims == 16 || dims == 32);
+    auto start = optionalStart ? optionalStart->contiguous()
+        : (valuesOnly ? at::amin(reduction, {0})
+                              : std::get<0>(at::min(reduction, 0)).to(dtype));
+    auto end = optionalEnd ? optionalEnd->contiguous()
+        : (valuesOnly ? at::amax(reduction, {0})
+                              : std::get<0>(at::max(reduction, 0)).to(dtype));
     if (s.scalar_type() == dtype && start.scalar_type() == dtype && end.scalar_type() == dtype) {
         auto stream = c10_npu::getCurrentNPUStream(pos.device().index());
         GridCluster(p.data_ptr(), s.data_ptr(), start.data_ptr(), end.data_ptr(),
