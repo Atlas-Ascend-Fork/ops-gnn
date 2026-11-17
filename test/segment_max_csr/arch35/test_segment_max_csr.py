@@ -211,6 +211,39 @@ def test_segment_max_csr_broadcast():
     assert torch.equal(result, expected)
 
 
+def test_segment_max_csr_rejects_negative_indptr():
+    device_id = int(os.environ.get("NPU_DEVICE_ID", 0))
+    torch.npu.set_device(device_id)
+
+    src = torch.randn(4, 8, dtype=torch.float32, device='npu')
+    indptr = torch.tensor([0, -1, 4], dtype=torch.int32, device='npu')
+
+    with pytest.raises(RuntimeError, match='indptr value out of range'):
+        ops_gnn.segment_max_csr(src, indptr)
+
+
+def test_segment_max_csr_rejects_indptr_out_of_range():
+    device_id = int(os.environ.get("NPU_DEVICE_ID", 0))
+    torch.npu.set_device(device_id)
+
+    src = torch.randn(4, 8, dtype=torch.float32, device='npu')
+    indptr = torch.tensor([0, 2, 9], dtype=torch.int32, device='npu')
+
+    with pytest.raises(RuntimeError, match='indptr value out of range'):
+        ops_gnn.segment_max_csr(src, indptr)
+
+
+def test_segment_max_csr_rejects_decreasing_indptr():
+    device_id = int(os.environ.get("NPU_DEVICE_ID", 0))
+    torch.npu.set_device(device_id)
+
+    src = torch.randn(4, 8, dtype=torch.float32, device='npu')
+    indptr = torch.tensor([0, 3, 2], dtype=torch.int32, device='npu')
+
+    with pytest.raises(RuntimeError, match='indptr must be non-decreasing'):
+        ops_gnn.segment_max_csr(src, indptr)
+
+
 def test_segment_max_csr_partial_broadcast():
     """Test partial broadcast of indptr (1x3 broadcast to 2x3 batch)"""
     device_id = int(os.environ.get("NPU_DEVICE_ID", 0))

@@ -57,6 +57,28 @@ void ValidateInputs(const torch::Tensor& src, const torch::Tensor& indptr,
     }
 }
 
+void ValidateIndptrValues(const torch::Tensor& indptr, uint32_t indptrDim, uint32_t M)
+{
+    const int64_t rowWidth = indptr.size(indptrDim - 1);
+    TORCH_CHECK(rowWidth > 0, "indptr last dim must be >= 1, got ", rowWidth);
+    auto cpu = indptr.to(at::kCPU).contiguous();
+    const auto* values = cpu.data_ptr<int32_t>();
+    const int64_t batchCount = cpu.numel() / rowWidth;
+    for (int64_t batch = 0; batch < batchCount; ++batch) {
+        const auto* row = values + batch * rowWidth;
+        for (int64_t i = 0; i < rowWidth; ++i) {
+            TORCH_CHECK(row[i] >= 0 && static_cast<uint32_t>(row[i]) <= M,
+                        "segment_max_csr: indptr value out of range at batch ", batch,
+                        ", index ", i, ": expected [0, ", M, "], got ", row[i]);
+        }
+        for (int64_t i = 0; i + 1 < rowWidth; ++i) {
+            TORCH_CHECK(row[i] <= row[i + 1],
+                        "segment_max_csr: indptr must be non-decreasing at batch ", batch,
+                        ", indices ", i, " and ", i + 1);
+        }
+    }
+}
+
 DimInfo ComputeDimInfo(const torch::Tensor& src, const torch::Tensor& indptr)
 {
     DimInfo info;
@@ -162,6 +184,7 @@ torch::Tensor segment_max_csr(torch::Tensor src, torch::Tensor indptr, torch::Te
     ValidateInputs(src, indptr, optional_out, hasOptionalOut);
 
     DimInfo dim = ComputeDimInfo(src, indptr);
+    ValidateIndptrValues(indptr, dim.indptrDim, dim.M);
 
     std::vector<int64_t> outShape(src.sizes().begin(), src.sizes().end());
     outShape[dim.indptrDim - 1] = dim.nSegments;
