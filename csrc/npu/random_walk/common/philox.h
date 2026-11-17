@@ -79,10 +79,12 @@ __simt_callee__ inline uint32_t PhiloxNext(PhiloxState &state)
 __simt_callee__ inline PhiloxState MakePhiloxState(uint64_t seed, uint64_t offset, uint64_t walkIndex)
 {
     PhiloxState state;
-    state.key0 = static_cast<uint32_t>(seed) ^ static_cast<uint32_t>(offset);
-    state.key1 = static_cast<uint32_t>(seed >> 32) ^ static_cast<uint32_t>(offset >> 32);
-    state.counter0 = 0;
-    state.counter1 = 0;
+    // seed in the key, offset in the counter (counter0/1); refill advances to
+    // offset + block_index and never aliases another seed.
+    state.key0 = static_cast<uint32_t>(seed);
+    state.key1 = static_cast<uint32_t>(seed >> 32);
+    state.counter0 = static_cast<uint32_t>(offset);
+    state.counter1 = static_cast<uint32_t>(offset >> 32);
     state.counter2 = static_cast<uint32_t>(walkIndex);
     state.counter3 = static_cast<uint32_t>(walkIndex >> 32);
     state.lane = 4;

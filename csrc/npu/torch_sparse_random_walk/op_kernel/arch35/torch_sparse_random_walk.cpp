@@ -21,7 +21,8 @@
  * consumption order):
  *   - Algorithm: Philox4x32-10 (counter based), 4 uint32 per refill.
  *   - Seed: key = philox_engine_inputs() of the torch_npu default generator,
- *     i.e. controlled by torch.manual_seed; offset folds into the key.
+ *     i.e. controlled by torch.manual_seed; offset stays in counter0/1 and is
+ *     never folded into the key (seed and offset must not collide).
  *   - Consumption order: one PhiloxState per walk n (counter2/3 = n), values
  *     consumed sequentially across steps l; selection uses
  *     idx = floor(u * degree / 2^32), using a split product (u is one uint32 draw).

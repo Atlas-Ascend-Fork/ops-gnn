@@ -52,6 +52,16 @@ def test_philox_stream_is_repeatable_and_partitioned():
     assert values != [other_walk.next_u32() for _ in range(12)]
 
 
+def test_philox_seed_and_offset_do_not_collide():
+    # (seed=4, offset=0) and (seed=0, offset=4) collided when seed and offset
+    # were XOR-combined into the key; they must yield distinct streams.
+    from_seed = PhiloxStream(seed=4, offset=0, walk_index=3)
+    from_offset = PhiloxStream(seed=0, offset=4, walk_index=3)
+    assert [from_seed.next_u32() for _ in range(8)] != [
+        from_offset.next_u32() for _ in range(8)
+    ]
+
+
 def test_uniform_degree_one_and_isolated_nodes_are_exact():
     row = torch.tensor([0, 1], dtype=torch.int64)
     col = torch.tensor([1, 0], dtype=torch.int64)

@@ -83,12 +83,11 @@ class PhiloxStream:
     def _refill(self) -> None:
         seed_lo = self.seed & _MASK32
         seed_hi = (self.seed >> 32) & _MASK32
-        offset_lo = self.offset & _MASK32
-        offset_hi = (self.offset >> 32) & _MASK32
-        key = (seed_lo ^ offset_lo, seed_hi ^ offset_hi)
+        block = self.offset + self.block_index
+        key = (seed_lo, seed_hi)
         counter = (
-            self.block_index & _MASK32,
-            (self.block_index >> 32) & _MASK32,
+            block & _MASK32,
+            (block >> 32) & _MASK32,
             self.walk_index & _MASK32,
             (self.walk_index >> 32) & _MASK32,
         )
