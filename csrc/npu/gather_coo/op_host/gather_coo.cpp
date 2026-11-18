@@ -1,9 +1,11 @@
 /**
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
- * This program is free software, you can redistribute it and/or modify it
- * under the terms and conditions of CANN Open Software License Agreement
- * Version 2.0.
- * Please refer to the License for details.
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
  */
 
 #include "gather_coo.h"
@@ -14,6 +16,8 @@
 #include <vector>
 
 #include <c10/core/DeviceType.h>
+#include <c10/macros/Macros.h>
+#include <torch/csrc/autograd/VariableTypeUtils.h>
 #include <torch_npu/csrc/core/npu/NPUStream.h>
 #include <tiling/platform/platform_ascendc.h>
 
@@ -169,6 +173,20 @@ torch::Tensor ValidateOptionalOut(
     return out;
 }
 
+bool CanWriteDirectly(
+    const torch::Tensor& out,
+    const torch::Tensor& src,
+    const torch::Tensor& index)
+{
+    if (!out.defined()) {
+        return false;
+    }
+    // Keep copy_ for outputs with autograd or inference write semantics.
+    // Check original inputs, including storage shared by offset views.
+    return out.is_contiguous() && !out.requires_grad() && !out.is_inference() &&
+        !out._fw_grad(0).defined() && !out.is_alias_of(src) && !out.is_alias_of(index);
+}
+
 GatherCooTilingData BuildTiling(const GatherCooShapeInfo& info)
 {
     auto platform = platform_ascendc::PlatformAscendCManager::GetInstance();
@@ -260,14 +278,32 @@ void LaunchByDtype(
     }
 }
 
-torch::Tensor CopyToOptionalOut(
+C10_NOINLINE torch::Tensor GatherWithOut(
+    torch::Tensor& src,
+    torch::Tensor& index,
     const c10::optional<torch::Tensor>& optionalOut,
-    const torch::Tensor& originalOut,
-    const torch::Tensor& output)
+    const GatherCooShapeInfo& info)
 {
-    if (!optionalOut.has_value()) {
-        return output;
+    const torch::Tensor originalOut =
+        ValidateOptionalOut(optionalOut, src, info.outputShape);
+    const bool directOut = CanWriteDirectly(originalOut, src, index);
+
+    // Check original storage before making the inputs contiguous.
+    src = src.contiguous();
+    index = index.contiguous();
+    const torch::Tensor output = directOut
+        ? originalOut : torch::empty(info.outputShape, src.options());
+    if (info.totalRows != 0 && info.featureCount != 0) {
+        const GatherCooTilingData tiling = BuildTiling(info);
+        LaunchByDtype(src, index, output, tiling);
     }
+    if (directOut) {
+        // Raw kernel writes bypass the dispatcher. Match copy_'s version bump,
+        // including empty outputs, so saved tensors detect subsequent writes.
+        torch::autograd::increment_version(originalOut);
+        return originalOut;
+    }
+    // Preserve copy_ for outputs with aliasing or special mutation semantics.
     originalOut.copy_(output);
     return originalOut;
 }
@@ -281,8 +317,9 @@ torch::Tensor gather_coo(
 {
     ValidateInputs(src, index);
     const GatherCooShapeInfo info = BuildShapeInfo(src, index);
-    const torch::Tensor originalOut =
-        ValidateOptionalOut(optional_out, src, info.outputShape);
+    if (optional_out.has_value()) {
+        return GatherWithOut(src, index, optional_out, info);
+    }
 
     // These copies are enqueued by PyTorch on the caller's current stream.
     // The kernel itself only receives contiguous tensors.
@@ -294,9 +331,7 @@ torch::Tensor gather_coo(
         const GatherCooTilingData tiling = BuildTiling(info);
         LaunchByDtype(src, index, output, tiling);
     }
-    // Copying through the temporary output keeps non-contiguous and
-    // storage-overlapping public out tensors safe.
-    return CopyToOptionalOut(optional_out, originalOut, output);
+    return output;
 }
 
 }  // namespace opsgnn

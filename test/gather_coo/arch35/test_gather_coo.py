@@ -408,5 +408,109 @@ def test_gather_coo_current_stream_and_determinism():
         _assert_against_references(src, index, result)
 
 
+@pytest.mark.parametrize("layout", ("contiguous", "view", "noncontiguous", "empty"))
+def test_gather_coo_out_version_counter(layout):
+    """A write invalidates values saved through out or its shared storage."""
+    src = torch.full((4, 3), 7., device="npu")
+    index = torch.tensor([] if layout == "empty" else [0, 2],
+                         dtype=torch.int64, device="npu")
+    if layout == "noncontiguous":
+        storage = torch.full((3, index.numel()), 2., device="npu")
+        out = storage.t()
+    else:
+        storage = torch.full((index.numel() * 3,), 2., device="npu")
+        out = storage.view(index.numel(), 3) if layout == "view" else storage.reshape(-1, 3).clone()
+    saved = storage if layout in ("view", "noncontiguous") else out
+    weight = torch.ones_like(saved, requires_grad=True)
+    loss = (saved * weight).sum()
+    result = ops_gnn.gather_coo(src, index, out=out)
+    assert result is out
+    assert torch.equal(out.cpu(), torch.full((index.numel(), 3), 7.))
+    with pytest.raises(RuntimeError, match="modified by an inplace operation"):
+        loss.backward()
+
+
+@pytest.fixture(name="out_write_inputs")
+def make_out_write_inputs():
+    """Provide independent inputs for optional-output mutation regressions."""
+    return (
+        torch.full((4,), 7., device="npu"),
+        torch.tensor([0, 2], dtype=torch.int64, device="npu"),
+    )
+
+
+def test_gather_coo_out_invalidates_saved_tensor(out_write_inputs):
+    """Backward must reject an out tensor overwritten after it was saved."""
+    src, index = out_write_inputs
+    out = torch.full((2,), 2., device="npu")
+    weight = torch.ones_like(out, requires_grad=True)
+    loss = (out * weight).sum()
+    ops_gnn.gather_coo(src, index, out=out)
+    with pytest.raises(RuntimeError, match="modified by an inplace operation"):
+        loss.backward()
+
+
+@pytest.mark.parametrize("view", (False, True))
+def test_gather_coo_out_rejects_grad_leaf(view, out_write_inputs):
+    """Leaf tensors and their views retain copy_'s in-place write restriction."""
+    src, index = out_write_inputs
+    leaf = torch.full((2,), 2., device="npu", requires_grad=True)
+    out = leaf.view(2) if view else leaf
+    with pytest.raises(RuntimeError, match="leaf Variable"):
+        ops_gnn.gather_coo(src, index, out=out)
+    assert torch.equal(out.detach().cpu(), torch.full((2,), 2.))
+
+
+def test_gather_coo_out_grad_leaf_allowed_under_no_grad(out_write_inputs):
+    """A permitted no_grad write still invalidates previously saved values."""
+    src, index = out_write_inputs
+    out = torch.full((2,), 2., device="npu", requires_grad=True)
+    weight = torch.ones_like(out, requires_grad=True)
+    loss = (out * weight).sum()
+    with torch.no_grad():
+        assert ops_gnn.gather_coo(src, index, out=out) is out
+    assert torch.equal(out.detach().cpu(), torch.full((2,), 7.))
+    with pytest.raises(RuntimeError, match="modified by an inplace operation"):
+        loss.backward()
+
+
+def test_gather_coo_out_preserves_nonleaf_copy_history(out_write_inputs):
+    """Overwriting a nonleaf retains copy_'s zero gradient to the old value."""
+    src, index = out_write_inputs
+    leaf = torch.ones(2, device="npu", requires_grad=True)
+    out = leaf * 2
+    assert ops_gnn.gather_coo(src, index, out=out) is out
+    out.sum().backward()
+    assert torch.equal(leaf.grad.cpu(), torch.zeros(2))
+
+
+def test_gather_coo_out_preserves_forward_ad_copy_semantics(out_write_inputs):
+    """Copying a plain result into a dual output clears the old tangent."""
+    src, index = out_write_inputs
+    primal = torch.full((2,), 2., device="npu")
+    tangent = torch.ones_like(primal)
+    with torch.autograd.forward_ad.dual_level():
+        out = torch.autograd.forward_ad.make_dual(primal, tangent)
+        assert ops_gnn.gather_coo(src, index, out=out) is out
+        result, result_tangent = torch.autograd.forward_ad.unpack_dual(out)
+        assert torch.equal(result.cpu(), torch.full((2,), 7.))
+        assert torch.equal(result_tangent.cpu(), torch.zeros(2))
+
+
+@pytest.mark.parametrize("inference_mode", (False, True))
+def test_gather_coo_inference_out_write_restriction(inference_mode, out_write_inputs):
+    """Inference outputs remain writable only inside inference mode."""
+    src, index = out_write_inputs
+    with torch.inference_mode():
+        out = torch.full((2,), 2., device="npu")
+    if inference_mode:
+        with torch.inference_mode():
+            assert ops_gnn.gather_coo(src, index, out=out) is out
+        assert torch.equal(out.cpu(), torch.full((2,), 7.))
+    else:
+        with pytest.raises(RuntimeError, match="[Ii]nference"):
+            ops_gnn.gather_coo(src, index, out=out)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
