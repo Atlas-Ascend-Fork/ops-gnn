@@ -1,0 +1,42 @@
+/**
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd.
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+
+#ifndef OPS_GNN_SCATTER_LOGSUMEXP_OP_HOST_H
+#define OPS_GNN_SCATTER_LOGSUMEXP_OP_HOST_H
+
+#include <torch/extension.h>
+
+namespace opsgnn {
+
+// Grouped log-sum-exp along `dim`: every group defined by `index` is reduced to
+// `ln(sum(exp(src)))` and the result has one row per (batch, group) pair, so the
+// output replaces `src.size(dim)` with `dimSize`. `src` must be contiguous,
+// `index` a contiguous int32 vector of length src.size(dim), and `dimSize` the
+// number of groups.
+torch::Tensor scatter_logsumexp_forward(const torch::Tensor& src,
+                                        const torch::Tensor& index,
+                                        int64_t dim, int64_t dimSize);
+
+// Analytic grouped log-sum-exp backward:
+//
+//   grad_src = grad_out[group] * exp(src - out[group])
+//
+// `src` is the forward input, `out` the forward result and `gradOut` the
+// upstream gradient of the reduced output. The returned tensor has the shape and
+// dtype of `src`.
+torch::Tensor scatter_logsumexp_backward(const torch::Tensor& src,
+                                         const torch::Tensor& out,
+                                         const torch::Tensor& gradOut,
+                                         const torch::Tensor& index,
+                                         int64_t dim, int64_t dimSize);
+
+}  // namespace opsgnn
+
+#endif  // OPS_GNN_SCATTER_LOGSUMEXP_OP_HOST_H

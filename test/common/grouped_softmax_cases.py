@@ -10,7 +10,9 @@
 
 ``scatter_softmax`` and ``scatter_log_softmax`` accept the same arguments and
 reject the same inputs, so the case tables and the sample builders live here
-instead of in two copies.
+instead of in two copies. ``scatter_logsumexp`` takes the same arguments and
+rejects the same inputs as well, so it reuses the tables too; its reduced output
+only changes the expected value, which the suite computes from its reference.
 """
 
 import torch
@@ -31,6 +33,9 @@ CASES = [
     ([0, 0, 1, 2, 2, 2], (2, 6), -1, 3),          # negative dim
     ([0, 0, 0, 0, 0, 0], (6, 2), 0, 1),           # one single group
 ]
+
+# A feature row wider than one tile; the logsumexp suite adds it separately.
+WIDE_FEATURE_ROWS = 4099
 
 # (case, expected error)
 INVALID_CASES = [
@@ -53,7 +58,7 @@ INVALID_CASES = [
 # A group longer than the fp16 integer limit must not collapse.
 LONG_GROUP_ROWS = (65504, 65505, 70000, 100000, 131072)
 
-# Groups holding at least one +inf become all NaN.
+# A group holding +inf: the softmax family reports all NaN, ``logsumexp`` +inf.
 INFINITY_VALUES = [
     [float("inf"), 0.0, 1.0],
     [float("inf"), float("inf"), 0.0],

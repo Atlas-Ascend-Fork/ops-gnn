@@ -468,6 +468,80 @@ result = ops_gnn.scatter_log_softmax(src, index, dim=0, dim_size=2)
 
 ---
 
+### scatter_logsumexp — Grouped Log-Sum-Exp
+
+Computes a grouped log-sum-exp along `dim` on Ascend A2/A3 (arch22) and Ascend
+950 (arch35). The call surface matches the grouped reduction spelled out with
+`torch_scatter.composite.logsumexp`:
+
+```python
+scatter_logsumexp(src, index, dim=0, dim_size=None)  # Tensor
+```
+
+For every group `g`, the reduction along `dim` is:
+
+```text
+out[g] = log(sum_j exp(src[j]))
+```
+
+where `j` runs over the elements of group `g`. Unlike the grouped softmax family
+the result is reduced: it has one row per `(batch, group)` pair, so the output
+shape replaces `src.size(dim)` with `dim_size`.
+
+| Argument | Contract |
+| --- | --- |
+| `src` | NPU Tensor; float16, float32, or bfloat16 |
+| `index` | Same-device 1-D int32/int64 Tensor; length must equal `src.size(dim)`; non-negative and smaller than `dim_size` |
+| `dim` | Dimension along which the reduction is computed; negative values are accepted; defaults to 0 |
+| `dim_size` | Number of groups; defaults to `index.max() + 1` and may be larger to keep empty groups |
+
+The operator reuses the grouped-softmax device kernel
+(`csrc/npu/scatter_softmax/op_kernel/common`) with its compile-time log-sum-exp
+mode enabled: three forward passes (per-group maximum, the per-group sum of
+`exp(src - max)`, then `max + log(sum)` once per group) and a single elementwise
+backward pass, `grad_out[group] * exp(src - out[group])`. The reduced output has
+one row per `(batch, group)` pair, so its final pass splits the cores and the row
+batches by `batch * dim_size` and reads no index. The backward needs the source
+and the saved reduced output only: `exp(src - out)` is the softmax probability of
+the element inside its group.
+
+Edge cases match `torch.logsumexp`: an empty group and a group of `-inf` reduce to
+`-inf`; a group containing `+inf` reduces to `+inf` (the exponential pass clamps
+the subtracted maximum to the largest finite float, so the infinite member
+contributes `exp(+inf)` and its finite siblings `exp(-inf) = 0` instead of the NaN
+`+inf - +inf` would produce); a group containing `NaN` reduces to `NaN`. In the
+backward an all-`-inf` group has a `NaN` gradient, a `+inf` member gets a `NaN`
+gradient, and its finite siblings get zero.
+
+> Precision and cost: the workspace layout, the float32 reductions and the
+> scheduling knobs are the ones documented for `scatter_softmax` (MTE3 atomic
+> per-group accumulation, or a UB-resident accumulator when the workspace fits
+> in 16 KB; batches of up to 8 rows per core). `index` may be unsorted. The
+> output rounds in the source dtype and the standalone golden uses a float64
+> reference. The backward needs no reduction workspace; when the group count is
+> small it widens the reduced output and the upstream gradient into a
+> UB-resident fp32 copy, so a million source rows do not read the same few lines
+> of memory one row at a time (the per-row path is used when the copy does not
+> fit).
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+src = torch.tensor([[1., 2.], [3., 4.], [5., 6.]], device="npu")
+index = torch.tensor([0, 1, 1], dtype=torch.int64, device="npu")
+result = ops_gnn.scatter_logsumexp(src, index, dim=0, dim_size=2)
+# group 0: [[1., 2.]]                 -> [[1., 2.]]
+# group 1: [[3., 4.], [5., 6.]]       -> [[5.1269, 6.1269]]
+```
+
+> Tests live in `test/scatter_logsumexp/arch22/` and
+> `test/scatter_logsumexp/arch35/`, each with its own
+> `benchmark_scatter_logsumexp.py`.
+
+---
+
 ### radius / radius_graph — Radius Neighbor Search
 
 NPU implementation interface-compatible with `torch_cluster.radius` /

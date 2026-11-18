@@ -101,6 +101,7 @@ inline ScatterSoftmaxTilingData BuildTiling(const torch::Tensor& src, int64_t di
     tiling.rows = tiling.batch * tiling.dimLength;
     tiling.srcNumel = tiling.rows * tiling.after;
     tiling.workspaceElems = tiling.batch * tiling.groupCount * tiling.afterPadded;
+    tiling.outRows = tiling.batch * tiling.groupCount;
 
     // Narrow rows keep a small UB footprint; wide rows are tiled along the
     // feature axis. `colTile` is also the stride between the per-row slices of
@@ -142,6 +143,17 @@ inline ScatterSoftmaxTilingData BuildTiling(const torch::Tensor& src, int64_t di
     batch = std::min<uint64_t>(batch, SCATTER_SOFTMAX_MAX_ROW_BATCH);
     batch = std::min<uint64_t>(batch, tiling.rowChunk);
     tiling.rowBatch = static_cast<uint32_t>(std::max<uint64_t>(batch, 1));
+
+    // The reduced output walks (batch, group) rows instead of source rows, so
+    // its own core split is derived from `outRows`; the per-row buffer plan is
+    // the same one, capped by the shorter chunk.
+    const uint64_t requestedOutRows = std::max<uint64_t>(tiling.outRows, 1);
+    tiling.outBlockNum = ops_gnn::sparse::ResolveAivCoreNum(static_cast<uint32_t>(
+        std::min<uint64_t>(requestedOutRows, std::numeric_limits<uint32_t>::max())));
+    tiling.outRowChunk =
+        (tiling.outRows + tiling.outBlockNum - 1) / tiling.outBlockNum;
+    uint64_t outBatch = std::min<uint64_t>(tiling.rowBatch, tiling.outRowChunk);
+    tiling.outRowBatch = static_cast<uint32_t>(std::max<uint64_t>(outBatch, 1));
     return tiling;
 }
 

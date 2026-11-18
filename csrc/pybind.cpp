@@ -16,6 +16,7 @@
 #include <string>
 #include "gather_csr/op_host/gather_csr.h"
 #include "scatter_log_softmax/op_host/scatter_log_softmax.h"
+#include "scatter_logsumexp/op_host/scatter_logsumexp.h"
 #include "scatter_softmax/op_host/scatter_softmax.h"
 #include "segment_coo/op_host/segment_coo.h"
 #include "segment_csr/op_host/segment_csr.h"
@@ -167,6 +168,21 @@ void BindScatterLogSoftmax(py::module_& module)
         py::call_guard<py::gil_scoped_release>());
 }
 
+// The reduction sibling reuses the same kernel core; its backward also takes
+// the saved source, so the binding differs from the softmax pair.
+void BindScatterLogSumExp(py::module_& module)
+{
+    module.def("scatter_logsumexp_forward", &opsgnn::scatter_logsumexp_forward,
+        py::arg("src"), py::arg("index"), py::arg("dim"), py::arg("dim_size"),
+        "Grouped log-sum-exp forward on NPU",
+        py::call_guard<py::gil_scoped_release>());
+    module.def("scatter_logsumexp_backward", &opsgnn::scatter_logsumexp_backward,
+        py::arg("src"), py::arg("out"), py::arg("grad_out"), py::arg("index"),
+        py::arg("dim"), py::arg("dim_size"),
+        "Grouped log-sum-exp backward on NPU",
+        py::call_guard<py::gil_scoped_release>());
+}
+
 #ifndef OPSGNN_DAV_2201
 void RegisterKnn(py::module_& m)
 {
@@ -312,11 +328,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     ops_gnn::initialize_segment_csr_proof_observer();
 #endif
     RegisterSegmentCsr(m);
-    // arch22 and arch35 share the scatter_softmax / scatter_log_softmax
-    // kernels, so they are bound once here instead of in both architecture
-    // entry points.
+    // arch22 and arch35 share the scatter_softmax / scatter_log_softmax /
+    // scatter_logsumexp kernels, so they are bound once here instead of in both
+    // architecture entry points.
     BindScatterSoftmax(m);
     BindScatterLogSoftmax(m);
+    BindScatterLogSumExp(m);
 #ifdef OPSGNN_DAV_2201
     BindArch22(m);
 #else

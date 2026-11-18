@@ -65,6 +65,11 @@ enum ScatterSoftmaxDType {
 //   dimLength  = src.size(dim)                indexed by `index`
 //   after      = prod(src.size(dim+1 .. -1))
 // Element (b, j, a) therefore lives at (b * dimLength + j) * after + a.
+//
+// The `out*` fields describe the reduced output of the grouped log-sum-exp,
+// whose rows are (batch, group) pairs instead of (batch, dimLength) rows. The
+// softmax family keeps outRows == rows, so the shared driver can walk either
+// layout with the same code.
 struct ScatterSoftmaxTilingData {
     uint64_t batch;
     uint64_t dimLength;
@@ -79,6 +84,10 @@ struct ScatterSoftmaxTilingData {
     uint32_t blockNum;
     uint32_t rowBatch;     // consecutive rows buffered per iteration (1..8)
     uint32_t localAccum;   // 1: reduction workspace resident in UB for a pass
+    uint64_t outRows;      // batch * groupCount (log-sum-exp output rows)
+    uint64_t outRowChunk;  // output rows owned by one core
+    uint32_t outBlockNum;
+    uint32_t outRowBatch;
 };
 
 #endif  // OPS_GNN_SCATTER_SOFTMAX_TILING_H

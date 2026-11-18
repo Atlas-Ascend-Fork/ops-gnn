@@ -66,6 +66,6 @@
 #include "scatter_softmax/op_kernel/common/scatter_softmax_kernel_phase.h"
 #include "scatter_softmax/op_kernel/common/scatter_softmax_launch.h"
 
-SCATTER_GROUPED_SOFTMAX_OPERATOR(ScatterSoftmax, Launch, false)
+SCATTER_GROUPED_SOFTMAX_OPERATOR(ScatterSoftmax, Launch, kModeSoftmax)
 
 #endif  // OPS_GNN_SCATTER_SOFTMAX_KERNEL_H

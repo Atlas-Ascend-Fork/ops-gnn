@@ -16,54 +16,97 @@
 
 #include "kernel_operator.h"
 #include "scatter_softmax/op_kernel/common/scatter_softmax_kernel_common.h"
+#include "scatter_softmax/op_kernel/common/scatter_softmax_kernel_io.h"
 #include "scatter_softmax/op_kernel/common/scatter_softmax_kernel_phase.h"
 
 /**
- * Kernel-entry plumbing shared by the grouped-softmax operators: the per-phase
- * global-tensor binding and the buffer/pipeline bootstrap around the row driver.
+ * Kernel-entry plumbing shared by the grouped softmax / log-sum-exp operators:
+ * the per-phase global-tensor binding and the buffer/pipeline bootstrap around
+ * the row driver.
  *
  * Every entry uses one parameter list so the boilerplate lives here once; the
- * arguments a phase does not use are null and are never bound. `Log` selects
- * the log-softmax arithmetic of the phase bodies (see
- * scatter_softmax_kernel_phase.h), so scatter_softmax and scatter_log_softmax
- * share this file and differ only in the tag they instantiate.
+ * arguments a phase does not use are null and are never bound. `Mode` selects
+ * the arithmetic of the phase bodies (see scatter_softmax_kernel_phase.h), so
+ * scatter_softmax, scatter_log_softmax and scatter_logsumexp share this file and
+ * differ only in the kernels they instantiate.
  */
 
 namespace ScatterSoftmaxNpu {
 
+// The launch API takes untyped addresses, so every pointer a launcher forwards
+// is converted the same way.
+inline GM_ADDR AsGmAddr(const void* pointer)
+{
+    return const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(pointer));
+}
+
+// Binds the tensors a pass reduces into, or reads the reduction workspace from.
+template <ScatterSoftmaxPhase Phase, ScatterSoftmaxMode Mode, typename T>
+__aicore__ inline void BindReductionTensors(PhaseTensors<T>& tensors,
+                                            const ScatterSoftmaxTilingData& tiling,
+                                            GM_ADDR src, GM_ADDR index,
+                                            GM_ADDR maximum, GM_ADDR sum)
+{
+    tensors.indexGm.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(index), tiling.dimLength);
+    // The log-domain normalization is recomputed from the source, so that pass
+    // reads `src` and the maximum as well; the softmax path only needs the
+    // exponential it stored in the previous pass. The finalize pass walks the
+    // dense output rows and reads only the two workspace arrays.
+    if constexpr (Phase == kPhaseMaximum || Phase == kPhaseExp ||
+                  Phase == kPhaseGradElement ||
+                  (IsLogDomain(Mode) && Phase == kPhaseNormalize)) {
+        tensors.srcGm.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(src), tiling.srcNumel);
+    }
+    if constexpr (Phase == kPhaseMaximum || Phase == kPhaseExp ||
+                  Phase == kPhaseFinalize ||
+                  (IsLogDomain(Mode) && Phase == kPhaseNormalize)) {
+        tensors.maximumGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(maximum),
+                                          tiling.workspaceElems);
+    }
+    if constexpr (Phase == kPhaseExp || Phase == kPhaseNormalize ||
+                  Phase == kPhaseGradSum || Phase == kPhaseFinalize ||
+                  Phase == kPhaseGrad) {
+        tensors.sumGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(sum), tiling.workspaceElems);
+    }
+}
+
+// Binds the reduced result, its upstream gradient and the gradient output. The
+// grouped softmax writes a `src`-shaped result while the log-sum-exp writes one
+// row per (batch, group) pair, which is what `outElems` selects.
+template <ScatterSoftmaxPhase Phase, ScatterSoftmaxMode Mode, typename T>
+__aicore__ inline void BindResultTensors(PhaseTensors<T>& tensors,
+                                         const ScatterSoftmaxTilingData& tiling,
+                                         GM_ADDR out, GM_ADDR gradOut, GM_ADDR gradSrc)
+{
+    const uint64_t outElems = (Mode == kModeLogSumExp)
+        ? tiling.outRows * tiling.after : tiling.srcNumel;
+    if constexpr (Phase != kPhaseMaximum) {
+        tensors.outGm.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(out), outElems);
+    }
+    if constexpr (Phase == kPhaseGradSum || Phase == kPhaseGrad ||
+                  Phase == kPhaseGradElement) {
+        tensors.gradGm.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(gradOut), outElems);
+    }
+    if constexpr (Phase == kPhaseGrad || Phase == kPhaseGradElement) {
+        tensors.gradSrcGm.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(gradSrc), tiling.srcNumel);
+    }
+}
+
 // Binds the global tensors a phase touches.
-template <ScatterSoftmaxPhase Phase, bool Log, typename T>
+template <ScatterSoftmaxPhase Phase, ScatterSoftmaxMode Mode, typename T>
 __aicore__ inline void BindTensors(PhaseTensors<T>& tensors,
                                    const ScatterSoftmaxTilingData& tiling,
                                    GM_ADDR src, GM_ADDR index, GM_ADDR maximum,
                                    GM_ADDR sum, GM_ADDR out, GM_ADDR gradOut,
                                    GM_ADDR gradSrc)
 {
-    tensors.indexGm.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(index), tiling.dimLength);
-    // The log-domain normalization is recomputed from the source, so that pass
-    // reads `src` and the maximum as well; the softmax path only needs the
-    // exponential it stored in the previous pass.
-    if constexpr (Phase == kPhaseMaximum || Phase == kPhaseExp ||
-                  (Log && Phase == kPhaseNormalize)) {
-        tensors.srcGm.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(src), tiling.srcNumel);
-        tensors.maximumGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(maximum),
-                                          tiling.workspaceElems);
-    }
-    if constexpr (Phase != kPhaseMaximum) {
-        tensors.sumGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(sum), tiling.workspaceElems);
-        tensors.outGm.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(out), tiling.srcNumel);
-    }
-    if constexpr (Phase == kPhaseGradSum || Phase == kPhaseGrad) {
-        tensors.gradGm.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(gradOut), tiling.srcNumel);
-    }
-    if constexpr (Phase == kPhaseGrad) {
-        tensors.gradSrcGm.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(gradSrc), tiling.srcNumel);
-    }
+    BindReductionTensors<Phase, Mode, T>(tensors, tiling, src, index, maximum, sum);
+    BindResultTensors<Phase, Mode, T>(tensors, tiling, out, gradOut, gradSrc);
 }
 
 // The buffers, the pipeline events and the row/batch driver are identical for
-// all five kernels, so only the phase tag, the mode and the tensor list differ.
-template <ScatterSoftmaxPhase Phase, bool Log, typename T>
+// all passes, so only the phase tag, the mode and the tensor list differ.
+template <ScatterSoftmaxPhase Phase, ScatterSoftmaxMode Mode, typename T>
 __aicore__ inline void RunPhase(GM_ADDR src, GM_ADDR index, GM_ADDR maximum, GM_ADDR sum,
                                 GM_ADDR out, GM_ADDR gradOut, GM_ADDR gradSrc,
                                 ScatterSoftmaxTilingData tiling)
@@ -74,14 +117,47 @@ __aicore__ inline void RunPhase(GM_ADDR src, GM_ADDR index, GM_ADDR maximum, GM_
     PhaseTensors<T> tensors;
     TPipe pipe;
     InitTensors<Phase>(tensors, pipe, tiling);
-    BindTensors<Phase, Log>(tensors, tiling, src, index, maximum, sum, out, gradOut, gradSrc);
+    BindTensors<Phase, Mode>(tensors, tiling, src, index, maximum, sum, out, gradOut, gradSrc);
     PipelineSync sync;
     sync.Init(pipe);
     InitAccumulator<Phase>(tensors, tiling);
-    LoadWorkspace<Phase, Log>(tensors, tiling, sync);
-    RunRows<Phase, Log>(tensors, tiling, sync);
+    LoadWorkspace<Phase, Mode>(tensors, tiling, sync);
+    if constexpr (Phase == kPhaseGradElement) {
+        LoadGroupCaches<T>(tensors, tiling, sync);
+    }
+    RunRows<Phase, Mode>(tensors, tiling, sync);
     FlushAccumulator<Phase>(tensors, tiling, sync);
     sync.Release(pipe);
+}
+
+// Compile-time dtype tags used to dispatch a launch body. The device compiler
+// gives `bfloat16_t` no default constructor, so the tags are empty structs that
+// only carry the element type instead of values of it.
+template <typename T>
+struct DTypeTag {
+    using Type = T;
+};
+
+// Runs one dtype-specific launch body, with the element type recovered from the
+// tag it receives. The two exported entry points of every operator share this
+// switch instead of keeping a per-operator copy of it. It is host code - it only
+// selects a kernel instantiation - so it must not carry the device annotation.
+template <typename Body>
+inline void DispatchDType(ScatterSoftmaxDType dtype, Body&& body)
+{
+    switch (dtype) {
+        case SCATTER_SOFTMAX_F16:
+            body(DTypeTag<half>{});
+            break;
+        case SCATTER_SOFTMAX_F32:
+            body(DTypeTag<float>{});
+            break;
+        case SCATTER_SOFTMAX_BF16:
+            body(DTypeTag<bfloat16_t>{});
+            break;
+        default:
+            break;
+    }
 }
 
 }  // namespace ScatterSoftmaxNpu
@@ -89,56 +165,80 @@ __aicore__ inline void RunPhase(GM_ADDR src, GM_ADDR index, GM_ADDR maximum, GM_
 // ---------------------------------------------------------------------------
 // Whole-operator generator.
 //
-// The five phase kernels, their launcher and the two exported entry points are
-// identical in shape for every grouped-softmax operator: only the kernel names,
+// The phase kernels, their launcher and the two exported entry points are
+// identical in shape for every grouped softmax operator: only the kernel names,
 // the compile-time arithmetic mode and the launch namespace differ. Generating
-// them from one description keeps `scatter_softmax` and `scatter_log_softmax`
-// from drifting apart - the arithmetic itself stays in the shared phase bodies.
+// them from one description keeps the operators from drifting apart - the
+// arithmetic itself stays in the shared phase bodies.
 //
-//   Prefix   kernel and export name prefix (Prefix##MaxKernel, Prefix##Forward)
-//   Ns       launch namespace inside ScatterSoftmaxNpu
-//   LogMode  compile-time mode forwarded to the phase bodies
+//   Prefix  kernel and export name prefix (Prefix##MaxKernel, Prefix##Forward)
+//   Name    pass name inside that prefix
+//   Phase   pass tag forwarded to the driver
+//   Mode    compile-time arithmetic forwarded to the phase bodies
 // ---------------------------------------------------------------------------
-#define SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Name, Phase, LogMode)                     \
+#define SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Name, Phase, Mode)                        \
     template <typename T>                                                                \
     __attribute__((aiv)) __global__ __aicore__ void Prefix##Name##Kernel(                \
         GM_ADDR src, GM_ADDR index, GM_ADDR maximum, GM_ADDR sum, GM_ADDR out,            \
         GM_ADDR gradOut, GM_ADDR gradSrc, ScatterSoftmaxTilingData tiling)                \
     {                                                                                    \
-        RunPhase<Phase, LogMode, T>(src, index, maximum, sum, out, gradOut, gradSrc,      \
-                                    tiling);                                             \
+        RunPhase<Phase, Mode, T>(src, index, maximum, sum, out, gradOut, gradSrc,         \
+                                 tiling);                                                \
     }
 
-#define SCATTER_GROUPED_SOFTMAX_OPERATOR(Prefix, Ns, LogMode)                            \
+// The maximum and the exponential sum: the two passes every grouped operator
+// runs before its own last pass. The launcher bodies the macro is expanded in
+// provide `srcBytes`, `indexBytes`, `maximumBytes`, `sumBytes`, `outBytes`,
+// `tiling`, `stream` and the element type `T`.
+#define SCATTER_GROUPED_REDUCE_PASSES(Prefix)                                            \
+    Prefix##MaxKernel<T><<<tiling.blockNum, nullptr, stream>>>(                          \
+        srcBytes, indexBytes, maximumBytes, nullptr, nullptr, nullptr, nullptr,          \
+        tiling);                                                                         \
+    Prefix##ExpKernel<T><<<tiling.blockNum, nullptr, stream>>>(                          \
+        srcBytes, indexBytes, maximumBytes, sumBytes, outBytes, nullptr, nullptr,        \
+        tiling);
+
+// Exported forward entry: the dtype switch and the argument list are the same
+// for every operator, so this wrapper is written once and expanded per prefix.
+#define SCATTER_GROUPED_EXPORT_FORWARD(Prefix, Ns)                                       \
+    namespace opsgnn {                                                                   \
+    void Prefix##Forward(void* src, const int32_t* index, void* out,                     \
+                         float* maximum, float* sumWorkspace,                             \
+                         ScatterSoftmaxDType dtype,                                      \
+                         const ScatterSoftmaxTilingData& tiling, aclrtStream stream)      \
+    {                                                                                    \
+        ScatterSoftmaxNpu::DispatchDType(dtype, [&](auto tag) {                           \
+            using T = typename decltype(tag)::Type;                                       \
+            ScatterSoftmaxNpu::Ns::Forward<T>(src, index, out, maximum, sumWorkspace,     \
+                                              tiling, stream);                            \
+        });                                                                              \
+    }                                                                                    \
+    }
+
+#define SCATTER_GROUPED_SOFTMAX_OPERATOR(Prefix, Ns, Mode)                               \
     namespace ScatterSoftmaxNpu {                                                        \
     using namespace AscendC;                                                             \
                                                                                          \
-    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Max, kPhaseMaximum, LogMode)                   \
-    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Exp, kPhaseExp, LogMode)                       \
-    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Normalize, kPhaseNormalize, LogMode)           \
-    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, GradSum, kPhaseGradSum, LogMode)               \
-    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Grad, kPhaseGrad, LogMode)                     \
+    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Max, kPhaseMaximum, Mode)                     \
+    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Exp, kPhaseExp, Mode)                         \
+    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Normalize, kPhaseNormalize, Mode)             \
+    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, GradSum, kPhaseGradSum, Mode)                 \
+    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Grad, kPhaseGrad, Mode)                       \
                                                                                          \
     /* Every pass takes the same argument list; the phases a mode does not use */        \
-    /* are never bound (see BindTensors), so one sequence serves both operators. */       \
-    namespace Ns {                                                                        \
+    /* are never bound (see BindTensors), so one sequence serves every operator. */      \
+    namespace Ns {                                                                       \
         template <typename T>                                                            \
         inline void Forward(void* src, const int32_t* index, void* out,                  \
                             float* maximum, float* sumWorkspace,                         \
                             const ScatterSoftmaxTilingData& tiling, aclrtStream stream)   \
         {                                                                                \
-            GM_ADDR indexBytes = const_cast<uint8_t*>(                                    \
-                reinterpret_cast<const uint8_t*>(index));                                \
-            GM_ADDR srcBytes = reinterpret_cast<uint8_t*>(src);                          \
-            GM_ADDR outBytes = reinterpret_cast<uint8_t*>(out);                          \
-            GM_ADDR maximumBytes = reinterpret_cast<uint8_t*>(maximum);                  \
-            GM_ADDR sumBytes = reinterpret_cast<uint8_t*>(sumWorkspace);                 \
-            Prefix##MaxKernel<T><<<tiling.blockNum, nullptr, stream>>>(                  \
-                srcBytes, indexBytes, maximumBytes, nullptr, nullptr, nullptr, nullptr,   \
-                tiling);                                                                 \
-            Prefix##ExpKernel<T><<<tiling.blockNum, nullptr, stream>>>(                  \
-                srcBytes, indexBytes, maximumBytes, sumBytes, outBytes, nullptr,          \
-                nullptr, tiling);                                                        \
+            GM_ADDR indexBytes = AsGmAddr(index);                                        \
+            GM_ADDR srcBytes = AsGmAddr(src);                                            \
+            GM_ADDR outBytes = AsGmAddr(out);                                            \
+            GM_ADDR maximumBytes = AsGmAddr(maximum);                                    \
+            GM_ADDR sumBytes = AsGmAddr(sumWorkspace);                                   \
+            SCATTER_GROUPED_REDUCE_PASSES(Prefix)                                        \
             Prefix##NormalizeKernel<T><<<tiling.blockNum, nullptr, stream>>>(            \
                 srcBytes, indexBytes, maximumBytes, sumBytes, outBytes, nullptr,          \
                 nullptr, tiling);                                                        \
@@ -151,70 +251,109 @@ __aicore__ inline void RunPhase(GM_ADDR src, GM_ADDR index, GM_ADDR maximum, GM_
                              const ScatterSoftmaxTilingData& tiling,                     \
                              aclrtStream stream)                                         \
         {                                                                                \
-            GM_ADDR indexBytes = const_cast<uint8_t*>(                                    \
-                reinterpret_cast<const uint8_t*>(index));                                \
-            GM_ADDR outBytes = const_cast<uint8_t*>(                                      \
-                reinterpret_cast<const uint8_t*>(out));                                  \
-            GM_ADDR gradOutBytes = const_cast<uint8_t*>(                                  \
-                reinterpret_cast<const uint8_t*>(gradOut));                              \
-            GM_ADDR sumBytes = reinterpret_cast<uint8_t*>(sumWorkspace);                 \
+            GM_ADDR indexBytes = AsGmAddr(index);                                        \
+            GM_ADDR outBytes = AsGmAddr(out);                                            \
+            GM_ADDR gradOutBytes = AsGmAddr(gradOut);                                    \
+            GM_ADDR sumBytes = AsGmAddr(sumWorkspace);                                   \
             Prefix##GradSumKernel<T><<<tiling.blockNum, nullptr, stream>>>(              \
                 nullptr, indexBytes, nullptr, sumBytes, outBytes, gradOutBytes, nullptr,  \
                 tiling);                                                                 \
             Prefix##GradKernel<T><<<tiling.blockNum, nullptr, stream>>>(                 \
                 nullptr, indexBytes, nullptr, sumBytes, outBytes, gradOutBytes,           \
-                reinterpret_cast<uint8_t*>(gradSrc), tiling);                            \
+                AsGmAddr(gradSrc), tiling);                                              \
         }                                                                                \
     }  /* namespace Ns */                                                                \
-    }  /* namespace ScatterSoftmaxNpu */                                                 \
+    }  /* namespace ScatterSoftmaxNpu */                                                  \
+                                                                                         \
+    SCATTER_GROUPED_EXPORT_FORWARD(Prefix, Ns)                                            \
                                                                                          \
     namespace opsgnn {                                                                   \
-    void Prefix##Forward(void* src, const int32_t* index, void* out,                     \
-                         float* maximum, float* sumWorkspace,                             \
-                         ScatterSoftmaxDType dtype,                                      \
-                         const ScatterSoftmaxTilingData& tiling, aclrtStream stream)      \
-    {                                                                                    \
-        switch (dtype) {                                                                 \
-            case SCATTER_SOFTMAX_F16:                                                    \
-                ScatterSoftmaxNpu::Ns::Forward<half>(                                    \
-                    src, index, out, maximum, sumWorkspace, tiling, stream);              \
-                break;                                                                   \
-            case SCATTER_SOFTMAX_F32:                                                    \
-                ScatterSoftmaxNpu::Ns::Forward<float>(                                   \
-                    src, index, out, maximum, sumWorkspace, tiling, stream);              \
-                break;                                                                   \
-            case SCATTER_SOFTMAX_BF16:                                                   \
-                ScatterSoftmaxNpu::Ns::Forward<bfloat16_t>(                              \
-                    src, index, out, maximum, sumWorkspace, tiling, stream);              \
-                break;                                                                   \
-            default:                                                                     \
-                break;                                                                   \
-        }                                                                                \
-    }                                                                                    \
-                                                                                         \
     void Prefix##Backward(const void* out, const void* gradOut,                          \
                           const int32_t* index, void* gradSrc,                           \
-                          float* sumWorkspace, ScatterSoftmaxDType dtype,                 \
-                          const ScatterSoftmaxTilingData& tiling,                         \
-                          aclrtStream stream)                                             \
+                          float* sumWorkspace, ScatterSoftmaxDType dtype,                \
+                          const ScatterSoftmaxTilingData& tiling,                        \
+                          aclrtStream stream)                                            \
     {                                                                                    \
-        switch (dtype) {                                                                 \
-            case SCATTER_SOFTMAX_F16:                                                    \
-                ScatterSoftmaxNpu::Ns::Backward<half>(                                   \
-                    out, gradOut, index, gradSrc, sumWorkspace, tiling, stream);           \
-                break;                                                                   \
-            case SCATTER_SOFTMAX_F32:                                                    \
-                ScatterSoftmaxNpu::Ns::Backward<float>(                                  \
-                    out, gradOut, index, gradSrc, sumWorkspace, tiling, stream);           \
-                break;                                                                   \
-            case SCATTER_SOFTMAX_BF16:                                                   \
-                ScatterSoftmaxNpu::Ns::Backward<bfloat16_t>(                             \
-                    out, gradOut, index, gradSrc, sumWorkspace, tiling, stream);           \
-                break;                                                                   \
-            default:                                                                     \
-                break;                                                                   \
-        }                                                                                \
+        ScatterSoftmaxNpu::DispatchDType(dtype, [&](auto tag) {                           \
+            using T = typename decltype(tag)::Type;                                       \
+            ScatterSoftmaxNpu::Ns::Backward<T>(                                          \
+                out, gradOut, index, gradSrc, sumWorkspace, tiling, stream);             \
+        });                                                                              \
     }                                                                                    \
+    }  /* namespace opsgnn */
+
+// ---------------------------------------------------------------------------
+// Whole-operator generator of the grouped log-sum-exp.
+//
+// The reduced output has one row per (batch, group) pair instead of one row per
+// source row, so its final pass runs on its own core split (`outRows`) and the
+// forward launches three passes: maximum, exponential sum and finalize. The
+// backward is a single elementwise pass and needs no reduction workspace.
+// ---------------------------------------------------------------------------
+#define SCATTER_GROUPED_LOGSUMEXP_OPERATOR(Prefix, Ns)                                     \
+    namespace ScatterSoftmaxNpu {                                                          \
+    using namespace AscendC;                                                               \
+                                                                                           \
+    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Max, kPhaseMaximum, kModeLogSumExp)             \
+    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Exp, kPhaseExp, kModeLogSumExp)                 \
+    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, Finalize, kPhaseFinalize, kModeLogSumExp)       \
+    SCATTER_GROUPED_SOFTMAX_KERNEL(Prefix, GradElement, kPhaseGradElement, kModeLogSumExp) \
+                                                                                           \
+    namespace Ns {                                                                         \
+        template <typename T>                                                              \
+        inline void Forward(void* src, const int32_t* index, void* out,                    \
+                            float* maximum, float* sumWorkspace,                           \
+                            const ScatterSoftmaxTilingData& tiling, aclrtStream stream)    \
+        {                                                                                  \
+            /* The reduced output is one row per (batch, group), so the finalize */        \
+            /* pass walks `outRows` on its own core split. */                              \
+            ScatterSoftmaxTilingData finalizeTiling = tiling;                              \
+            finalizeTiling.rows = tiling.outRows;                                          \
+            finalizeTiling.rowChunk = tiling.outRowChunk;                                  \
+            finalizeTiling.rowBatch = tiling.outRowBatch;                                  \
+            finalizeTiling.blockNum = tiling.outBlockNum;                                  \
+            GM_ADDR indexBytes = AsGmAddr(index);                                          \
+            GM_ADDR srcBytes = AsGmAddr(src);                                              \
+            GM_ADDR outBytes = AsGmAddr(out);                                              \
+            GM_ADDR maximumBytes = AsGmAddr(maximum);                                      \
+            GM_ADDR sumBytes = AsGmAddr(sumWorkspace);                                     \
+            SCATTER_GROUPED_REDUCE_PASSES(Prefix)                                          \
+            Prefix##FinalizeKernel<T><<<tiling.outBlockNum, nullptr, stream>>>(            \
+                nullptr, indexBytes, maximumBytes, sumBytes, outBytes, nullptr, nullptr,   \
+                finalizeTiling);                                                           \
+        }                                                                                  \
+                                                                                           \
+        template <typename T>                                                              \
+        inline void Backward(const void* src, const void* out, const void* gradOut,        \
+                             const int32_t* index, void* gradSrc,                          \
+                             const ScatterSoftmaxTilingData& tiling,                       \
+                             aclrtStream stream)                                           \
+        {                                                                                  \
+            GM_ADDR indexBytes = AsGmAddr(index);                                          \
+            GM_ADDR srcBytes = AsGmAddr(src);                                              \
+            GM_ADDR outBytes = AsGmAddr(out);                                              \
+            GM_ADDR gradOutBytes = AsGmAddr(gradOut);                                      \
+            Prefix##GradElementKernel<T><<<tiling.blockNum, nullptr, stream>>>(            \
+                srcBytes, indexBytes, nullptr, nullptr, outBytes, gradOutBytes,            \
+                AsGmAddr(gradSrc), tiling);                                                \
+        }                                                                                  \
+    }  /* namespace Ns */                                                                  \
+    }  /* namespace ScatterSoftmaxNpu */                                                   \
+                                                                                           \
+    SCATTER_GROUPED_EXPORT_FORWARD(Prefix, Ns)                                             \
+                                                                                           \
+    namespace opsgnn {                                                                     \
+    void Prefix##Backward(const void* src, const void* out, const void* gradOut,           \
+                          const int32_t* index, void* gradSrc,                             \
+                          ScatterSoftmaxDType dtype,                                       \
+                          const ScatterSoftmaxTilingData& tiling, aclrtStream stream)      \
+    {                                                                                      \
+        ScatterSoftmaxNpu::DispatchDType(dtype, [&](auto tag) {                            \
+            using T = typename decltype(tag)::Type;                                        \
+            ScatterSoftmaxNpu::Ns::Backward<T>(src, out, gradOut, index, gradSrc,          \
+                                               tiling, stream);                            \
+        });                                                                                \
+    }                                                                                      \
     }  /* namespace opsgnn */
 
 #endif  // OPS_GNN_SCATTER_SOFTMAX_KERNEL_ENTRY_H

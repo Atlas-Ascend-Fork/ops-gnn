@@ -8,7 +8,7 @@
 
 """End-to-end latency benchmark shared by the grouped-softmax operators.
 
-The two operators accept the same arguments, so the command line and the
+The grouped operators accept the same arguments, so the command line and the
 measurement loop live here; each operator keeps a thin script that names it.
 """
 

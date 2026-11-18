@@ -57,6 +57,7 @@ if _pybind.npu_arch == 'dav-2201':
     from .segment_logsumexp import segment_logsumexp
     from .scatter_softmax import scatter_softmax
     from .scatter_log_softmax import scatter_log_softmax
+    from .scatter_logsumexp import scatter_logsumexp
     from .sddmm_csr import sddmm_csr
     from .spmm import spmm
     __all__ = [
@@ -71,6 +72,7 @@ if _pybind.npu_arch == 'dav-2201':
         'segment_logsumexp',
         'scatter_softmax',
         'scatter_log_softmax',
+        'scatter_logsumexp',
         'segment_coo', 'segment_sum_coo', 'segment_add_coo',
         'segment_mean_coo', 'segment_min_coo', 'segment_max_coo',
         'Tensor',
@@ -88,6 +90,7 @@ else:
     from .segment_logsumexp import segment_logsumexp
     from .scatter_softmax import scatter_softmax
     from .scatter_log_softmax import scatter_log_softmax
+    from .scatter_logsumexp import scatter_logsumexp
     from .gather_csr import gather_csr
     from .fps import fps
     from .graclus_cluster import graclus_cluster
@@ -143,6 +146,7 @@ else:
         'segment_logsumexp',
         'scatter_softmax',
         'scatter_log_softmax',
+        'scatter_logsumexp',
         'segment_coo',
         'segment_sum_coo',
         'segment_add_coo',

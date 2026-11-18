@@ -438,6 +438,68 @@ result = ops_gnn.scatter_log_softmax(src, index, dim=0, dim_size=2)
 
 ---
 
+### scatter_logsumexp — 分组 log-sum-exp
+
+在 Ascend A2/A3（arch22）与 Ascend 950（arch35）上按 `index` 分组计算
+log-sum-exp，参数与 grouped softmax 系列一致（`dim` 默认 0，`index` 限定为一维）：
+
+```python
+scatter_logsumexp(src, index, dim=0, dim_size=None)  # Tensor
+```
+
+对每个分组 `g`，沿 `dim` 约简：
+
+```text
+out[g] = log(sum_j exp(src[j]))
+```
+
+其中 `j` 遍历分组 `g` 的全部元素。与 softmax 系列不同，返回值是约简结果：
+每个 `(batch, group)` 对应一行，输出形状把 `src.size(dim)` 换成 `dim_size`。
+
+| 参数 | 约束 |
+| --- | --- |
+| `src` | NPU 张量；支持 float16、float32、bfloat16 |
+| `index` | 同设备 1 维 int32/int64 张量；长度必须等于 `src.size(dim)`，取值非负且小于 `dim_size` |
+| `dim` | 沿其约简的维度，支持负维度，默认 0 |
+| `dim_size` | 分组数；省略时取 `index.max() + 1`，可大于该值以保留空分组 |
+
+实现复用 `scatter_softmax` 的设备内核（`csrc/npu/scatter_softmax/op_kernel/common`），
+以编译期 log-sum-exp 模式打开同一套流水：前向三遍（逐组求最大值 → 逐组累加
+`exp(src - max)` → 每组写 `max + log(sum)`），反向一遍（逐元素
+`grad_out[group] * exp(src - out[group])`）。约简输出每个 `(batch, group)` 只有
+一行，因此最后一遍按 `batch × 分组数` 单独划分核与行批，且不再读 `index`。反向
+只需要源张量与前向的约简输出：`exp(src - out)` 即元素在组内的 softmax 概率。
+
+边界取值与 `torch.logsumexp` 一致：空分组与整组 `-inf` 输出 `-inf`；分组内含
+`+inf` 输出 `+inf`（指数遍把参与减法的最大值截断到最大有限值，含 `+inf` 的元素
+贡献 `exp(+inf)`、同组有限元素贡献 `exp(-inf) = 0`，避免 `+inf - +inf` 产生
+`NaN`）；分组内含 `NaN` 输出 `NaN`。反向：整组 `-inf` 时该组全部元素梯度为
+`NaN`；`+inf` 元素的梯度为 `NaN`，同组有限元素的梯度为 `0`。
+
+> 精度与开销：工作区布局、fp32 归约方式与 `scatter_softmax` 完全相同——逐组
+> 归约由 MTE3 原子单元完成，整个归约工作区不超过 16 KB 时改为核内累加、末尾
+> 一次原子回写；`index` 无序时复杂度仍然稳定。所有归约在 float32 中完成，
+> fp16/bf16 的单组长度不受 65504 上限限制；输出按源 dtype 舍入，独立 golden
+> 使用 float64 参考。反向不再需要归约工作区；分组数很少时它把约简输出与上游梯度
+> 一并展成 fp32 常驻 UB，避免每个源行重复读同一行显存（缓存不适用时自动退回逐行读）。
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+src = torch.tensor([[1., 2.], [3., 4.], [5., 6.]], device="npu")
+index = torch.tensor([0, 1, 1], dtype=torch.int64, device="npu")
+result = ops_gnn.scatter_logsumexp(src, index, dim=0, dim_size=2)
+# 分组 0: [[1., 2.]]                 -> [[1., 2.]]
+# 分组 1: [[3., 4.], [5., 6.]]       -> [[5.1269, 6.1269]]
+```
+
+> 测试位于 `test/scatter_logsumexp/arch22/` 与 `test/scatter_logsumexp/arch35/`，
+> 性能脚本为各自目录下的 `benchmark_scatter_logsumexp.py`。
+
+---
+
 ### radius / radius_graph — 半径内邻居搜索
 
 与 `torch_cluster.radius` / `radius_graph`（>= 1.6.0）接口完全一致的 NPU 实现，

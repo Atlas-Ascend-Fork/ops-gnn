@@ -32,13 +32,32 @@ using namespace AscendC;
 
 // One device pass. The row/tile driver and the buffer layout are shared, so a
 // pass only contributes its own arithmetic.
+//
+// The grouped log-sum-exp reuses four of these passes: the maximum and the
+// exponential sum are the ones of the softmax family, `Finalize` writes the
+// group rows of the reduced output, and `GradElement` is its elementwise
+// backward. Neither of the last two reduces, so neither owns a workspace.
 enum ScatterSoftmaxPhase {
     kPhaseMaximum = 0,
     kPhaseExp = 1,
     kPhaseNormalize = 2,
     kPhaseGradSum = 3,
     kPhaseGrad = 4,
+    kPhaseFinalize = 5,
+    kPhaseGradElement = 6,
 };
+
+// Compile-time arithmetic of the shared phase bodies.
+enum ScatterSoftmaxMode {
+    kModeSoftmax = 0,
+    kModeLogSoftmax = 1,
+    kModeLogSumExp = 2,
+};
+
+__aicore__ constexpr bool IsLogDomain(ScatterSoftmaxMode mode)
+{
+    return mode != kModeSoftmax;
+}
 
 // Passes that reduce into a (batch, group, feature) workspace slot.
 template <ScatterSoftmaxPhase Phase>
@@ -52,6 +71,34 @@ template <ScatterSoftmaxPhase Phase>
 __aicore__ constexpr bool ReadsWorkspace()
 {
     return Phase == kPhaseExp || Phase == kPhaseNormalize || Phase == kPhaseGrad;
+}
+
+// Passes that keep the reduction workspace resident in UB. The finalize pass
+// walks the workspace in row order once and never revisits a slot, so it reads
+// the flushed copy from GM instead of reserving the whole thing in UB.
+template <ScatterSoftmaxPhase Phase>
+__aicore__ constexpr bool UsesUbWorkspace()
+{
+    return IsReductionPass<Phase>() || ReadsWorkspace<Phase>();
+}
+
+// Passes driven by the group labels of every row. The finalize pass walks the
+// dense (batch, group) rows of the output and needs no labels.
+template <ScatterSoftmaxPhase Phase>
+__aicore__ constexpr bool UsesGroups()
+{
+    return Phase != kPhaseFinalize;
+}
+
+// A group-shaped tensor (the saved output or its gradient) is small when the
+// reduction workspace fits the accumulator budget. Its rows are then few enough
+// to keep resident in UB, which the elementwise backward needs: every source row
+// reads one row of the output and one row of its gradient, and with a small
+// group count those reads all land on the same few lines and never overlap. The
+// tiling reserves two fp32 copies of the workspace for this pass already.
+__aicore__ inline bool GroupsFitUb(const ScatterSoftmaxTilingData& tiling)
+{
+    return tiling.localAccum != 0 && tiling.afterPadded <= tiling.colTile;
 }
 
 template <HardEvent Event>
@@ -122,19 +169,25 @@ template <typename T>
 struct PhaseTensors {
     TBuf<TPosition::VECCALC> narrowBuffer;
     TBuf<TPosition::VECCALC> narrowBuffer2;
+    TBuf<TPosition::VECCALC> narrowBuffer3;
     TBuf<TPosition::VECCALC> wideBuffer;
     TBuf<TPosition::VECCALC> wideBuffer2;
     TBuf<TPosition::VECCALC> wideBuffer3;
     TBuf<TPosition::VECCALC> accumBuffer;
     TBuf<TPosition::VECCALC> workspaceBuffer;
+    TBuf<TPosition::VECCALC> groupCacheBuffer;
+    TBuf<TPosition::VECCALC> groupCacheBuffer2;
     TBuf<TPosition::VECCALC> groupBuffer;
     LocalTensor<T> narrow;
     LocalTensor<T> narrow2;
+    LocalTensor<T> narrow3;
     LocalTensor<float> wide;
     LocalTensor<float> wide2;
     LocalTensor<float> wide3;
     LocalTensor<float> accum;
     LocalTensor<float> cached;
+    LocalTensor<float> cachedOut;
+    LocalTensor<float> cachedGrad;
     LocalTensor<int32_t> groups;
     GlobalTensor<int32_t> indexGm;
     GlobalTensor<T> srcGm;
@@ -163,7 +216,27 @@ __aicore__ inline void InitTensors(PhaseTensors<T>& tensors, TPipe& pipe,
     tensors.wide2 = tensors.wideBuffer2.template Get<float>();
     tensors.wide3 = tensors.wideBuffer3.template Get<float>();
     tensors.groups = tensors.groupBuffer.template Get<int32_t>();
-    if (tiling.localAccum != 0) {
+    if constexpr (Phase == kPhaseGradElement) {
+        // The elementwise gradient holds the source, the saved output and the
+        // incoming gradient at the same time, so it needs a third dtype buffer
+        // on top of the two the other passes use. The row budget is sized for
+        // 20 bytes per element, so this pass reaches 24 in the worst case: with
+        // the 80 KB budget that is at most 96 KB, well inside the UB.
+        pipe.InitBuffer(tensors.narrowBuffer3, AlignedBytes(rowElements, sizeof(T)));
+        tensors.narrow3 = tensors.narrowBuffer3.template Get<T>();
+        if (GroupsFitUb(tiling)) {
+            // The saved output and its gradient stay in UB for the whole pass:
+            // one row of each is read per source row, and a small group count
+            // makes those reads hit the same few lines without overlapping.
+            pipe.InitBuffer(tensors.groupCacheBuffer,
+                            AlignedBytes(tiling.workspaceElems, sizeof(float)));
+            pipe.InitBuffer(tensors.groupCacheBuffer2,
+                            AlignedBytes(tiling.workspaceElems, sizeof(float)));
+            tensors.cachedOut = tensors.groupCacheBuffer.template Get<float>();
+            tensors.cachedGrad = tensors.groupCacheBuffer2.template Get<float>();
+        }
+    }
+    if (tiling.localAccum != 0 && UsesUbWorkspace<Phase>()) {
         // The workspace is resident in UB for the whole pass: the reduction
         // phases accumulate into `accum`, the passes that read it use `cached`.
         pipe.InitBuffer(tensors.accumBuffer,
@@ -194,7 +267,8 @@ __aicore__ inline void WidenToFp32(const LocalTensor<float>& dst, const LocalTen
 
 // Narrows `count` fp32 elements back to the source dtype, rounding to nearest.
 template <typename T>
-__aicore__ inline void NarrowFromFp32(const LocalTensor<T>& dst, const LocalTensor<float>& src, uint32_t count)
+__aicore__ inline void NarrowFromFp32(const LocalTensor<T>& dst, const LocalTensor<float>& src,
+                                     uint32_t count)
 {
     if (count == 0) {
         return;
@@ -219,6 +293,14 @@ __aicore__ inline uint64_t WorkBase(const ScatterSoftmaxTilingData& tiling, uint
 {
     const uint64_t batch = row / tiling.dimLength;
     return (batch * tiling.groupCount + static_cast<uint64_t>(group)) * tiling.afterPadded;
+}
+
+// Output row of (row, group). The reduced output stores one row per
+// (batch, group) pair, so its stride is `after` instead of `afterPadded`.
+__aicore__ inline uint64_t OutBase(const ScatterSoftmaxTilingData& tiling, uint64_t row, int32_t group)
+{
+    const uint64_t batch = row / tiling.dimLength;
+    return (batch * tiling.groupCount + static_cast<uint64_t>(group)) * tiling.after;
 }
 
 __aicore__ inline bool IsParticipating(const ScatterSoftmaxTilingData& tiling)
