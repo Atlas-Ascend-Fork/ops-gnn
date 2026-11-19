@@ -215,6 +215,14 @@ Reports record source and loaded binary hashes, device, software, timing
 settings, and each case outcome. Only a complete matrix for the current build
 supports a final validation claim.
 
+### Product directory alignment
+
+Tests are consolidated into three files under `test/segment_csr/arch35/`: the
+functional test, the CPU reference, and the performance script. The task-specific
+acceptance and profiler scripts mentioned above are kept in the `validation_inputs/`
+PR validation attachment, preserving the original inputs, reference computation, and
+per-case thresholds; set `CSR_PRODUCT_ROOT` to the product repository when running them.
+
 ## Ascend A2 backend design
 
 ### 1. Interfaces and data model
