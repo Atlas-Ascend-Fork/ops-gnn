@@ -6,6 +6,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
+import weakref
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -22,9 +23,6 @@ _FLOAT32_EXACT_INT_MAX = 16777216
 
 @dataclass(frozen=True)
 class _CsrCacheKey:
-    row_id: int
-    col_id: int
-    weight_id: int
     row_ptr: int
     col_ptr: int
     weight_ptr: int
@@ -35,6 +33,29 @@ class _CsrCacheKey:
     node_count: int
     weight_dtype: str
     device: str
+
+
+class _TensorIdentity:
+    """Weak-reference identity of the tensors a cache entry was built from.
+
+    Object ids and storage addresses can be reused by unrelated tensors after
+    the originals are freed, so a cache hit is only valid when the lookup
+    tensors are the very objects this entry was created with.
+    """
+
+    __slots__ = ("row_ref", "col_ref", "weight_ref")
+
+    def __init__(self, row: Tensor, col: Tensor, weight: Tensor) -> None:
+        self.row_ref = weakref.ref(row)
+        self.col_ref = weakref.ref(col)
+        self.weight_ref = weakref.ref(weight)
+
+    def matches(self, row: Tensor, col: Tensor, weight: Tensor) -> bool:
+        return (
+            self.row_ref() is row
+            and self.col_ref() is col
+            and self.weight_ref() is weight
+        )
 
 
 @dataclass
@@ -55,10 +76,23 @@ class _RunContext:
     cache_key: Optional[_CsrCacheKey]
 
 
-def _cache_put(key, value) -> None:
+def _cache_put(key, row: Tensor, col: Tensor, weight: Tensor, value) -> None:
     if len(_CSR_CACHE) >= _MAX_CSR_CACHE_SIZE:
         _CSR_CACHE.pop(next(iter(_CSR_CACHE)))
-    _CSR_CACHE[key] = value
+    _CSR_CACHE[key] = (_TensorIdentity(row, col, weight), value)
+
+
+def _cache_get(key, row: Tensor, col: Tensor, weight: Tensor):
+    entry = _CSR_CACHE.get(key) if key is not None else None
+    if entry is None:
+        return None
+    identity, value = entry
+    if identity.matches(row, col, weight):
+        return value
+    # The original tensors were freed and their ids/storage addresses were
+    # reused by a different graph: the cached CSR must not be reused.
+    _CSR_CACHE.pop(key, None)
+    return None
 
 
 def _get_node_perm(context: _RunContext) -> Tensor:
@@ -250,9 +284,6 @@ def _make_cache_key(row: Tensor, col: Tensor, weight: OptTensor, node_count: int
     if row_version is None or col_version is None or weight_version is None:
         return None
     return _CsrCacheKey(
-        row_id=id(row),
-        col_id=id(col),
-        weight_id=id(weight),
         row_ptr=int(row.data_ptr()),
         col_ptr=int(col.data_ptr()),
         weight_ptr=int(weight.data_ptr()),
@@ -266,17 +297,6 @@ def _make_cache_key(row: Tensor, col: Tensor, weight: OptTensor, node_count: int
     )
 
 
-def _cached_preprocess(row: Tensor, col: Tensor, weight: OptTensor, node_count: int, cache_key):
-    cached = _CSR_CACHE.get(cache_key) if cache_key is not None else None
-    if cached is not None:
-        return cached
-    rowptr, csr_col, csr_weight = _preprocess(row, col, weight, node_count)
-    weight_mode = _weight_mode(rowptr, csr_col, csr_weight, node_count)
-    if cache_key is not None:
-        _cache_put(cache_key, (rowptr, csr_col, csr_weight, weight_mode))
-    return rowptr, csr_col, csr_weight, weight_mode
-
-
 def _npu_weight(weight: OptTensor) -> OptTensor:
     if weight is None:
         return None
@@ -284,15 +304,19 @@ def _npu_weight(weight: OptTensor) -> OptTensor:
 
 
 def _run_npu(context: _RunContext) -> Tensor:
-    cached = _CSR_CACHE.get(context.cache_key) if context.cache_key is not None else None
+    cached = _cache_get(context.cache_key, context.row, context.col, context.weight)
     if cached is None:
-        cached = _cached_preprocess(
+        rowptr, csr_col, csr_weight = _preprocess(
             context.row.contiguous(),
             context.col.contiguous(),
             _npu_weight(context.weight),
             context.node_count,
-            context.cache_key,
         )
+        weight_mode = _weight_mode(rowptr, csr_col, csr_weight, context.node_count)
+        cached = (rowptr, csr_col, csr_weight, weight_mode)
+        if context.cache_key is not None:
+            _cache_put(
+                context.cache_key, context.row, context.col, context.weight, cached)
     rowptr, csr_col, csr_weight, weight_mode = cached
     node_perm = _get_node_perm(context)
     if csr_weight is None:
@@ -310,13 +334,20 @@ def _run_npu(context: _RunContext) -> Tensor:
 
 def _run_cpu(context: _RunContext, work_device: torch.device) -> Tensor:
     weight_work = context.weight.contiguous() if context.weight is not None else None
-    rowptr, csr_col, csr_weight, _ = _cached_preprocess(
-        context.row.contiguous(),
-        context.col.contiguous(),
-        weight_work,
-        context.node_count,
-        context.cache_key,
-    )
+    cached = _cache_get(context.cache_key, context.row, context.col, context.weight)
+    if cached is None:
+        rowptr, csr_col, csr_weight = _preprocess(
+            context.row.contiguous(),
+            context.col.contiguous(),
+            weight_work,
+            context.node_count,
+        )
+        weight_mode = _weight_mode(rowptr, csr_col, csr_weight, context.node_count)
+        cached = (rowptr, csr_col, csr_weight, weight_mode)
+        if context.cache_key is not None:
+            _cache_put(
+                context.cache_key, context.row, context.col, context.weight, cached)
+    rowptr, csr_col, csr_weight, _ = cached
     return _graclus_greedy_cpu(rowptr, csr_col, csr_weight, context.node_count, work_device)
 
 
@@ -332,7 +363,8 @@ def graclus_cluster(row: Tensor, col: Tensor, weight: OptTensor = None, num_node
     if weight is not None and weight.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
         raise TypeError("weight supports float16, bfloat16, float32, and float64")
     cache_key = _make_cache_key(row, col, weight, node_count)
-    if cache_key is None or cache_key not in _CSR_CACHE:
+    cached = _cache_get(cache_key, row, col, weight)
+    if cached is None:
         _check_index_bounds(row, col, node_count)
     context = _RunContext(row, col, weight, node_count, cache_key)
     use_npu_kernel = row.device.type == "npu" and (weight is None or weight.dtype != torch.float64)

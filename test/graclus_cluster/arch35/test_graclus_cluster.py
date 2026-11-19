@@ -308,7 +308,7 @@ def test_invalid_indices_raise():
         ops_gnn.graclus_cluster(row, col, num_nodes=4)
 
 
-def test_weight_cache_invalidates_after_inplace_update():
+def test_weight_cache_invalidates_after_weight_inplace_update():
     row = torch.tensor([0, 0, 1, 1, 2, 2], dtype=torch.long)
     col = torch.tensor([1, 2, 0, 2, 0, 1], dtype=torch.long)
     weight = torch.tensor([0.9, 0.1, 0.9, 0.2, 0.1, 0.2], dtype=torch.float32)
@@ -326,6 +326,52 @@ def test_weight_cache_invalidates_after_inplace_update():
         pytest.fail("cache invalidation result is not bit-wise equal to reference")
     if torch.equal(first, actual):
         pytest.fail("cache did not reflect updated tensor")
+
+
+def test_cache_hit_requires_the_original_tensor_objects():
+    """A key collision from reused ids/storage must not return a stale CSR."""
+    import importlib
+
+    module = importlib.import_module("ops_gnn.graclus_cluster")
+    # G.CLS.11: the cache API is module-internal, reach it without touching
+    # protected members from a client class.
+    make_cache_key = getattr(module, "_make_cache_key")
+    cache_put = getattr(module, "_cache_put")
+    cache_get = getattr(module, "_cache_get")
+
+    row = torch.tensor([0, 0, 1, 2], dtype=torch.long)
+    col = torch.tensor([1, 2, 0, 0], dtype=torch.long)
+    weight = torch.tensor([1.0, 2.0, 1.0, 2.0], dtype=torch.float64)
+    key = make_cache_key(row, col, weight, node_count=3)
+    cache_put(key, row, col, weight, "cached-csr")
+
+    other_row = torch.tensor([0, 0, 1, 2], dtype=torch.long)
+    other_col = torch.tensor([1, 2, 0, 0], dtype=torch.long)
+    other_weight = torch.tensor([1.0, 2.0, 1.0, 2.0], dtype=torch.float64)
+
+    if cache_get(key, row, col, weight) != "cached-csr":
+        pytest.fail("the original tensor objects must hit the cache entry")
+    if cache_get(key, other_row, other_col, other_weight) is not None:
+        pytest.fail("a different tensor object must not hit the cache entry")
+
+
+def test_results_stay_correct_when_tensor_allocations_are_reused():
+    """Rebuilt same-shaped graphs must match the reference after id reuse."""
+    for attempt in range(64):
+        row = torch.tensor([0, 0, 1, 2], dtype=torch.long)
+        col = torch.tensor([1, 2, 0, 0], dtype=torch.long)
+        weight = torch.tensor([1.0, float(attempt), 1.0, 2.0], dtype=torch.float64)
+
+        torch.manual_seed(2)
+        expected = reference_graclus_cluster(row, col, weight, num_nodes=3)
+        torch.manual_seed(2)
+        actual = ops_gnn.graclus_cluster(row, col, weight, num_nodes=3)
+
+        if not torch.equal(actual, expected):
+            pytest.fail(
+                f"stale cache hit at attempt {attempt}: "
+                f"{actual.tolist()} != {expected.tolist()}")
+        del row, col, weight, expected, actual
 
 
 @pytest.mark.parametrize("device", ["cpu", "npu"])
