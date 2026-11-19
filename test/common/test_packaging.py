@@ -281,5 +281,59 @@ class TestPackaging(unittest.TestCase):
                 self.assert_wheel_contents(artifact, module.__version__, labels)
 
 
+def _matching_paren(text, open_paren):
+    """Return the index matching ``open_paren`` in ``text``, or -1."""
+    depth = 0
+    for i in range(open_paren, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _custom_command_blocks(text):
+    """Yield the body of every add_custom_command(...) block in ``text``."""
+    blocks = []
+    start = 0
+    while start < len(text):
+        head = text.find("add_custom_command", start)
+        if head < 0:
+            break
+        open_paren = text.find("(", head)
+        if open_paren < 0:
+            break
+        close_paren = _matching_paren(text, open_paren)
+        if close_paren < 0:
+            break
+        blocks.append(text[open_paren + 1:close_paren])
+        start = close_paren + 1
+    return blocks
+
+
+class TestCmakeCommandEscaping(unittest.TestCase):
+    def test_args_commands_are_verbatim(self):
+        """Custom commands passing ARGS must be VERBATIM.
+
+        Without ``VERBATIM`` the Makefile generator writes the raw command
+        line, so shell metacharacters inside paths (for example a backtick
+        command substitution in the source directory name) are executed by
+        the shell instead of reaching the ASC compiler as a single literal
+        argument.
+        """
+        cmake_lists = (PROJECT_ROOT / "CMakeLists.txt").read_text()
+        blocks = list(_custom_command_blocks(cmake_lists))
+        self.assertGreater(len(blocks), 0, "no add_custom_command found")
+        for index, block in enumerate(blocks, start=1):
+            if "ARGS" in block:
+                self.assertIn(
+                    "VERBATIM", block,
+                    f"add_custom_command block #{index} passes ARGS without VERBATIM; "
+                    "shell metacharacters in paths would reach the compiler unescaped",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

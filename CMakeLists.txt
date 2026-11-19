@@ -477,6 +477,7 @@ if(NPU_ASC_FILES)
             MAIN_DEPENDENCY ${ASC_FILE}
             DEPENDS ${NPU_KERNEL_HEADERS}
             COMMENT "Compiling ASC kernel: ${FILE_NAME}${FILE_EXT}"
+            VERBATIM
         )
     endforeach()
 
@@ -501,6 +502,7 @@ if(NPU_ASC_FILES)
             ${ASC_LINK_FLAGS}
         DEPENDS ${NPU_KERNEL_OBJECTS}
         COMMENT "Linking NPU kernel library: ${NPU_KERNEL_LIB}"
+        VERBATIM
     )
 
     add_custom_target(npu_kernel_target ALL DEPENDS ${NPU_KERNEL_LIB})
