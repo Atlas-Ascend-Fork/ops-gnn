@@ -17,6 +17,10 @@ import runpy
 import sys
 from pathlib import Path
 
+import pytest
+
+NPU_SEED = 42
+
 
 def _built_npu_arch() -> str:
     arch = os.getenv("NPU_ARCH") or os.getenv("TARGET_NPU_ARCH") or ""
@@ -45,6 +49,43 @@ SPMM_BATCH_CASES = [(1, 1), (2, 17), (3, 33)]
 def pytest_ignore_collect(collection_path, config):
     """Ignore architecture subdirectories that do not match the built extension."""
     return _IGNORED_ARCH in collection_path.parts
+
+
+@pytest.fixture(scope="module")
+def npu_api(request):
+    """NPU 测试公共入口：注册后端、选择设备、固定随机种子，并返回 ops_gnn。"""
+    try:
+        import torch_npu  # noqa: F401  # Register the NPU device.
+    except ImportError:
+        pytest.skip("requires torch_npu")
+
+    import torch
+
+    if not torch.npu.is_available():
+        pytest.skip("requires an available Ascend NPU")
+    torch.npu.set_device(int(os.getenv("NPU_DEVICE_ID", "0")))
+
+    families = request.node.get_closest_marker("ascend")
+    if families is not None:
+        name = torch.npu.get_device_name()
+        if not any(family in name for family in families.args):
+            pytest.skip(f"requires one of {families.args}, found {name}")
+
+    torch.manual_seed(NPU_SEED)
+
+    try:
+        import ops_gnn
+    except ImportError as exc:
+        pytest.skip(f"ops_gnn native extension unavailable: {exc}")
+    return ops_gnn
+
+
+@pytest.fixture(scope="module")
+def cpu_threads():
+    """限制 CPU 参考实现的线程数，可用 OMP_NUM_THREADS 覆盖。"""
+    import torch
+
+    torch.set_num_threads(int(os.getenv("OMP_NUM_THREADS", "4")))
 
 
 def run_spmm_benchmark(reduction):
@@ -89,7 +130,6 @@ def assert_special_values_and_out(op, reference):
 
 
 def assert_bad_csr(op, ptr_values, index_values):
-    import pytest
     import torch
 
     with pytest.raises(RuntimeError, match="spmm"):
@@ -99,7 +139,6 @@ def assert_bad_csr(op, ptr_values, index_values):
 
 
 def assert_bad_metadata(op, case):
-    import pytest
     import torch
 
     ptr = torch.tensor([0, 1, 2], device="npu")
@@ -193,7 +232,6 @@ def assert_stream(op):
 
 def assert_ub_boundary(op):
     import re
-    import pytest
     import torch
 
     ptr = torch.tensor([0, 1], device="npu")

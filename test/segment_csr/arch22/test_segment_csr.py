@@ -45,6 +45,11 @@ TEST_SHAPES = ((128,), (1024,), (4096,), (8192,), (32, 512), (64, 768), (8, 16, 
 GENERAL_SHAPES = ((1,), (4,), (2, 2), (1, 128), (512, 768), (512, 1024), (1024, 768), (1024, 1024))
 SEED = 42
 
+pytestmark = [
+    pytest.mark.ascend("910B", "910C", "910_93"),
+    pytest.mark.usefixtures("cpu_threads"),
+]
+
 
 @dataclass
 class RunOptions:
@@ -91,20 +96,6 @@ def _run(npu_api, src, indptr, reduce="sum", options=None):
     if options.check_source:
         torch.testing.assert_close(source.cpu(), src, rtol=0, atol=0, equal_nan=True)
     return result
-
-
-@pytest.fixture(scope="module")
-def npu_api():
-    import torch_npu  # noqa: F401  # Register the NPU device.
-    import ops_gnn
-
-    torch.npu.set_device(int(os.getenv("NPU_DEVICE_ID", "0")))
-    name = torch.npu.get_device_name()
-    assert any(model in name for model in ("910B", "910C", "910_93")), \
-        f"acceptance requires an Ascend A2/A3 NPU, found {name}"
-    torch.manual_seed(SEED)
-    torch.set_num_threads(int(os.getenv("OMP_NUM_THREADS", "4")))
-    return ops_gnn
 
 
 def _source(shape, dtype, seed=SEED):

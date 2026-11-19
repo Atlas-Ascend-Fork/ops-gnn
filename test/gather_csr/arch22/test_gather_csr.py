@@ -9,12 +9,10 @@
 """A2/A3 shared interface tests and architecture-specific regressions."""
 
 import importlib.util
-import os
 from pathlib import Path
 
 import pytest
 import torch
-import ops_gnn
 
 _spec = importlib.util.spec_from_file_location(
     "gather_csr_arch35_tests", Path(__file__).parents[1] / "arch35/test_gather_csr.py")
@@ -60,14 +58,6 @@ class TestSharedGatherCsr:
         _shared.test_output_byte_span_overflow_is_rejected_before_allocation)
     test_out_validation = staticmethod(_shared.test_out_validation)
     test_static_input_validation = staticmethod(_shared.test_static_input_validation)
-
-
-@pytest.fixture(scope="module")
-def npu_api():
-    if not hasattr(torch, "npu") or not torch.npu.is_available():
-        pytest.skip("requires an available Ascend NPU")
-    torch.npu.set_device(int(os.environ.get("NPU_DEVICE_ID", 0)))
-    return ops_gnn
 
 
 def test_arch22_repeated_raw_copy(npu_api):

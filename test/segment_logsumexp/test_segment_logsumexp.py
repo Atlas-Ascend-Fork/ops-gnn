@@ -13,7 +13,6 @@ The operator is a dedicated device-side kernel
 file, so this test directory is shared by both architectures.
 """
 
-import os
 from pathlib import Path
 import runpy
 
@@ -45,16 +44,6 @@ CASES = [
     ([0, 1000, 2000], (2000, 8)),   # few segments split into row chunks
     ([0, 5000], (5000, 16)),        # a single segment split into many chunks
 ]
-
-
-@pytest.fixture(scope="module")
-def npu_api():
-    import torch_npu  # noqa: F401  # Register the NPU device.
-    import ops_gnn
-
-    torch.npu.set_device(int(os.getenv("NPU_DEVICE_ID", "0")))
-    torch.manual_seed(SEED)
-    return ops_gnn
 
 
 def _source(shape, dtype):

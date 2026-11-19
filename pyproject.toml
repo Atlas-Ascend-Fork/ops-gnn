@@ -11,6 +11,7 @@ python_files = ["test_*.py"]
 addopts = "--capture=no -rs"
 markers = [
     "npu: requires an Ascend NPU and the compiled ops_gnn extension",
+    "ascend(*families): requires a device whose name contains one of the families",
 ]
 filterwarnings = [
     'ignore:`torch\.jit\.script_method` is deprecated\..*:DeprecationWarning',

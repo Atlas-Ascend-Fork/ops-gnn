@@ -34,7 +34,7 @@ import pytest
 import torch
 
 from common.grouped_softmax_cases import (CASES, DTYPES, INFINITY_VALUES,
-                                          INVALID_CASES, LONG_GROUP_ROWS, SEED,
+                                          INVALID_CASES, LONG_GROUP_ROWS,
                                           invalid_inputs, reference_gradient,
                                           source, to_npu)
 from common.grouped_softmax_golden import assert_close, grouped_reference
@@ -94,16 +94,6 @@ class GroupedFamilySuite:
     def check_large_group(out, rows):
         """Operator-specific assertion of the long-group case."""
         raise NotImplementedError
-
-    @pytest.fixture(scope="module")
-    @classmethod
-    def npu_api(cls):
-        import torch_npu  # noqa: F401  # Register the NPU device.
-        import ops_gnn
-
-        torch.npu.set_device(int(os.getenv("NPU_DEVICE_ID", "0")))
-        torch.manual_seed(SEED)
-        return ops_gnn
 
     def call(self, api, src, index, dim=0, dim_size=None):
         op = getattr(api, self.api_name)
