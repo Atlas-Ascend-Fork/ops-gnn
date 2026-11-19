@@ -1469,7 +1469,7 @@ dtype/shape 点及 0.45 性能比例门限。
 ### matrix_exp — 矩阵指数
 
 对 batch 方阵计算矩阵指数 exp(A)，接口对齐 `torch.linalg.matrix_exp`，
-Ascend 950（arch35），MIX 架构（AIC Cube + AIV Vector 协作）。
+支持 Ascend 950（arch35）。小矩阵使用 AIC Cube 和 AIV Vector 协作的专用内核。
 
 **函数签名：**
 
@@ -1490,16 +1490,17 @@ def matrix_exp(a: Tensor, *, out: Optional[Tensor] = None) -> Tensor:
 
 **功能说明：**
 
-- 语义对齐 `torch.linalg.matrix_exp`：batch 内各矩阵独立计算，结果与 torch 参考（fp64 Padé）在精度契约内一致，不逐位相同
-- 算法：缩放平方 + Taylor（K=9）Horner 嵌套递推，范数经 Frobenius 归约确定缩放次数 s，缩放因子 2^-s 折入 Horner 标量
+- batch 内各矩阵独立计算，精度测试使用 FP64 参考
+- `2 <= n <= 128` 使用专用缩放平方内核，按 Frobenius 范数确定缩放次数，并用 Horner 法求值
+- `128 < n <= 2048` 使用 FP32 缩放平方，按矩阵 1-范数确定缩放次数。若 batch 中所有矩阵的 1-范数均不超过 1/8，则用 3 次批量矩阵乘求值 5 阶 Taylor 多项式。其余输入在平方前用 7 次批量矩阵乘求值 18 阶多项式
 - n=1 走纯 Vector 逐元素 `exp` 快速路径（batch 维完全并行）
 - 精度按 `||A||_F` 分桶验收：fp32 在范数 ≤ 8 达 1e-5，随范数增大逐级放宽至 1e-2；fp16 / bfloat16 由输出量化主导（不劣于 2e-3 / 2e-2）
 
 **注意事项：**
 
-- 迭代一支持 n ≤ 128（UB 全常驻路径）；n > 128 直接报错，分块路径规划于迭代三
+- 最大矩阵阶数为 2048
 - 不支持 float64 / complex（950 Cube 无 fp64），调用直接报错——与 torch 的显式差异
-- 仅前向计算，不支持反向
+- 省略 `out` 时支持 autograd。输入梯度的形状和 dtype 与输入一致
 - 非连续输入在 host 侧连续化；空 batch 直接返回空 Tensor
 - kernel 使用当前 NPU stream 异步执行，Host 侧读取结果前需 `torch.npu.synchronize()`
 
@@ -1524,11 +1525,12 @@ ops_gnn.matrix_exp(batch, out=provided)  # 写入 provided 并返回同一 Tenso
 
 **实现架构：**
 
-- **Kernel 模式**：`KERNEL_TYPE_MIX_AIC_1_2`（每 block 1 AIC + 2 AIV，仅 subBlock 0 的 AIV 参与计算）
+- **小矩阵 Kernel 模式**：`KERNEL_TYPE_MIX_AIC_1_2`（每 block 1 AIC + 2 AIV，仅 subBlock 0 的 AIV 参与计算）
 - **AIV**：GM→UB 搬入、Cast fp32、Frobenius 范数、s/σ 缩放因子、Horner 标量乘加、输出 Cast
 - **AIC**：Horner 8 次 Mmad(A@E) + s 次 Mmad(E@E)，CANN SDK tensor_api（`AscendC::Te`）
 - **数据交接**：fp32 全链路；E 每轮经 GM workspace 往返（3510 无 UB→L1 fp32 直通），nPad 方阵布局，CrossCore MODE4 flag 锁步
-- **测试**：`pytest test/matrix_exp/arch35/test_matrix_exp.py -v`（27 用例：功能 / 精度分桶 / 边界，内置 fp64 参考）
+- 正确性测试运行 `pytest test/matrix_exp/arch35/test_matrix_exp.py -v`
+- 性能测试运行 `python test/matrix_exp/arch35/benchmark_matrix_exp.py --n 2048 --batch 16 --norm 4`，输出前向、反向和前向加反向的中位延迟
 
 实现设计见 [matrix_exp算子设计文档](../experiment/design/matrix_exp/matrix_exp算子设计文档.md)。
 

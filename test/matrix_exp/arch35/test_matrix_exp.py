@@ -202,12 +202,100 @@ def test_batch_larger_than_cores():
     _assert_close(out, a, torch.float32)
 
 
-@pytest.mark.parametrize("n", [129, 1024])  # 超出迭代一 n<=128 支持域
-def test_n_above_supported(n):
-    """n > 128：迭代一明确报错（模板三未实现）。"""
-    a = torch.eye(n).npu()
-    with pytest.raises(RuntimeError, match="not supported yet"):
+@pytest.mark.parametrize("dtype", SUPPORTED_DTYPES)
+def test_large_matrix(dtype):
+    a = _rand_matrix(2, 129, 0.03, dtype, seed=31)
+    a[0].zero_()
+    x = a.npu().mT
+    out = torch.empty_like(x.contiguous()).mT
+    assert ops_gnn.matrix_exp(x, out=out) is out
+    _assert_close(out, a.mT, dtype)
+
+
+def test_maximum_matrix_order():
+    n = 2048
+    a = torch.eye(n) * -3
+    result = ops_gnn.matrix_exp(a.npu()).cpu()
+    torch.testing.assert_close(result, torch.eye(n) * torch.exp(torch.tensor(-3.0)))
+
+
+def test_rejects_above_maximum_order():
+    a = torch.empty(1, device="npu").expand(2049, 2049)
+    with pytest.raises(RuntimeError, match="max supported is 2048"):
         ops_gnn.matrix_exp(a)
+
+
+@pytest.mark.parametrize("n", [1, 17, 128, 129])
+@pytest.mark.parametrize("dtype", SUPPORTED_DTYPES)
+def test_backward(n, dtype):
+    a = _rand_matrix(2, n, 0.04, dtype, seed=37).mT
+    grad = _rand_matrix(2, n, 0.25, dtype, seed=41)
+    reference = a.double().requires_grad_()
+    expected, = torch.autograd.grad(torch.linalg.matrix_exp(reference), reference, grad.double())
+
+    x = a.npu().requires_grad_()
+    actual, = torch.autograd.grad(ops_gnn.matrix_exp(x), x, grad.npu())
+    tol = _tolerance(a, dtype)
+    torch.testing.assert_close(actual.cpu().double(), expected, rtol=tol, atol=tol)
+
+
+@pytest.mark.parametrize("n", [256, 512, 1024, 2048])
+@pytest.mark.parametrize("dtype", SUPPORTED_DTYPES)
+def test_large_matrix_forward_backward_accuracy(n, dtype):
+    """Check a matrix whose rank-one update squares to zero against an analytic FP64 reference."""
+    alpha = -0.5
+    eye = torch.eye(n, dtype=torch.float64)
+    u = torch.zeros(n, dtype=torch.float64)
+    v = torch.zeros_like(u)
+    u[:n // 2] = 1
+    v[n // 2:] = 8 / n
+    nilpotent = torch.outer(u, v)
+    a = (alpha * eye + nilpotent).to(dtype)
+    rng = torch.Generator().manual_seed(43)
+    grad = torch.randn(n, n, generator=rng).to(dtype)
+    grad64 = grad.double()
+
+    left = u @ grad64
+    right = grad64 @ v
+    expected_grad = grad64 + (torch.outer(v, left) + torch.outer(right, u)) / 2
+    expected_grad += (left @ v) * torch.outer(v, u) / 6
+    scale = torch.tensor(alpha, dtype=torch.float64).exp()
+
+    x = a.npu().requires_grad_()
+    result = ops_gnn.matrix_exp(x)
+    actual_grad, = torch.autograd.grad(result, x, grad.npu())
+    tol = {torch.float32: 1e-5, torch.float16: 2e-3, torch.bfloat16: 2e-2}[dtype]
+    torch.testing.assert_close(result.detach().cpu().double(), scale * (eye + nilpotent),
+                               rtol=tol, atol=tol)
+    torch.testing.assert_close(actual_grad.cpu().double(), scale * expected_grad,
+                               rtol=tol, atol=tol)
+
+
+@pytest.mark.parametrize("norms", [(0.0, 0.1), (0.1, 0.25)])
+def test_large_matrix_low_norm_accuracy(norms):
+    a = _rand_matrix(2, 256, 1.0, torch.float32, seed=47)
+    a *= torch.tensor(norms)[:, None, None] / a.abs().sum(-2).amax(-1)[:, None, None]
+    grad = _rand_matrix(2, 256, 1.0, torch.float32, seed=49)
+    reference = a.double().requires_grad_()
+    expected = torch.linalg.matrix_exp(reference)
+    expected_grad, = torch.autograd.grad(expected, reference, grad.double())
+    x = a.npu().requires_grad_()
+    actual = ops_gnn.matrix_exp(x)
+    actual_grad, = torch.autograd.grad(actual, x, grad.npu())
+    torch.testing.assert_close(actual.detach().cpu().double(), expected, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(actual_grad.cpu().double(), expected_grad, rtol=1e-5, atol=1e-5)
+
+
+def test_backward_empty_batch():
+    x = torch.empty(0, 129, 129, device="npu", requires_grad=True)
+    ops_gnn.matrix_exp(x).sum().backward()
+    assert x.grad.shape == x.shape
+
+
+def test_out_rejects_autograd():
+    x = torch.eye(2, device="npu", requires_grad=True)
+    with pytest.raises(RuntimeError, match="out=.*automatic differentiation"):
+        ops_gnn.matrix_exp(x, out=torch.empty_like(x))
 
 
 def test_rejects_non_square():

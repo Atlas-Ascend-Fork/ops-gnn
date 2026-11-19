@@ -13,6 +13,8 @@
 #include "matrix_exp/op_kernel/arch35/matrix_exp_tiling.h"
 #include "tiling/platform/platform_ascendc.h"
 #include <acl/acl_base.h>
+#include <array>
+#include <cmath>
 #include <mutex>
 #include <unordered_map>
 #include "torch_npu/csrc/core/npu/NPUStream.h"
@@ -21,7 +23,7 @@ namespace opsgnn {
 
 namespace {
 
-constexpr uint64_t MATRIX_EXP_MAX_N = 1024;  // 矩阵阶数硬上限，防御异常入参
+constexpr int64_t MATRIX_EXP_MAX_N = 2048;
 
 // 单位矩阵常量缓存（进程级持有，key = device<<16 | nPad16）。
 // raw kernel launch 对 eye 的 GM 读取不被 caching allocator 感知：若 eye 为调用局部
@@ -59,9 +61,68 @@ void ValidateInputs(const torch::Tensor& A)
                 A.scalar_type() == at::ScalarType::BFloat16,
                 "matrix_exp: unsupported dtype (float64/complex are not supported on NPU), got ",
                 A.scalar_type());
-    TORCH_CHECK(A.size(A.dim() - 1) <= MATRIX_EXP_MAX_N,
-                "matrix_exp: matrix order too large, got ", A.size(A.dim() - 1),
+    TORCH_CHECK(A.size(-1) <= MATRIX_EXP_MAX_N,
+                "matrix_exp: matrix order too large, got ", A.size(-1),
                 ", max supported is ", MATRIX_EXP_MAX_N);
+}
+
+torch::Tensor MatrixExpLarge(const torch::Tensor& input)
+{
+    const int64_t n = input.size(-1);
+    TORCH_CHECK(n > MATRIX_EXP_N_MAX_UB, "matrix_exp: invalid order for the large-matrix path: ", n);
+    auto a = input.to(at::kFloat).reshape({-1, n, n});
+    // Scale before summing to keep the reduction in range for finite fp32 inputs.
+    // A column contains at most MATRIX_EXP_MAX_N elements.
+    constexpr double invNormScale = 1.0 / MATRIX_EXP_MAX_N;
+    auto scaledNorm = (a.detach().abs() * invNormScale).sum(-2).amax(-1);
+    auto steps = (scaledNorm.log2() - std::log2(invNormScale) - 1).ceil().clamp_min(0);
+    auto finite = steps.isfinite();
+    steps = torch::where(finite, steps, 0);
+    // Use the same host read for the scaling count and the low-norm dispatch.
+    // A negative result means every matrix has 1-norm at most 1/8.
+    const int64_t maxSteps = torch::where(scaledNorm.le(0.125 * invNormScale), -1, steps).max().item<int64_t>();
+    auto eye = torch::eye(n, a.options());
+    if (maxSteps < 0) {
+        // Degree 5 has a 1-norm truncation bound below 7e-9 on this interval.
+        // Evaluate it in powers of A^2 with three batched multiplies.
+        auto a2 = a.bmm(a);
+        auto upper = (eye / 24.0).add(a, 1.0 / 120.0);
+        auto middle = a2.bmm(upper) + (eye / 2.0).add(a, 1.0 / 6.0);
+        auto result = (eye + a) + a2.bmm(middle);
+        return result.reshape(input.sizes()).to(input.scalar_type());
+    }
+    steps = steps.view({-1, 1, 1});
+    // Split the power of two so both factors remain normal in fp32.
+    auto halfSteps = (steps * 0.5).floor();
+    a = a * (-halfSteps).exp2() * (halfSteps - steps).exp2();
+    a = torch::where(finite.view({-1, 1, 1}), a, NAN);
+
+    // Group the degree-18 Taylor polynomial by powers of A^5.
+    // Four multiplications build A^2 through A^5, then three combine the blocks.
+    constexpr int degree = 18;
+    constexpr int blockSize = 5;
+    std::array<double, degree + 1> coeff{1.0};
+    for (int k = 1; k <= degree; ++k) {
+        coeff[k] = coeff[k - 1] / k;
+    }
+    std::array<torch::Tensor, blockSize + 1> powers{eye, a};
+    for (int k = 2; k <= blockSize; ++k) {
+        powers[k] = powers[k - 1].bmm(a);
+    }
+    torch::Tensor result;
+    for (int offset = degree / blockSize * blockSize; offset >= 0; offset -= blockSize) {
+        auto block = eye * coeff[offset];
+        for (int k = 1; k < blockSize && offset + k <= degree; ++k) {
+            block = block.add(powers[k], coeff[offset + k]);
+        }
+        result = result.defined() ? powers[blockSize].bmm(result) + block : block;
+    }
+    for (int64_t k = 0; k < maxSteps; ++k) {
+        auto active = steps.gt(k);
+        auto operand = torch::where(active, result, 0);
+        result = torch::where(active, operand.bmm(operand), result);
+    }
+    return result.reshape(input.sizes()).to(input.scalar_type());
 }
 
 MatrixExpTilingData ComputeTiling(uint64_t batchSize, uint32_t n, uint32_t dtSize, uint32_t aicCanUseNum)
@@ -143,32 +204,26 @@ torch::Tensor matrix_exp(torch::Tensor A, torch::Tensor out)
         TORCH_CHECK(out.sizes() == A.sizes(),
                     "matrix_exp: out shape must match A, got ", out.sizes(),
                     " vs ", A.sizes());
-        TORCH_CHECK(!out.is_cpu(), "matrix_exp: out must be an NPU tensor");
+        TORCH_CHECK(out.device() == A.device(), "matrix_exp: out device must match A");
     }
 
     // 空 batch：与 torch 行为对齐，直接返回空张量（out 校验已在上方统一完成）
     if (batchSize == 0) {
-        return hasOut ? out : torch::empty(A.sizes(), A.options());
+        return hasOut ? out : A.clone();
     }
 
-    // TODO(算子实现，迭代三): 模板三（n > 128 分块路径）落地后放开此限制（设计文档 3.5）
-    TORCH_CHECK(n <= MATRIX_EXP_N_MAX_UB,
-                "matrix_exp: matrices with n > ", MATRIX_EXP_N_MAX_UB,
-                " are not supported yet, got n = ", n);
-
-    torch::Tensor result;
-    bool needCopyBack = false;
-    if (hasOut) {
-        if (out.is_contiguous()) {
-            result = out;
-        } else {
-            // 非连续 out：先算到连续缓冲，再拷回视图（设计文档 1.4）
-            result = torch::empty(A.sizes(), A.options());
-            needCopyBack = true;
+    if (n > MATRIX_EXP_N_MAX_UB) {
+        auto result = MatrixExpLarge(A);
+        if (hasOut) {
+            out.copy_(result);
+            return out;
         }
-    } else {
-        result = torch::empty(A.sizes(), A.options());
+        return result;
     }
+
+    // 非连续 out 先算到连续缓冲，再拷回视图。
+    const bool directOut = hasOut && out.is_contiguous();
+    auto result = directOut ? out : torch::empty(A.sizes(), A.options());
 
     const uint32_t dtSize = (A.scalar_type() == at::ScalarType::Float) ? 4 : 2;
     auto ascendcPlatform = platform_ascendc::PlatformAscendCManager::GetInstance();
@@ -178,7 +233,7 @@ torch::Tensor matrix_exp(torch::Tensor A, torch::Tensor out)
     aclrtStream stream = c10_npu::getCurrentNPUStream(A.get_device()).stream();
     LaunchKernel(A, result, tiling, stream);
 
-    if (needCopyBack) {
+    if (hasOut && !directOut) {
         out.copy_(result);
     }
     return hasOut ? out : result;

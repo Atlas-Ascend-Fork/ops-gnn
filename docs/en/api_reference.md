@@ -1555,8 +1555,8 @@ separate acceptance materials, not the production repository.
 ### matrix_exp — Matrix Exponential
 
 Computes the matrix exponential exp(A) for batches of square matrices, aligned
-with `torch.linalg.matrix_exp`. Ascend 950 (arch35), MIX architecture (AIC Cube
-cooperating with AIV Vector).
+with `torch.linalg.matrix_exp` on Ascend 950 (arch35). The dedicated small-matrix
+kernel uses AIC Cube and AIV Vector.
 
 **Signature:**
 
@@ -1578,16 +1578,17 @@ allocated when `out` is not provided.
 
 **Behavior:**
 
-- Semantics align with `torch.linalg.matrix_exp`: matrices in a batch are computed independently; results agree with the torch reference (fp64 Padé) within the accuracy contract, not bit-exact
-- Algorithm: scaling-and-squaring + Taylor (K=9) Horner nested evaluation; the Frobenius norm reduction determines the scaling count s, and the factor 2^-s is folded into the Horner scalars
+- Each matrix in a batch is computed independently. Accuracy tests use an FP64 reference.
+- For `2 <= n <= 128`, a dedicated scaling-and-squaring kernel uses the Frobenius norm to choose the scaling count and evaluates the polynomial with Horner's method.
+- For `128 < n <= 2048`, the FP32 scaling-and-squaring path uses the matrix 1-norm to choose the scaling count. When all matrices in the batch have a 1-norm of at most 1/8, it evaluates a degree-5 Taylor polynomial with three batched matrix multiplies. Other inputs use seven batched matrix multiplies to evaluate the degree-18 polynomial before squaring.
 - n=1 takes the pure-Vector element-wise `exp` fast path (batch dim fully parallel)
 - Accuracy is accepted in `||A||_F` buckets: fp32 reaches 1e-5 for norm <= 8, relaxing stepwise to 1e-2 as the norm grows; fp16 / bfloat16 are dominated by output quantization (no worse than 2e-3 / 2e-2)
 
 **Notes:**
 
-- Iteration 1 supports n <= 128 (all-resident UB path); n > 128 raises an error, the tiled path is planned for Iteration 3
+- The maximum matrix order is 2048.
 - float64 / complex are not supported (the 950 Cube has no fp64) and raise on call — an explicit divergence from torch
-- Forward-only computation, no backward
+- Autograd is supported when `out` is omitted. The input gradient has the same shape and dtype as the input.
 - Non-contiguous inputs are made contiguous on host; an empty batch returns an empty tensor
 - The kernel runs asynchronously on the current NPU stream; call `torch.npu.synchronize()` before reading results on host
 
@@ -1612,11 +1613,12 @@ ops_gnn.matrix_exp(batch, out=provided)  # writes into provided and returns the 
 
 **Implementation:**
 
-- **Kernel mode**: `KERNEL_TYPE_MIX_AIC_1_2` (1 AIC + 2 AIV per block, only the subBlock 0 AIV participates)
+- **Small-matrix kernel mode**: `KERNEL_TYPE_MIX_AIC_1_2` (1 AIC + 2 AIV per block, only the subBlock 0 AIV participates)
 - **AIV**: GM→UB load, Cast to fp32, Frobenius norm, s/σ scaling factors, Horner scalar multiply-add, output Cast
 - **AIC**: 8 Horner Mmad(A@E) + s squaring Mmad(E@E), via the CANN SDK tensor_api (`AscendC::Te`)
 - **Data exchange**: all-fp32 pipeline; E round-trips through the GM workspace each round (3510 has no UB→L1 fp32 direct path), nPad-square layout, CrossCore MODE4 flag lockstep
-- **Tests**: `pytest test/matrix_exp/arch35/test_matrix_exp.py -v` (27 cases: functional / accuracy buckets / edges, built-in fp64 reference)
+- Run correctness tests with `pytest test/matrix_exp/arch35/test_matrix_exp.py -v`.
+- Run `python test/matrix_exp/arch35/benchmark_matrix_exp.py --n 2048 --batch 16 --norm 4` to measure median latency for forward, backward, and forward plus backward.
 
 See the [design document](../experiment/design/matrix_exp/matrix_exp算子设计文档_en.md) for implementation details.
 
