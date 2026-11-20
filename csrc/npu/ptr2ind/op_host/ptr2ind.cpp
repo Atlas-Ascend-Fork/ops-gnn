@@ -26,17 +26,32 @@ torch::Tensor ptr2ind(torch::Tensor ptr, int64_t E)
 
     c10_npu::OptionalNPUGuard device_guard(ptr.device());
 
+    if (!ptr.is_contiguous()) {
+        ptr = ptr.contiguous();
+    }
+
+    // The kernel derives GM write addresses directly from ptr values, so an
+    // invalid CSR pointer must be rejected here (same contract as knn/radius:
+    // start at 0, non-decreasing, end at E, values kept in [0, E]).
+    const auto ptr_cpu = ptr.cpu();
+    const int64_t count = ptr_cpu.numel();
+    const int64_t* p = ptr_cpu.data_ptr<int64_t>();
+    TORCH_CHECK(p[0] == 0, "ptr2ind: ptr must start with 0");
+    TORCH_CHECK(p[count - 1] == E, "ptr2ind: ptr must end with num_edges");
+    for (int64_t i = 0; i < count; ++i) {
+        TORCH_CHECK(p[i] >= 0 && p[i] <= E, "ptr2ind: ptr contains an out-of-range value");
+        if (i > 0) {
+            TORCH_CHECK(p[i - 1] <= p[i], "ptr2ind: ptr must be non-decreasing");
+        }
+    }
+
     auto out = torch::empty({E}, ptr.options());
     if (E == 0) {
         return out;
     }
 
-    if (!ptr.is_contiguous()) {
-        ptr = ptr.contiguous();
-    }
-
     auto stream = c10_npu::getCurrentNPUStream(ptr.device().index());
-    Ptr2Ind(ptr.data_ptr<int64_t>(), out.data_ptr<int64_t>(), ptr.numel() - 1, stream);
+    Ptr2Ind(ptr.data_ptr<int64_t>(), out.data_ptr<int64_t>(), ptr.numel() - 1, E, stream);
     return out;
 }
 

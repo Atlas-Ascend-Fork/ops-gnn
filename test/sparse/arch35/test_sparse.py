@@ -200,6 +200,37 @@ def test_ptr2ind_alternating_empty():
     assert_exact(out, ptr2ind_cpu(ptr.cpu(), 3))
 
 
+PTR2IND_INVALID_CASES = [
+    ([0, 64], 1, 'end_beyond_edges'),
+    ([-1, 1], 1, 'negative_start'),
+    ([0, 1], 4, 'end_below_edges'),
+    ([0, 2, 1], 2, 'decreasing'),
+    ([0, 5, 3], 5, 'decreasing_mid'),
+    ([1, 3], 3, 'nonzero_start'),
+    ([0, 0], 3, 'zero_edges_bad_end'),
+]
+
+
+@pytest.mark.parametrize(
+    'ptr_list,num_edges,case_id',
+    PTR2IND_INVALID_CASES,
+    ids=[case[2] for case in PTR2IND_INVALID_CASES],
+)
+def test_ptr2ind_rejects_invalid_csr(ptr_list, num_edges, case_id):
+    _set_device()
+    ptr = torch.tensor(ptr_list, dtype=torch.long, device='npu')
+    with pytest.raises(RuntimeError, match='ptr2ind'):
+        ops_gnn.ptr2ind(ptr, num_edges)
+
+
+def test_ptr2ind_zero_edges_contract():
+    _set_device()
+    row = ops_gnn.ptr2ind(torch.tensor([0, 0], dtype=torch.long, device='npu'), 0)
+    assert_exact(row, torch.empty(0, dtype=torch.long))
+    row = ops_gnn.ptr2ind(torch.tensor([0], dtype=torch.long, device='npu'), 0)
+    assert_exact(row, torch.empty(0, dtype=torch.long))
+
+
 def test_noncontiguous_ind_input():
     _set_device()
     base = torch.tensor([[2, 9], [2, 9], [4, 9], [5, 9], [5, 9], [6, 9]],

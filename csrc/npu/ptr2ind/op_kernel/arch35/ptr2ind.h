@@ -14,6 +14,6 @@
 
 namespace opsgnn {
 
-void Ptr2Ind(const int64_t* ptr, int64_t* out, int64_t numRows, aclrtStream stream);
+void Ptr2Ind(const int64_t* ptr, int64_t* out, int64_t numRows, int64_t numEdges, aclrtStream stream);
 
 }  // namespace opsgnn
