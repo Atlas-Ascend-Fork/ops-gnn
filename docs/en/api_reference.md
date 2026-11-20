@@ -1143,6 +1143,69 @@ copied = sddmm_csr(ptr, idx, lhs, None, op="copy_lhs", lhs_target="v")
 
 Tests live in `test/sddmm_csr/arch22/`.
 
+### disjoint_union_coo — COO concatenation (DGL `DisjointUnionCoo` parity)
+
+```python
+ops_gnn.disjoint_union_coo(
+    sources, dests, num_rows, num_cols, datas=None
+) -> Tuple[Tensor, Tensor, OptTensor, int, int]
+```
+
+Concatenates COO matrices with cumulative offsets, matching DGL
+`DisjointUnionCoo`, which is what `dgl.batch` runs underneath to merge the edge
+lists of a graph batch. Matrix `i` contributes:
+
+- `sources[i] + sum(num_rows[:i])` as row indices,
+- `dests[i] + sum(num_cols[:i])` as column indices,
+- `datas[i] + sum(nnz[:i])` as data, where `nnz[j] = sources[j].numel()`.
+
+A matrix whose `datas` entry is `None` contributes its global edge index
+`sum(nnz[:i]) + arange(nnz[i])`, which is the implicit `Range(0, nnz)` DGL
+materialises for COO matrices without a data array. The returned data tensor is
+`None` when no matrix carries data.
+
+- `sources` / `dests`: lists of one-dimensional `int32`/`int64` NPU tensors with
+  matching dtype, device and length per matrix; non-contiguous inputs are made
+  contiguous.
+- `num_rows` / `num_cols`: row and column counts per matrix, nonnegative.
+- `datas`: optional list with one per-edge data tensor or `None` per matrix;
+  provided data must be one-dimensional, share the index dtype and device, and
+  hold one value per edge. Omitting it (or passing an empty sequence) means no
+  matrix carries data.
+- Returns `(source, dest, data, total_rows, total_cols)`; the three tensors have
+  length `sum(nnz)` and `data` is `None` when no matrix carries data.
+- Concatenated rows, columns and nnz must stay within `INT32_MAX` (the kernel
+  addresses the output with 32-bit offsets).
+- Forward data movement only, no autograd; inputs are not modified.
+- Edge-list movement only: sortedness metadata such as `row_sorted` /
+  `col_sorted` is not tracked here, exactly as in DGL; the caller keeps it.
+- Runs asynchronously on the current NPU stream; call `torch.npu.synchronize()`
+  before reading results on the host.
+- Available on arch22 (A2/A3) only, matching the DGL Ascend implementation.
+
+```python
+import torch
+import ops_gnn
+
+src = [torch.tensor([0, 1], device="npu"), torch.tensor([0], device="npu")]
+dst = [torch.tensor([1, 0], device="npu"), torch.tensor([0], device="npu")]
+eid = [torch.tensor([0, 1], device="npu"), torch.tensor([0], device="npu")]
+s, d, e, total_rows, total_cols = ops_gnn.disjoint_union_coo(
+    src, dst, [3, 1], [3, 1], eid)
+# s = [0, 1, 3], d = [1, 0, 3], e = [0, 1, 2], rows/cols = 4/4
+# Without `datas` no matrix carries data and the third result is None.
+```
+
+Implementation notes: one kernel launch per matrix with the offsets passed as
+scalar arguments (no device tiling buffer); each AIV owns an equal slice of the
+edge range and shifts UB tiles in place. The arch22 vector unit has no 64-bit
+add, so `int64` shifts as narrow to the low word, vector `Adds`, widen back.
+That requires the shifted ids/data to stay inside int32 range, which this
+interface already enforces by capping concatenated rows/cols/nnz at `INT32_MAX`
+and which any valid COO satisfies; `int32` needs a single vector `Adds`.
+
+Tests live in `test/disjoint_union_coo/arch22/`.
+
 ## 2.11 grid_cluster — Regular Grid Clustering
 
 Map `[N,D]` point coordinates to linear regular-grid IDs. Points in the same cell receive the same ID. The interface is compatible with `torch_cluster.grid_cluster`.

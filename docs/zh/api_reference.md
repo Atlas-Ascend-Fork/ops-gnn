@@ -1085,6 +1085,61 @@ copied = sddmm_csr(ptr, idx, lhs, None, op="copy_lhs", lhs_target="v")
 
 测试位于 `test/sddmm_csr/arch22/`。
 
+### disjoint_union_coo — 多个 COO 合并（对齐 DGL `DisjointUnionCoo`）
+
+```python
+ops_gnn.disjoint_union_coo(
+    sources, dests, num_rows, num_cols, datas=None
+) -> Tuple[Tensor, Tensor, OptTensor, int, int]
+```
+
+按 DGL `DisjointUnionCoo` 的语义把多个 COO 矩阵按累积偏移拼成一个。第 `i` 个矩阵贡献：
+
+- `sources[i] + sum(num_rows[:i])` 作为行索引；
+- `dests[i] + sum(num_cols[:i])` 作为列索引；
+- `datas[i] + sum(nnz[:i])` 作为 data，其中 `nnz[j] = sources[j].numel()`。
+
+`datas[i]` 为 `None` 时该矩阵用全局边序号 `sum(nnz[:i]) + arange(nnz[i])` 填充，
+等价于 DGL 为无 data 的 COO 隐式构造的 `Range(0, nnz)`。当所有矩阵都没有 data 时，
+返回的 data 为 `None`。这就是 `dgl.batch` 在底层把一批图的边表合并成一张大图时
+走的路径。
+
+- `sources` / `dests`：长度相同的一维 `int32`/`int64` NPU 张量列表，二者 dtype 与
+  device 必须一致；非连续输入会自动连续化。
+- `num_rows` / `num_cols`：每个矩阵的行数/列数（用于累积偏移），非负。
+- `datas`：可选，长度与 `sources` 相同的列表，元素为该图的逐边 data 或 `None`；
+  提供的 data 必须是一维、与索引同 dtype、同 device、长度等于该图边数。省略或传
+  空序列表示所有矩阵都没有 data。
+- 返回 `(source, dest, data, total_rows, total_cols)`；`source`/`dest`/`data`
+  长度均为 `sum(nnz)`，`data` 在没有矩阵携带 data 时为 `None`。
+- 拼接后的行数/列数/边数均不得超过 `INT32_MAX`（kernel 用 32 位偏移寻址）。
+- 仅实现前向数据搬运，不支持 autograd；输入张量不会被改写。
+- 只搬运边表数据：输入的 `row_sorted`/`col_sorted` 等有序性信息不由本接口维护，
+  与 DGL 一样由调用方自行记录。
+- NPU 上异步执行于当前 stream，读取结果前先 `torch.npu.synchronize()`。
+- 仅 arch22（A2/A3）提供，与 DGL 的 Ascend 实现一致。
+
+```python
+import torch
+import ops_gnn
+
+src = [torch.tensor([0, 1], device="npu"), torch.tensor([0], device="npu")]
+dst = [torch.tensor([1, 0], device="npu"), torch.tensor([0], device="npu")]
+eid = [torch.tensor([0, 1], device="npu"), torch.tensor([0], device="npu")]
+s, d, e, total_rows, total_cols = ops_gnn.disjoint_union_coo(
+    src, dst, [3, 1], [3, 1], eid)
+# s = [0, 1, 3], d = [1, 0, 3], e = [0, 1, 2]，rows/cols = 4/4
+# 不传 datas 时所有矩阵都没有 data，第三个返回值为 None
+```
+
+实现说明：每个矩阵单独发射一次 kernel，偏移作为标量参数传入（无需 device 端
+tiling 缓冲）；kernel 按 AIV 均分边区间，UB 分块后原地加偏移再写回。arch22 的向量
+单元没有 64 位加法，`int64` 走"窄化到低 32 位 → `Adds` → 扩回 64 位"，因此要求
+平移后的 id/data 落在 int32 范围内——本接口已限制拼接后 rows/cols/nnz ≤ `INT32_MAX`，
+合法 COO 天然满足；`int32` 直接一次向量 `Adds`。
+
+测试位于 `test/disjoint_union_coo/arch22/`。
+
 ### 2.11 grid_cluster — 规则网格聚类
 
 将 `[N,D]` 点坐标映射为规则网格的线性 ID；落在同一网格单元的点得到相同 ID。接口兼容 `torch_cluster.grid_cluster`。

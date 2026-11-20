@@ -23,6 +23,7 @@
 #include "segment_logsumexp/op_host/segment_logsumexp.h"
 #ifdef OPSGNN_DAV_2201
 #include "common/spmm/host_proof_cache.h"
+#include "disjoint_union_coo/op_host/disjoint_union_coo.h"
 #include "sddmm_csr/op_host/sddmm_csr.h"
 #include "spmm_max/op_host/spmm_max.h"
 #include "spmm_min/op_host/spmm_min.h"
@@ -234,6 +235,11 @@ void BindArch22(py::module_& m)
     m.def("unified_spmm_csr", &opsgnn::UnifiedSpmmCsr, py::arg("indptr"), py::arg("indices"),
           py::arg("x"), py::arg("op") = "copy_lhs", py::arg("reduce") = "sum",
           py::arg("out") = py::none(), "Unified two-dimensional CSR SpMM on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
+    m.def("disjoint_union_coo", &opsgnn::DisjointUnionCoo, py::arg("sources"), py::arg("dests"),
+          py::arg("num_rows"), py::arg("num_cols"),
+          py::arg("datas") = std::vector<std::optional<torch::Tensor>>{},
+          "Concatenate COO matrices with cumulative row/column/nnz offsets on Ascend NPU",
+          py::call_guard<py::gil_scoped_release>());
 }
 #else
 void BindTorchSparseSpmm(py::module_& m)

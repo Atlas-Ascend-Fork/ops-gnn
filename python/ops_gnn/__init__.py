@@ -58,6 +58,7 @@ if _pybind.npu_arch == 'dav-2201':
     from .scatter_softmax import scatter_softmax
     from .scatter_log_softmax import scatter_log_softmax
     from .scatter_logsumexp import scatter_logsumexp
+    from .disjoint_union_coo import disjoint_union_coo
     from .sddmm_csr import sddmm_csr
     from .spmm import spmm
     __all__ = [
@@ -67,6 +68,7 @@ if _pybind.npu_arch == 'dav-2201':
         'spmm',
         'bspmm',
         'sddmm_csr',
+        'disjoint_union_coo',
         'segment_csr', 'segment_sum_csr', 'segment_add_csr',
         'segment_mean_csr', 'segment_min_csr', 'segment_max_csr',
         'segment_logsumexp',
