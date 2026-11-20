@@ -34,7 +34,7 @@ def nearest(x: Tensor, y: Tensor,
             batch_y: Optional[Tensor] = None) -> Tensor:
 ```
 
-Ascend 950（arch35）上为每个x点返回同batch最近y点的全局int64索引，输出形状[N]。x/y为同一NPU、相同float16或float32 dtype的[N,F]/[M,F]；一维输入按F=1处理。两种dtype提升到FP32计算，等距选最小全局y下标。
+Ascend A2/A3（arch22 / `dav-2201`）与 Ascend 950（arch35）上为每个x点返回同batch最近y点的全局int64索引，输出形状[N]。x/y为同一NPU、相同float16或float32 dtype的[N,F]/[M,F]；一维输入按F=1处理。两种dtype提升到FP32计算，等距选最小全局y下标。
 
 可选batch为同设备int64的一维非负非降序标签，长度分别为N/M；两侧非空标签集合须一致，省略的一侧视为batch 0。不合法batch抛ValueError。支持非连续输入；未传batch的空x返回空输出，非空x配空y报错。NaN/Inf坐标及F=0不支持。
 
@@ -47,11 +47,11 @@ y = torch.tensor([[1., 0., 0.], [10., 0., 0.]], device="npu")
 indices = ops_gnn.nearest(x, y)  # tensor([0, 1], device='npu:0')
 ```
 
-NPU使用独立Ascend C内核，通过torch.ops.torch_cluster.nearest分派；无CPU/scipy回退或梯度。N、M、F各不超过INT32_MAX，实际规模受内存限制。公共API校验包含同步，内核使用当前NPU stream；已安装torch_cluster时应先导入该包，由其提供schema。
+NPU使用按架构分派的独立Ascend C内核（`arch35` 与 `arch22` / `dav-2201` 分别编译对应内核并通过 `torch.ops.torch_cluster.nearest` 分派，均在 Python 入口 `ops_gnn.nearest` 导出）；无CPU/scipy回退或梯度。N、M、F各不超过INT32_MAX，实际规模受内存限制。公共API校验包含同步，内核使用当前NPU stream；已安装torch_cluster时应先导入该包，由其提供schema。
 
 精度参考固定为SciPy 1.18.0 / OpenBLAS 0.3.31.dev SkylakeX（该 SciPy 版本要求 Python ≥3.12）。不同CPU、BLAS或矩阵切分可能改变极近候选的整数标杆；极大FP32坐标导致中间距离溢出的精度不作保证。
 
-测试位于`test/nearest/arch35/`，分为两项，共用参考辅助文件`golden.py`：
+测试位于`test/nearest/arch35/`与`test/nearest/arch22/`（arch22 单元测试为 `test/nearest/arch22/test_nearest.py`），arch35 分为两项并共用参考辅助文件`golden.py`：
 
 - 功能测试：`test_nearest.py`，共338项，包含任务书附件的42项用例，以及功能、FP16、验收日志重建、108项数值压力和4项参考语义回归等296项补充用例。沿用本PR现有的参考计算和断言；最初9项失败场景由任务形状及跨1024平局用例覆盖。
 - 性能测试：`benchmark_nearest.py`，18组形状×2 dtype，每点预热20次、计时100次，覆盖完整Python接口，要求标杆耗时/NPU耗时不低于0.45，并严格比较全部输出下标。

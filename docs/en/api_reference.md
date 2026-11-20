@@ -34,7 +34,7 @@ def nearest(x: Tensor, y: Tensor,
             batch_y: Optional[Tensor] = None) -> Tensor:
 ```
 
-On Ascend 950 (arch35), return the global int64 index of the nearest y point in the same batch for each x point. The output has shape [N]. Inputs share an NPU and float16/float32 dtype, with shapes [N,F]/[M,F]; 1-D inputs use F=1. Both dtypes use FP32 distance arithmetic and choose the smallest global y index on ties.
+On Ascend A2/A3 (arch22 / `dav-2201`) and Ascend 950 (arch35), return the global int64 index of the nearest y point in the same batch for each x point. The output has shape [N]. Inputs share an NPU and float16/float32 dtype, with shapes [N,F]/[M,F]; 1-D inputs use F=1. Both dtypes use FP32 distance arithmetic and choose the smallest global y index on ties.
 
 Optional batches are nonnegative sorted 1-D int64 labels of length N/M on the input device, with matching nonempty label sets; an omitted batch means zero. Invalid batches raise ValueError. Noncontiguous inputs are supported. Empty x without batches returns an empty output; nonempty x with empty y is rejected. NaN/Inf coordinates and F=0 are rejected.
 
@@ -47,11 +47,11 @@ y = torch.tensor([[1., 0., 0.], [10., 0., 0.]], device="npu")
 indices = ops_gnn.nearest(x, y)  # tensor([0, 1], device='npu:0')
 ```
 
-Computation uses an Ascend C kernel registered at torch.ops.torch_cluster.nearest. No CPU/scipy fallback or gradients are provided. N, M and F must not exceed INT32_MAX and are limited by available memory. Public API validation includes synchronization; the kernel uses the current NPU stream. If torch_cluster is installed, import it first to provide the schema.
+Computation uses architecture-specific Ascend C kernels (`arch35` and `arch22` / `dav-2201`) registered at `torch.ops.torch_cluster.nearest` and exported through `ops_gnn.nearest` on both targets. No CPU/scipy fallback or gradients are provided. N, M and F must not exceed INT32_MAX and are limited by available memory. Public API validation includes synchronization; the kernel uses the current NPU stream. If torch_cluster is installed, import it first to provide the schema.
 
 The fixed precision reference is SciPy 1.18.0 / OpenBLAS 0.3.31.dev SkylakeX (this SciPy release requires Python ≥3.12). A different CPU, BLAS or matrix partition may change integer reference indices for nearly tied candidates. Accuracy is not guaranteed for extreme FP32 coordinates that overflow intermediate distances.
 
-Tests in `test/nearest/arch35/` have two entry points and share the reference helper `golden.py`:
+Tests live in `test/nearest/arch35/` and `test/nearest/arch22/` (`test/nearest/arch22/test_nearest.py` for arch22). The arch35 suite has two entry points and shares the reference helper `golden.py`:
 
 - Functional tests: `test_nearest.py` contains 338 cases: the 42 task-attachment cases and 296 supplemental cases covering functionality, FP16, reconstructed acceptance logs, 108 numerical stress cases and four reference-semantics cases. The reference calculation and assertions remain unchanged. Task shapes and cross-1024 ties cover the original nine failure scenarios.
 - Performance tests: `benchmark_nearest.py` covers 18 shapes and two dtypes, with 20 warmups and 100 timed calls per point. It measures the full Python API, requires reference/NPU latency of at least 0.45 and compares all output indices exactly.

@@ -62,6 +62,7 @@ if _pybind.npu_arch == 'dav-2201':
     from .disjoint_union_coo import disjoint_union_coo
     from .sddmm_csr import sddmm_csr
     from .spmm import spmm
+    from .nearest import nearest
     __all__ = [
         'gather_csr',
         'ind2ptr',
@@ -70,6 +71,7 @@ if _pybind.npu_arch == 'dav-2201':
         'bspmm',
         'sddmm_csr',
         'disjoint_union_coo',
+        'nearest',
         'segment_csr', 'segment_sum_csr', 'segment_add_csr',
         'segment_mean_csr', 'segment_min_csr', 'segment_max_csr',
         'segment_reduce',
