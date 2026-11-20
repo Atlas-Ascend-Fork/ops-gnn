@@ -319,3 +319,13 @@ def test_rejects_non_square():
     a = torch.randn(4, 3).npu()
     with pytest.raises(RuntimeError, match="square"):
         ops_gnn.matrix_exp(a)
+
+
+@pytest.mark.parametrize("device", ["cpu", "meta"])
+@pytest.mark.parametrize("shape", [(2, 2), (0, 2, 2)], ids=["matrix", "zero_batch"])
+@pytest.mark.parametrize("with_out", [False, True])
+def test_rejects_non_npu_inputs(npu_api, device, shape, with_out):
+    a = torch.empty(shape, device=device)
+    kwargs = {"out": torch.empty_like(a)} if with_out else {}
+    with pytest.raises(RuntimeError, match="A must be an NPU tensor"):
+        npu_api.matrix_exp(a, **kwargs)

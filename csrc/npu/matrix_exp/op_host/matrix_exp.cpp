@@ -51,7 +51,7 @@ torch::Tensor GetEyeConst(const torch::TensorOptions& opts, uint32_t nPad16, int
 
 void ValidateInputs(const torch::Tensor& A)
 {
-    TORCH_CHECK(!A.is_cpu(), "matrix_exp: A must be an NPU tensor");
+    TORCH_CHECK(A.device().type() == c10::DeviceType::PrivateUse1, "matrix_exp: A must be an NPU tensor");
     TORCH_CHECK(A.dim() >= 2, "matrix_exp: A must have at least 2 dims, got ", A.dim());
     TORCH_CHECK(A.size(A.dim() - 2) == A.size(A.dim() - 1),
                 "matrix_exp: A must be a square matrix, got (",
