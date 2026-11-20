@@ -604,7 +604,9 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/output" CACHE PATH "Install path prefix" FORCE)
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/output" CACHE PATH "Install path prefix" FORCE)
+endif()
 set(OPSGNN_CMAKECONFIG_INSTALL_DIR "share/cmake/OpsGNN" CACHE STRING "install path for OpsGNNConfig.cmake")
 
 configure_package_config_file(cmake/OpsGNNConfig.cmake.in

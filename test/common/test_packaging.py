@@ -15,6 +15,7 @@ import io
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -333,6 +334,53 @@ class TestCmakeCommandEscaping(unittest.TestCase):
                     f"add_custom_command block #{index} passes ARGS without VERBATIM; "
                     "shell metacharacters in paths would reach the compiler unescaped",
                 )
+
+
+@unittest.skipUnless(shutil.which("cmake"), "install prefix tests require CMake")
+class TestCmakeInstallPrefix(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="opsgnn-prefix-")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.source = self.directory / "source"
+        self.source.mkdir()
+        self.build = self.directory / "build"
+        self.cmake = str(Path(shutil.which("cmake")).resolve())
+        policy = (PROJECT_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        policy = policy.split("include(CMakePackageConfigHelpers)", 1)[1]
+        policy = policy.split("set(OPSGNN_CMAKECONFIG_INSTALL_DIR", 1)[0]
+        (self.source / "marker.txt").write_text("installed", encoding="utf-8")
+        (self.source / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.16)\nproject(PrefixTest LANGUAGES NONE)\n"
+            + policy + '\ninstall(FILES marker.txt DESTINATION share)\n', encoding="utf-8")
+
+    def configure_and_install(self, prefix=None):
+        command = [self.cmake, "-S", str(self.source), "-B", str(self.build)]
+        if prefix is not None:
+            command.append(f"-DCMAKE_INSTALL_PREFIX={prefix}")
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        subprocess.run([self.cmake, "--install", str(self.build)],
+                       check=True, capture_output=True, text=True)
+
+    def test_explicit_prefix(self):
+        prefix = self.directory / "custom install"
+        self.configure_and_install(prefix)
+        self.assertEqual((prefix / "share" / "marker.txt").read_text(), "installed")
+        self.assertFalse((self.source / "output").exists())
+
+    def test_reconfigure_preserves_and_updates_prefix(self):
+        original = self.directory / "original"
+        self.configure_and_install(original)
+        (original / "share" / "marker.txt").unlink()
+        self.configure_and_install()
+        self.assertTrue((original / "share" / "marker.txt").is_file())
+        updated = self.directory / "updated"
+        self.configure_and_install(updated)
+        self.assertTrue((updated / "share" / "marker.txt").is_file())
+
+    def test_default_prefix(self):
+        self.configure_and_install()
+        self.assertTrue((self.source / "output" / "share" / "marker.txt").is_file())
 
 
 if __name__ == "__main__":
