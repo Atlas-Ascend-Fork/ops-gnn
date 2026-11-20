@@ -143,6 +143,22 @@ def test_out_variant():
     _assert_close(ret, a, torch.float32)
 
 
+def test_out_variant_rejects_cpu_out():
+    a = _rand_matrix(2, 8, 0.2, torch.float32, seed=149)
+    out = torch.empty_like(a)  # CPU
+    with pytest.raises(RuntimeError, match="out device must match A"):
+        ops_gnn.matrix_exp(a.npu(), out=out)
+
+
+@pytest.mark.skipif(torch.npu.device_count() < 2, reason="requires a second NPU")
+def test_out_variant_rejects_cross_device_out():
+    a = _rand_matrix(2, 8, 0.2, torch.float32, seed=150)
+    other = (torch.npu.current_device() + 1) % torch.npu.device_count()
+    out = torch.empty_like(a).to(f"npu:{other}")
+    with pytest.raises(RuntimeError, match="out device must match A"):
+        ops_gnn.matrix_exp(a.npu(), out=out)
+
+
 def test_non_contiguous_input():
     """非连续输入：转置视图（对称性不成立时仍应拷贝后计算正确）。"""
     g = torch.Generator().manual_seed(17)

@@ -204,7 +204,9 @@ torch::Tensor matrix_exp(torch::Tensor A, torch::Tensor out)
         TORCH_CHECK(out.sizes() == A.sizes(),
                     "matrix_exp: out shape must match A, got ", out.sizes(),
                     " vs ", A.sizes());
-        TORCH_CHECK(out.device() == A.device(), "matrix_exp: out device must match A");
+        TORCH_CHECK(out.device() == A.device(),
+                    "matrix_exp: out device must match A, got ", out.device(),
+                    " vs ", A.device());
     }
 
     // 空 batch：与 torch 行为对齐，直接返回空张量（out 校验已在上方统一完成）
