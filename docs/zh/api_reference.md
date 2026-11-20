@@ -283,6 +283,11 @@ values, indices = ops_gnn.segment_max_csr(src, indptr)
 在提供旧入口的 Ascend 950 构建中，`segment_max_csr` 遇到 `int32` 指针时仍走原有的仅返回值路径；历史
 `optional_out=` 关键字可通过 `segment_max_csr_legacy` 使用。
 
+`segment_reduce(src, offsets, out=None, reduce="sum")` 是对 `segment_csr` 的薄封装，用于对齐 DGL
+的分段归约约定 `out[i] = reduce(src[offsets[i]:offsets[i+1]])`。它只把 `int32` 的 `offsets` 提升为
+`int64` 后转调 `segment_csr`，其余语义（段边界、空段结果、支持的类型与形状）与 `segment_csr` 完全一致；
+`min/max` 仅返回值，不返回索引。
+
 ---
 
 ### segment_logsumexp — CSR 分段 logsumexp

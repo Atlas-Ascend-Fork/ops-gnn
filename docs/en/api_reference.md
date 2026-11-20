@@ -293,6 +293,13 @@ In Ascend 950 builds exposing the legacy entry, an `int32` pointer selects
 the existing value-only `segment_max_csr` path. The historical `optional_out=` keyword remains available through
 `segment_max_csr_legacy`.
 
+`segment_reduce(src, offsets, out=None, reduce="sum")` is a thin wrapper over
+`segment_csr` that matches DGL's segment reduction contract,
+`out[i] = reduce(src[offsets[i]:offsets[i+1]])`. It only promotes `int32`
+`offsets` to `int64` before delegating; segment boundaries, empty-segment
+results, and the supported dtypes and shapes are exactly those of
+`segment_csr`. `min`/`max` return values only, without indices.
+
 ---
 
 ### segment_logsumexp — CSR Segment Log-Sum-Exp

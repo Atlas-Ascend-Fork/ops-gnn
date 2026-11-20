@@ -49,6 +49,7 @@ if _pybind.npu_arch == 'dav-2201':
         segment_csr, segment_sum_csr, segment_add_csr,
         segment_mean_csr, segment_min_csr, segment_max_csr,
     )
+    from .segment_reduce import segment_reduce
     from .bspmm import bspmm
     from .segment_coo import (
         segment_coo, segment_sum_coo, segment_add_coo,
@@ -71,6 +72,7 @@ if _pybind.npu_arch == 'dav-2201':
         'disjoint_union_coo',
         'segment_csr', 'segment_sum_csr', 'segment_add_csr',
         'segment_mean_csr', 'segment_min_csr', 'segment_max_csr',
+        'segment_reduce',
         'segment_logsumexp',
         'scatter_softmax',
         'scatter_log_softmax',
@@ -85,6 +87,7 @@ else:
         segment_csr, segment_sum_csr, segment_add_csr,
         segment_mean_csr, segment_min_csr, segment_max_csr,
     )
+    from .segment_reduce import segment_reduce
     from .segment_coo import (
         segment_coo, segment_sum_coo, segment_add_coo,
         segment_mean_coo, segment_min_coo, segment_max_coo,
@@ -145,6 +148,7 @@ else:
         'segment_add_csr',
         'segment_mean_csr',
         'segment_min_csr',
+        'segment_reduce',
         'segment_logsumexp',
         'scatter_softmax',
         'scatter_log_softmax',
