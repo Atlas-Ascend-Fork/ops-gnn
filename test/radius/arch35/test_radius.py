@@ -227,6 +227,34 @@ def test_basic_radius(device):
     _assert_edges(edge, x, x, _QuerySpec(1.5, 4))
 
 
+@pytest.mark.parametrize("dtype", SUPPORTED_DTYPES)
+@pytest.mark.parametrize("max_num_neighbors", [1, 4])
+def test_radius_non_default_stream(device, dtype, max_num_neighbors):
+    """Create, produce and consume edges on a non-default NPU stream."""
+    if max_num_neighbors == 1:
+        expected = torch.tensor(
+            [[0, 1, 2, 3], [0, 0, 2, 2]], dtype=torch.long
+        )
+    else:
+        expected = torch.tensor(
+            [[0, 0, 1, 1, 2, 2, 3, 3], [0, 1, 0, 1, 2, 3, 2, 3]],
+            dtype=torch.long,
+        )
+    stream = torch.npu.Stream(device=device)
+    with torch.npu.stream(stream):
+        x = _small_tensor(device, dtype=dtype)
+        x.add_(1.0)
+        edge = radius(x, x.clone(), 1.5, max_num_neighbors=max_num_neighbors)
+        # Keep the consumer asynchronous and sensitive to every index and its order.
+        consumed = edge[0] * x.size(0) + edge[1]
+
+    stream.synchronize()
+    assert edge.device == x.device
+    assert edge.dtype == torch.long
+    assert torch.equal(edge.cpu(), expected)
+    assert torch.equal(consumed.cpu(), expected[0] * x.size(0) + expected[1])
+
+
 def test_batch_radius(device):
     x = _small_tensor(device)
     y = torch.tensor([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], device=device)

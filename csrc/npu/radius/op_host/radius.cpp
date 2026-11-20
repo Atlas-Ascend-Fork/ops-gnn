@@ -682,8 +682,8 @@ void LaunchDispatch(const torch::Tensor& x, const torch::Tensor& y,
                                  static_cast<T*>(y.data_ptr()), args, b.stream);
 }
 
-// Compact the dense m*K buffers into [2, E] on the device, then D2H-copy only
-// the compressed result. row0[q*K+p] is always q, so it is rebuilt from counts
+// Compact the dense m*K buffers into [2, E] on the device. row0[q*K+p] is
+// always q, so it is rebuilt from counts
 // with repeat_interleave; out_row1 is compressed with masked_select. Both ops
 // run on the NPU.
 torch::Tensor CompactResult(const torch::Tensor& x, const LaunchBundle& b,
@@ -709,7 +709,7 @@ torch::Tensor CompactResult(const torch::Tensor& x, const LaunchBundle& b,
     // The grid-path kernel k-way merges neighbor cells in ascending x-index
     // order, so compact0/compact1 are already in the exact order the CPU
     // reference produces (matches official test_radius.py torch.equal).
-    return torch::stack({compact0, compact1}, 0).cpu().to(x.device());
+    return torch::stack({compact0, compact1}, 0);
 }
 
 }  // namespace
