@@ -21,6 +21,24 @@ _GOLDEN = runpy.run_path(Path(__file__).with_name("golden.py"))
 segment_max_csr_cpu = _GOLDEN["segment_max_csr_cpu"]
 
 
+@pytest.mark.parametrize("rows", (1, 129, 5000, 65536, 65537))
+@pytest.mark.parametrize("dtype", (torch.float16, torch.float32, torch.int16, torch.int32),
+                         ids=("float16", "float32", "int16", "int32"))
+@pytest.mark.parametrize("with_initial", (False, True))
+def test_legacy_multi_core_row_coverage(npu_api, rows, dtype, with_initial):
+    generator = torch.Generator().manual_seed(rows + int(with_initial))
+    src = torch.randint(1, 1024, (rows, 4, 16), generator=generator).to(dtype)
+    indptr = torch.tensor([0, 2, 4], dtype=torch.int32).repeat(rows, 1)
+    expected = src.reshape(rows, 2, 2, 16).amax(dim=2)
+    initial = None
+    if with_initial:
+        initial = torch.randint(1, 1024, expected.shape, generator=generator).to(dtype)
+        expected = torch.maximum(expected, initial)
+    actual = npu_api.segment_max_csr(
+        src.npu(), indptr.npu(), out=None if initial is None else initial.npu())
+    torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32, torch.int16, torch.int32])
 @pytest.mark.parametrize("features", [7, 64, 2049])
 def test_legacy_first_row_vector_copy_preserves_bits(dtype, features):

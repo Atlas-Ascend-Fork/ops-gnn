@@ -113,7 +113,8 @@ SegmentMaxCsrTilingData ComputeTiling(
     aivNum = aivNum >= 1 ? aivNum : 1;
 
     uint32_t rowsPerAiv = GetCeilInt(E_1, aivNum);
-    uint32_t rowsLastAiv = (E_1 % aivNum == 0) ? rowsPerAiv : (E_1 % aivNum);
+    const uint64_t rowsBeforeLast = static_cast<uint64_t>(rowsPerAiv) * (aivNum - 1);
+    uint32_t rowsLastAiv = rowsBeforeLast < E_1 ? static_cast<uint32_t>(E_1 - rowsBeforeLast) : 0;
 
     uint32_t coreDataNum = 2048;
 
