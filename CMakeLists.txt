@@ -465,16 +465,16 @@ if(NPU_ASC_FILES)
         )
 
         add_custom_command(
-            OUTPUT ${OBJ_FILE}
-            COMMAND ${CMAKE_ASC_COMPILER}
+            OUTPUT "${OBJ_FILE}"
+            COMMAND "${CMAKE_ASC_COMPILER}"
             ARGS ${ASC_LANG_FLAG}
-                -c ${ASC_FILE}
+                -c "${ASC_FILE}"
                 --npu-arch=${NPU_ARCH}
                 -O2
                 -fPIC
                 ${ASC_INCLUDE_FLAGS}
-                -o ${OBJ_FILE}
-            MAIN_DEPENDENCY ${ASC_FILE}
+                -o "${OBJ_FILE}"
+            MAIN_DEPENDENCY "${ASC_FILE}"
             DEPENDS ${NPU_KERNEL_HEADERS}
             COMMENT "Compiling ASC kernel: ${FILE_NAME}${FILE_EXT}"
             VERBATIM
@@ -493,10 +493,10 @@ if(NPU_ASC_FILES)
     endforeach()
 
     add_custom_command(
-        OUTPUT ${NPU_KERNEL_LIB}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${OUTPUT_KERNEL_DIR}
-        COMMAND ${CMAKE_ASC_COMPILER}
-        ARGS -shared -fPIC -o ${NPU_KERNEL_LIB}
+        OUTPUT "${NPU_KERNEL_LIB}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${OUTPUT_KERNEL_DIR}"
+        COMMAND "${CMAKE_ASC_COMPILER}"
+        ARGS -shared -fPIC -o "${NPU_KERNEL_LIB}"
             -Wl,-soname,lib${NPU_KERNEL_LIB_NAME}.so
             ${NPU_KERNEL_OBJECTS}
             ${ASC_LINK_FLAGS}
