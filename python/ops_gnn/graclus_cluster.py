@@ -200,6 +200,12 @@ def _is_canonical_complete_graph(rowptr: Tensor, col: Tensor, num_nodes: int) ->
         return col.numel() == 0
     if col.numel() != num_nodes * (num_nodes - 1):
         return False
+    # col alone can match the canonical complete-graph layout when duplicate
+    # edges compensate for missing ones; rowptr must also place exactly
+    # num_nodes - 1 edges in every row.
+    expected_rowptr = torch.arange(num_nodes + 1, dtype=torch.long, device=rowptr.device) * (num_nodes - 1)
+    if not torch.equal(rowptr, expected_rowptr):
+        return False
     expected = torch.arange(num_nodes, dtype=torch.long, device=col.device).repeat(num_nodes)
     nodes = torch.arange(num_nodes, dtype=torch.long, device=col.device).repeat_interleave(num_nodes)
     expected = expected[expected != nodes]

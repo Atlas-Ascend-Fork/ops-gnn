@@ -173,6 +173,33 @@ def test_duplicate_edges_and_tie_break_keep_first_sorted_edge():
     _run_reference_and_npu(row, col, weight, num_nodes=4, seed=67)
 
 
+def test_duplicate_edges_matching_complete_col_not_treated_as_complete():
+    """Duplicate edges can mimic the canonical col layout while the graph is not complete.
+
+    rowptr [0, 1, 5, 6] does not place exactly num_nodes - 1 edges per row, so the
+    complete-graph fast path (which ignores real adjacency) must not be selected.
+    """
+    row = torch.tensor([0, 1, 1, 1, 1, 2], dtype=torch.long)
+    col = torch.tensor([1, 2, 0, 2, 0, 1], dtype=torch.long)
+    weight = torch.ones(6, dtype=torch.float32)
+    _run_reference_and_npu(row, col, weight, num_nodes=3, seed=7)
+
+    from ops_gnn.graclus_cluster import _weight_mode, _preprocess
+    rowptr, csr_col, csr_weight = _preprocess(row, col, weight, 3)
+    assert _weight_mode(rowptr, csr_col, csr_weight, 3) == 2
+
+
+def test_canonical_complete_graph_still_uses_fast_path():
+    row = torch.tensor([0, 0, 1, 1, 2, 2], dtype=torch.long)
+    col = torch.tensor([1, 2, 0, 2, 0, 1], dtype=torch.long)
+    weight = torch.ones(6, dtype=torch.float32)
+    _run_reference_and_npu(row, col, weight, num_nodes=3, seed=7)
+
+    from ops_gnn.graclus_cluster import _weight_mode, _preprocess
+    rowptr, csr_col, csr_weight = _preprocess(row, col, weight, 3)
+    assert _weight_mode(rowptr, csr_col, csr_weight, 3) == 3
+
+
 def test_negative_weighted_edges_follow_torch_cluster_zero_threshold():
     row = torch.tensor([0, 0, 1, 1, 2, 2], dtype=torch.long)
     col = torch.tensor([1, 2, 0, 2, 0, 1], dtype=torch.long)
