@@ -75,6 +75,23 @@ def test_mask_metadata_errors(case, device):
         utils.non_diag_mask(row, col, rows, columns, 0)
 
 
+@pytest.mark.parametrize(
+    "row_values,col_values,rows,columns,message",
+    [
+        ([-1, 1], [1, 0], 2, 2, "row contains a negative value"),
+        ([0, 2], [1, 0], 2, 2, "out of bounds for row size 2"),
+        ([0, 1], [-1, 0], 2, 2, "col contains a negative value"),
+        ([0, 1], [0, 2], 2, 2, "out of bounds for col size 2"),
+        ([0, 1], [1, 0], 0, 2, "out of bounds for row size 0"),
+    ],
+)
+def test_mask_index_range_errors(row_values, col_values, rows, columns, message, device):
+    row = torch.tensor(row_values, dtype=torch.int64, device=device)
+    col = torch.tensor(col_values, dtype=torch.int64, device=device)
+    with pytest.raises(RuntimeError, match=message):
+        utils.non_diag_mask(row, col, rows, columns, 0)
+
+
 @pytest.mark.parametrize("length", [0, 1, 9])
 @pytest.mark.parametrize("starts", [[], [0], [0, 1, 2, 3]])
 def test_walk_exact_and_dead_ends(length, starts, device):

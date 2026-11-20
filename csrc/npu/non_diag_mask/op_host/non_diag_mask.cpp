@@ -51,6 +51,19 @@ torch::Tensor non_diag_mask_npu(
     TORCH_CHECK(edgeCount <= std::numeric_limits<int64_t>::max() - numDiag,
                 "non_diag_mask output length exceeds int64 range");
 
+    if (edgeCount > 0) {
+        const int64_t rowMin = row.min().item<int64_t>();
+        const int64_t rowMax = row.max().item<int64_t>();
+        TORCH_CHECK(rowMin >= 0, "row contains a negative value (", rowMin, ")");
+        TORCH_CHECK(rowMax < M, "index value ", rowMax,
+                    " is out of bounds for row size ", M, " at dimension 0");
+        const int64_t colMin = col.min().item<int64_t>();
+        const int64_t colMax = col.max().item<int64_t>();
+        TORCH_CHECK(colMin >= 0, "col contains a negative value (", colMin, ")");
+        TORCH_CHECK(colMax < N, "index value ", colMax,
+                    " is out of bounds for col size ", N, " at dimension 1");
+    }
+
     torch::Tensor mask = torch::empty(
         {edgeCount + numDiag}, row.options().dtype(torch::kBool));
 
