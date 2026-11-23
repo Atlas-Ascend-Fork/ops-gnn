@@ -359,7 +359,7 @@ fp16/bf16 的单组长度不受 65504 上限限制；反向按分组 softmax 的
 > 源 dtype 的容差；内核不使用 `argsort`/`bincount`，`index` 无序时也有稳定的
 > 复杂度。`exp` 与输出仍按源 dtype 舍入，独立 golden 使用 float64 参考。
 >
-> 调度：每个核负责一段连续的行，按批（最多 8 行，按 UB 预算自适应）装载、计算、
+> 调度：每个核负责一段连续的行，按批（最多 64 行，按 UB 预算自适应）装载、计算、
 > 写回，三个流水阶段每批只同步一次；当 `batch × 分组数 × 对齐后的尾部元素数`
 > 不超过 16 KB 时，归约在核内 UB 累加，末尾每核只向显存回写一次，避免多核同时
 > 原子更新同一行。
@@ -424,7 +424,7 @@ softmax 概率，在归约之后作为权重相乘，因此比 `scatter_softmax`
 > 归约由 MTE3 原子单元完成，整个归约工作区不超过 16 KB 时改为核内累加、末尾
 > 一次原子回写；`index` 无序时复杂度仍然稳定。所有归约在 float32 中完成，
 > fp16/bf16 的单组长度不受 65504 上限限制；输出按源 dtype 舍入，独立 golden
-> 使用 float64 参考。调度同样按核划分连续的行块，每批最多 8 行。
+> 使用 float64 参考。调度同样按核划分连续的行块，每批最多 64 行。
 
 ```python
 import torch
@@ -502,6 +502,77 @@ result = ops_gnn.scatter_logsumexp(src, index, dim=0, dim_size=2)
 
 > 测试位于 `test/scatter_logsumexp/arch22/` 与 `test/scatter_logsumexp/arch35/`，
 > 性能脚本为各自目录下的 `benchmark_scatter_logsumexp.py`。
+
+---
+
+### scatter_std — 分组标准差
+
+在 Ascend A2/A3（arch22）与 Ascend 950（arch35）上按 `index` 分组计算标准差，
+参数与 grouped softmax 系列一致（`dim` 默认 0，`index` 限定为一维）：
+
+```python
+scatter_std(src, index, dim=0, dim_size=None, unbiased=True)  # Tensor
+```
+
+对每个分组 `g`，沿 `dim` 约简：
+
+```text
+out[g] = sqrt(sum_j (src[j] - mean[g])**2 / (n - 1))   # unbiased=True
+out[g] = sqrt(sum_j (src[j] - mean[g])**2 / n)         # unbiased=False
+```
+
+其中 `j` 遍历分组 `g` 的 `n` 个元素，`mean[g]` 是该组均值。与 softmax 系列不同，
+返回值是约简结果：每个 `(batch, group)` 对应一行，输出形状把 `src.size(dim)`
+换成 `dim_size`。
+
+| 参数 | 约束 |
+| --- | --- |
+| `src` | NPU 张量；支持 float16、float32、bfloat16 |
+| `index` | 同设备 1 维 int32/int64 张量；长度必须等于 `src.size(dim)`，取值非负且小于 `dim_size` |
+| `dim` | 沿其约简的维度，支持负维度，默认 0 |
+| `dim_size` | 分组数；省略时取 `index.max() + 1`，可大于该值以保留空分组 |
+| `unbiased` | 为真时按 `n - 1` 归一（样本标准差），为假时按 `n`（总体标准差），默认真 |
+
+实现复用 `scatter_softmax` 的设备内核（`csrc/npu/scatter_softmax/op_kernel/common`），
+以编译期标准差模式打开同一套流水：前向两遍全量加一遍收尾——第 1 遍逐组累加
+分组和并统计成员数，第 2 遍逐组累加中心化平方偏差 `(src - sum / n)^2`，第 3 遍
+只写 `batch × 分组数` 行，算出均值（写回分组和的工作区供反向复用）、方差与标准差。
+反向一遍逐元素完成：
+
+```text
+grad_src = grad_out[group] * (src - mean[group]) / ((n - correction) * out[group])
+```
+
+方差按“先求均值、再求平方偏差”的两遍中心化方式累加，而不是展开成
+`sum(x^2) - n * mean^2`：后者在 `1000 ± 0.01` 这类数据上会让两个接近一百万的
+float32 相减去还原 `1e-4` 量级的方差，有效位全部抵消。
+
+边界取值与 `torch.std` 一致：空分组输出 `NaN`；`unbiased=True` 时单元素分组输出
+`NaN`，`unbiased=False` 时输出 `0`；分组内含 `±inf` 或 `NaN` 时输出 `NaN`；组内元素
+完全相同时标准差为 `0`，其梯度也为 `0`（`torch.std` 在反向先把方差梯度置 0）。
+
+> 精度与开销：工作区布局、fp32 归约方式与 `scatter_softmax` 完全相同——逐组
+> 归约由 MTE3 原子单元完成，整个归约工作区不超过 16 KB 时改为核内累加、末尾
+> 一次原子回写；成员计数为每组一个 fp32 计数器，稠密计数区不超过 64 KB
+> （`dim_size <= 16384`）时在核内累计、每组一次原子回写，超出时退化为每行一次
+> 32 字节原子。所有归约在 float32 中完成，fp16/bf16 的
+> 单组长度不受 65504 上限限制；输出按源 dtype 舍入，独立 golden 使用 float64
+> 参考。反向不做归约。
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+src = torch.tensor([[1., 2.], [3., 4.], [5., 6.]], device="npu")
+index = torch.tensor([0, 1, 1], dtype=torch.int64, device="npu")
+result = ops_gnn.scatter_std(src, index, dim=0, dim_size=2)
+# 分组 0: [[1., 2.]]                 -> [[nan, nan]]（单元素分组）
+# 分组 1: [[3., 4.], [5., 6.]]       -> [[1.4142, 1.4142]]
+```
+
+> 测试位于 `test/scatter_std/arch22/` 与 `test/scatter_std/arch35/`，性能脚本为
+> 各自目录下的 `benchmark_scatter_std.py`。
 
 ---
 

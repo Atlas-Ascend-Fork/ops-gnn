@@ -8,9 +8,13 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  *
  * Shared host-side argument validation and tiling of the grouped-softmax
- * family (scatter_softmax and scatter_log_softmax). Both operators reduce along
- * `dim` over the groups defined by `index` and share the same tiling and the
- * same fp32 reduction workspace, so they differ only in the device arithmetic.
+ * family (scatter_softmax, scatter_log_softmax) and of the grouped reductions
+ * built on the same device pipeline (scatter_logsumexp, scatter_std).
+ *
+ * The operators reduce along `dim` over the groups defined by `index` and share
+ * the same tiling and the same fp32 reduction workspace, so they differ only in
+ * the device arithmetic and in whether the result keeps the `src` shape or one
+ * row per (batch, group) pair.
  *
  * The header lives under scatter_softmax/common rather than csrc/npu/common
  * because it is specific to this operator family, not a repository-wide helper.
@@ -21,6 +25,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <vector>
 #include <torch/extension.h>
 
 #include "acl/acl.h"
@@ -41,6 +46,16 @@ inline uint64_t Product(const at::IntArrayRef& sizes, int64_t begin, int64_t end
         result *= static_cast<uint64_t>(sizes[axis]);
     }
     return result;
+}
+
+// `src` shape with `dim` replaced by `dimSize`: the shape of every grouped
+// reduction that writes one row per (batch, group) pair.
+inline std::vector<int64_t> ReducedSizes(const torch::Tensor& src, int64_t dim,
+                                         int64_t dimSize)
+{
+    std::vector<int64_t> sizes(src.sizes().begin(), src.sizes().end());
+    sizes[dim] = dimSize;
+    return sizes;
 }
 
 inline ScatterSoftmaxDType ResolveDType(at::ScalarType dtype, const char* op)
@@ -86,8 +101,57 @@ inline void ValidateInputs(const char* op, const torch::Tensor& src,
     }
 }
 
+// Cores a grid of `rows` rows is split over. A core owns a contiguous chunk of
+// rows, so the chunk is at least one row even for an empty shape.
+inline uint32_t ResolveBlockNum(uint64_t rows)
+{
+    const uint64_t requested = std::max<uint64_t>(rows, 1);
+    return ops_gnn::sparse::ResolveAivCoreNum(static_cast<uint32_t>(
+        std::min<uint64_t>(requested, std::numeric_limits<uint32_t>::max())));
+}
+
+// Rows a core buffers at a time, and whether the reduction workspace stays in
+// UB for the duration of a pass.
+//
+// When the whole reduction workspace fits the accumulator budget it stays in
+// UB: the reduction passes accumulate in place and flush once per core, and the
+// passes that read it read it once. The exp pass holds two copies at once - the
+// cached maximum workspace and the sum it accumulates into - so that is what the
+// row budget reserves. The log-domain normalization holds the same two copies
+// (maximum and sum), so one reservation serves both operators. The standard
+// deviation counts the group members in a workspace of its own, which the count
+// pass reserves on top of that while it stays inside the count budget (see
+// CountsFitUb); a larger count workspace costs no row budget at all.
+inline uint32_t ResolveRowBatch(ScatterSoftmaxTilingData& tiling)
+{
+    const uint64_t accumBytes = tiling.workspaceElems * sizeof(float);
+    tiling.localAccum =
+        (tiling.workspaceElems != 0 && accumBytes <= SCATTER_SOFTMAX_ACC_BUDGET_BYTES)
+            ? 1U : 0U;
+    // The count workspace is dense, so a large group count keeps it far below the
+    // row budget: only a workspace that fits the count budget competes with it.
+    const uint64_t reserved =
+        (tiling.localAccum != 0) ? 2 * accumBytes : 0;
+    const uint64_t rowBudget = (SCATTER_SOFTMAX_ROW_BUDGET_BYTES > reserved)
+        ? (SCATTER_SOFTMAX_ROW_BUDGET_BYTES - reserved) : 0;
+    // 20 bytes per (row, feature) covers both dtype buffers and three fp32 tiles.
+    const uint64_t perRow = static_cast<uint64_t>(tiling.colTile) * 20;
+    uint64_t batch = (perRow != 0) ? rowBudget / perRow : 1;
+    batch = std::min<uint64_t>(batch, SCATTER_SOFTMAX_MAX_ROW_BATCH);
+    batch = std::min<uint64_t>(batch, tiling.rowChunk);
+    return static_cast<uint32_t>(std::max<uint64_t>(batch, 1));
+}
+
+// The reduced output walks (batch, group) rows instead of source rows, so its
+// per-row buffer plan is the same one, capped by its shorter chunk.
+inline uint32_t ResolveOutRowBatch(const ScatterSoftmaxTilingData& tiling)
+{
+    const uint64_t batch = std::min<uint64_t>(tiling.rowBatch, tiling.outRowChunk);
+    return static_cast<uint32_t>(std::max<uint64_t>(batch, 1));
+}
+
 inline ScatterSoftmaxTilingData BuildTiling(const torch::Tensor& src, int64_t dim,
-                                            int64_t dimSize)
+                                            int64_t dimSize, bool standardDeviation = false)
 {
     const at::IntArrayRef sizes = src.sizes();
     ScatterSoftmaxTilingData tiling{};
@@ -102,6 +166,10 @@ inline ScatterSoftmaxTilingData BuildTiling(const torch::Tensor& src, int64_t di
     tiling.srcNumel = tiling.rows * tiling.after;
     tiling.workspaceElems = tiling.batch * tiling.groupCount * tiling.afterPadded;
     tiling.outRows = tiling.batch * tiling.groupCount;
+    tiling.countElems = standardDeviation
+        ? (tiling.groupCount + SCATTER_SOFTMAX_COUNT_ALIGN - 1) /
+              SCATTER_SOFTMAX_COUNT_ALIGN * SCATTER_SOFTMAX_COUNT_ALIGN
+        : 0;
 
     // Narrow rows keep a small UB footprint; wide rows are tiled along the
     // feature axis. `colTile` is also the stride between the per-row slices of
@@ -114,46 +182,13 @@ inline ScatterSoftmaxTilingData BuildTiling(const torch::Tensor& src, int64_t di
         SCATTER_SOFTMAX_MAX_COL_TILE,
         std::max<uint64_t>(rowStep, SCATTER_SOFTMAX_ROW_ALIGN)));
 
-    const uint64_t requestedRows = std::max<uint64_t>(tiling.rows, 1);
-    tiling.blockNum = ops_gnn::sparse::ResolveAivCoreNum(static_cast<uint32_t>(
-        std::min<uint64_t>(requestedRows, std::numeric_limits<uint32_t>::max())));
-
-    // A core owns a contiguous chunk of rows and buffers a batch of them, so
-    // the GM round trip of one row overlaps the transfers of the rest.
+    tiling.blockNum = ResolveBlockNum(tiling.rows);
     tiling.rowChunk = (tiling.rows + tiling.blockNum - 1) / tiling.blockNum;
+    tiling.rowBatch = ResolveRowBatch(tiling);
 
-    // When the whole reduction workspace fits the accumulator budget it stays
-    // in UB for the duration of a pass: the reduction passes accumulate in
-    // place and flush once per core, and the passes that read it read it once.
-    const uint64_t accumBytes = tiling.workspaceElems * sizeof(float);
-    tiling.localAccum =
-        (tiling.workspaceElems != 0 && accumBytes <= SCATTER_SOFTMAX_ACC_BUDGET_BYTES)
-            ? 1U : 0U;
-
-    // The exp pass holds two copies at once - the cached maximum workspace and
-    // the sum it accumulates into - so that is what the row budget reserves.
-    // The log-domain normalization holds the same two copies (maximum and sum),
-    // so one reservation serves both operators.
-    const uint64_t reserved = (tiling.localAccum != 0) ? 2 * accumBytes : 0;
-    const uint64_t rowBudget = (SCATTER_SOFTMAX_ROW_BUDGET_BYTES > reserved)
-        ? (SCATTER_SOFTMAX_ROW_BUDGET_BYTES - reserved) : 0;
-    // 20 bytes per (row, feature) covers both dtype buffers and three fp32 tiles.
-    const uint64_t perRow = static_cast<uint64_t>(tiling.colTile) * 20;
-    uint64_t batch = (perRow != 0) ? rowBudget / perRow : 1;
-    batch = std::min<uint64_t>(batch, SCATTER_SOFTMAX_MAX_ROW_BATCH);
-    batch = std::min<uint64_t>(batch, tiling.rowChunk);
-    tiling.rowBatch = static_cast<uint32_t>(std::max<uint64_t>(batch, 1));
-
-    // The reduced output walks (batch, group) rows instead of source rows, so
-    // its own core split is derived from `outRows`; the per-row buffer plan is
-    // the same one, capped by the shorter chunk.
-    const uint64_t requestedOutRows = std::max<uint64_t>(tiling.outRows, 1);
-    tiling.outBlockNum = ops_gnn::sparse::ResolveAivCoreNum(static_cast<uint32_t>(
-        std::min<uint64_t>(requestedOutRows, std::numeric_limits<uint32_t>::max())));
-    tiling.outRowChunk =
-        (tiling.outRows + tiling.outBlockNum - 1) / tiling.outBlockNum;
-    uint64_t outBatch = std::min<uint64_t>(tiling.rowBatch, tiling.outRowChunk);
-    tiling.outRowBatch = static_cast<uint32_t>(std::max<uint64_t>(outBatch, 1));
+    tiling.outBlockNum = ResolveBlockNum(tiling.outRows);
+    tiling.outRowChunk = (tiling.outRows + tiling.outBlockNum - 1) / tiling.outBlockNum;
+    tiling.outRowBatch = ResolveOutRowBatch(tiling);
     return tiling;
 }
 
@@ -169,6 +204,46 @@ inline void CheckLaunchable(const char* op, const ScatterSoftmaxTilingData& tili
 inline bool IsEmpty(const ScatterSoftmaxTilingData& tiling)
 {
     return tiling.rows == 0 || tiling.after == 0 || tiling.groupCount == 0;
+}
+
+// Checks on the saved output of a grouped reduction and on its incoming
+// gradient. The operators that write one row per (batch, group) pair share them:
+// the two tensors must match the reduced shape, the dtype and the device of the
+// source, and the gradient must match the saved output.
+inline void CheckReducedBackward(const char* op, const torch::Tensor& src,
+                                 const torch::Tensor& out, const torch::Tensor& gradOut,
+                                 int64_t dim, int64_t dimSize)
+{
+    const std::vector<int64_t> expected = ReducedSizes(src, dim, dimSize);
+    TORCH_CHECK(out.is_contiguous(), op, ": out must be contiguous");
+    TORCH_CHECK(out.sizes() == at::IntArrayRef(expected),
+                op, ": out shape must be src with dim replaced by dim_size");
+    TORCH_CHECK(out.scalar_type() == src.scalar_type(),
+                op, ": out dtype must match src");
+    TORCH_CHECK(out.device() == src.device(),
+                op, ": out must be on the same device as src");
+    TORCH_CHECK(gradOut.is_contiguous(), op, ": grad_out must be contiguous");
+    TORCH_CHECK(gradOut.sizes() == out.sizes(),
+                op, ": grad_out shape must match the forward output");
+    TORCH_CHECK(gradOut.scalar_type() == out.scalar_type(),
+                op, ": grad_out dtype must match the forward output");
+    TORCH_CHECK(gradOut.device() == out.device(),
+                op, ": grad_out must be on the same device as the output");
+}
+
+// Prologue every reduced-output backward shares: the argument and saved-output
+// checks, then the tiling its launch needs. The caller keeps its own workspace
+// checks, because they differ per operator.
+inline ScatterSoftmaxTilingData BeginReducedBackward(const char* op, const torch::Tensor& src,
+                                                     const torch::Tensor& out,
+                                                     const torch::Tensor& gradOut,
+                                                     const torch::Tensor& index, int64_t dim,
+                                                     int64_t dimSize,
+                                                     bool standardDeviation = false)
+{
+    ValidateInputs(op, src, index, dim, dimSize);
+    CheckReducedBackward(op, src, out, gradOut, dim, dimSize);
+    return BuildTiling(src, dim, dimSize, standardDeviation);
 }
 
 // Runs the forward scaffolding every grouped-softmax operator shares: argument

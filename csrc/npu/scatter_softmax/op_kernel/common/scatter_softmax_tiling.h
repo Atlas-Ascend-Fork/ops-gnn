@@ -12,6 +12,7 @@
 #define OPS_GNN_SCATTER_SOFTMAX_TILING_H
 
 #include <cstdint>
+#include <limits>
 
 // Largest number of trailing features a single vector tile covers. Every tile
 // start is a multiple of this constant, so a GM atomic destination keeps the
@@ -27,14 +28,32 @@ constexpr uint32_t SCATTER_SOFTMAX_ROW_ALIGN = 16;
 // (32 bytes) so that every atomic write is a whole number of 32-byte blocks.
 constexpr uint64_t SCATTER_SOFTMAX_WORKSPACE_ALIGN = 8;
 
+// Elements of one 32-byte MTE3 atomic block: an atomic always writes whole
+// 32-byte blocks, so the member-count workspace is padded to a multiple of this
+// and a per-row count atomic targets the block that holds its group.
+constexpr uint64_t SCATTER_SOFTMAX_COUNT_ALIGN = 8;
+
+// Upper bound of the per-core member-count buffer the sum pass keeps in UB.
+// The workspace is dense - one fp32 counter per group - so a million-row shape
+// with thousands of groups still fits: 16384 groups are 64 KB. Above it the
+// counts are added row by row with one 32-byte atomic each.
+constexpr uint64_t SCATTER_SOFTMAX_COUNT_BUDGET_BYTES = 64 * 1024;
+
 // Neutral value of the fp32 per-group maximum. The host fills the workspace
 // with the same constant, so a padded feature lane can never win a maximum.
 constexpr float SCATTER_SOFTMAX_NEUTRAL_MAXIMUM = -3.4028234663852886e38F;
 
+// Reported for a group without spread: `torch.std` gives NaN both for a group
+// without members and for the single member of an unbiased deviation.
+constexpr float SCATTER_SOFTMAX_NAN = std::numeric_limits<float>::quiet_NaN();
+
 // Rows a core buffers at once, and the UB budget those row buffers may use.
 // A batch hides the GM round trip of one row behind the transfers of the rest,
-// which is what keeps narrow rows off the "one synchronous row at a time" floor.
-constexpr uint32_t SCATTER_SOFTMAX_MAX_ROW_BATCH = 8;
+// and every batch costs one round of MTE2/V/MTE3 flag waits: eight rows leave
+// those waits as the dominant cost of a pass (on 910B4 the reduction pass of a
+// million-row shape spent 1.78 ms of 3.55 ms waiting), so the cap is wide
+// enough to amortise them and the row budget still decides the real batch.
+constexpr uint32_t SCATTER_SOFTMAX_MAX_ROW_BATCH = 64;
 constexpr uint64_t SCATTER_SOFTMAX_ROW_BUDGET_BYTES = 80 * 1024;
 
 // Upper bound of the per-core fp32 workspace copy. When the whole reduction
@@ -66,10 +85,14 @@ enum ScatterSoftmaxDType {
 //   after      = prod(src.size(dim+1 .. -1))
 // Element (b, j, a) therefore lives at (b * dimLength + j) * after + a.
 //
-// The `out*` fields describe the reduced output of the grouped log-sum-exp,
-// whose rows are (batch, group) pairs instead of (batch, dimLength) rows. The
-// softmax family keeps outRows == rows, so the shared driver can walk either
-// layout with the same code.
+// The `out*` fields describe the grouped log-sum-exp and the grouped standard
+// deviation, whose rows are (batch, group) pairs instead of (batch, dimLength)
+// rows. The softmax family keeps outRows == rows, so the shared driver can walk
+// either layout with the same code.
+//
+// `countElems` and `correction` only describe the standard deviation: the first
+// sizes its per-group member counts, the second selects the unbiased (`n - 1`)
+// or the biased (`n`) normalization.
 struct ScatterSoftmaxTilingData {
     uint64_t batch;
     uint64_t dimLength;
@@ -88,6 +111,10 @@ struct ScatterSoftmaxTilingData {
     uint64_t outRowChunk;  // output rows owned by one core
     uint32_t outBlockNum;
     uint32_t outRowBatch;
+    uint64_t countElems;   // groupCount rounded up to SCATTER_SOFTMAX_COUNT_ALIGN
+    // 1.0 for the unbiased standard deviation (divide by n - 1), 0.0 for the
+    // biased one (divide by n). The other operators never read it.
+    float correction;
 };
 
 #endif  // OPS_GNN_SCATTER_SOFTMAX_TILING_H

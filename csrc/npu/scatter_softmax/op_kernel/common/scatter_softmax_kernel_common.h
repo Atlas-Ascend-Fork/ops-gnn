@@ -37,6 +37,11 @@ using namespace AscendC;
 // exponential sum are the ones of the softmax family, `Finalize` writes the
 // group rows of the reduced output, and `GradElement` is its elementwise
 // backward. Neither of the last two reduces, so neither owns a workspace.
+//
+// The grouped standard deviation adds two reduction passes of its own: `Sum`
+// accumulates the group sum and the member count, `Deviation` accumulates the
+// squared distance to the group mean. It shares `Finalize` and `GradElement`
+// with the log-sum-exp, whose arithmetic is selected by the mode.
 enum ScatterSoftmaxPhase {
     kPhaseMaximum = 0,
     kPhaseExp = 1,
@@ -45,6 +50,8 @@ enum ScatterSoftmaxPhase {
     kPhaseGrad = 4,
     kPhaseFinalize = 5,
     kPhaseGradElement = 6,
+    kPhaseSum = 7,
+    kPhaseDeviation = 8,
 };
 
 // Compile-time arithmetic of the shared phase bodies.
@@ -52,6 +59,7 @@ enum ScatterSoftmaxMode {
     kModeSoftmax = 0,
     kModeLogSoftmax = 1,
     kModeLogSumExp = 2,
+    kModeStd = 3,
 };
 
 __aicore__ constexpr bool IsLogDomain(ScatterSoftmaxMode mode)
@@ -63,14 +71,17 @@ __aicore__ constexpr bool IsLogDomain(ScatterSoftmaxMode mode)
 template <ScatterSoftmaxPhase Phase>
 __aicore__ constexpr bool IsReductionPass()
 {
-    return Phase == kPhaseMaximum || Phase == kPhaseExp || Phase == kPhaseGradSum;
+    return Phase == kPhaseMaximum || Phase == kPhaseExp ||
+           Phase == kPhaseGradSum || Phase == kPhaseSum ||
+           Phase == kPhaseDeviation;
 }
 
 // Passes that read the reduction workspace of an earlier pass.
 template <ScatterSoftmaxPhase Phase>
 __aicore__ constexpr bool ReadsWorkspace()
 {
-    return Phase == kPhaseExp || Phase == kPhaseNormalize || Phase == kPhaseGrad;
+    return Phase == kPhaseExp || Phase == kPhaseNormalize ||
+           Phase == kPhaseGrad || Phase == kPhaseDeviation;
 }
 
 // Passes that keep the reduction workspace resident in UB. The finalize pass
@@ -99,6 +110,32 @@ __aicore__ constexpr bool UsesGroups()
 __aicore__ inline bool GroupsFitUb(const ScatterSoftmaxTilingData& tiling)
 {
     return tiling.localAccum != 0 && tiling.afterPadded <= tiling.colTile;
+}
+
+// The per-group member counts of the sum pass fit the per-core UB buffer when
+// the dense counter array does. They then stay resident for the whole pass and
+// are flushed with one atomic per group instead of one per row.
+__aicore__ inline bool CountsFitUb(const ScatterSoftmaxTilingData& tiling)
+{
+    return tiling.countElems != 0 &&
+           tiling.countElems * sizeof(float) <= SCATTER_SOFTMAX_COUNT_BUDGET_BYTES;
+}
+
+// Count slot of a group: the workspace is one fp32 counter per group, padded to
+// whole 32-byte blocks, so a per-row atomic targets the block that holds it.
+__aicore__ inline uint64_t CountBase(int32_t group)
+{
+    return static_cast<uint64_t>(group);
+}
+
+// Elements one 256-byte vector repeat covers in fp32. The mask API rounds its
+// element count down to whole repeats, so the standard-deviation backward rounds
+// the count up and lets the last repeat read the padding the row buffer keeps.
+constexpr uint32_t kStdCompareRepeat = 64;
+
+__aicore__ inline uint32_t CompareRepeatCount(uint32_t elements)
+{
+    return (elements + kStdCompareRepeat - 1) / kStdCompareRepeat * kStdCompareRepeat;
 }
 
 template <HardEvent Event>
@@ -178,6 +215,8 @@ struct PhaseTensors {
     TBuf<TPosition::VECCALC> groupCacheBuffer;
     TBuf<TPosition::VECCALC> groupCacheBuffer2;
     TBuf<TPosition::VECCALC> groupBuffer;
+    TBuf<TPosition::VECCALC> countBuffer;
+    TBuf<TPosition::VECCALC> oneHotBuffer;
     LocalTensor<T> narrow;
     LocalTensor<T> narrow2;
     LocalTensor<T> narrow3;
@@ -189,6 +228,11 @@ struct PhaseTensors {
     LocalTensor<float> cachedOut;
     LocalTensor<float> cachedGrad;
     LocalTensor<int32_t> groups;
+    // The per-core member counts of the sum pass, resident in UB while the
+    // whole dense count workspace fits (see CountsFitUb).
+    LocalTensor<float> counts;
+    // One 32-byte count block per lane, used by the per-row counting fallback.
+    LocalTensor<float> onehot;
     GlobalTensor<int32_t> indexGm;
     GlobalTensor<T> srcGm;
     GlobalTensor<T> gradGm;
@@ -196,9 +240,55 @@ struct PhaseTensors {
     GlobalTensor<T> gradSrcGm;
     GlobalTensor<float> maximumGm;
     GlobalTensor<float> sumGm;
+    // Grouped standard deviation only: the fp32 workspace of the squared
+    // deviations and the per-group member counts.
+    GlobalTensor<float> deviationGm;
+    GlobalTensor<float> countGm;
 };
 
-template <ScatterSoftmaxPhase Phase, typename T>
+// The sum pass counts the members of every group while it accumulates the group
+// sums: a count workspace that fits stays in UB for the whole pass, and one that
+// does not counts row by row with a 32-byte atomic built here.
+template <typename T>
+__aicore__ inline void InitCountBuffers(PhaseTensors<T>& tensors, TPipe& pipe,
+                                        const ScatterSoftmaxTilingData& tiling)
+{
+    if (CountsFitUb(tiling)) {
+        pipe.InitBuffer(tensors.countBuffer, AlignedBytes(tiling.countElems, sizeof(float)));
+        tensors.counts = tensors.countBuffer.template Get<float>();
+        return;
+    }
+    if (tiling.countElems == 0) {
+        return;
+    }
+    pipe.InitBuffer(tensors.oneHotBuffer,
+                    AlignedBytes(SCATTER_SOFTMAX_COUNT_ALIGN * SCATTER_SOFTMAX_COUNT_ALIGN,
+                                 sizeof(float)));
+    tensors.onehot = tensors.oneHotBuffer.template Get<float>();
+}
+
+// The saved output and its incoming gradient stay in UB for the whole backward
+// pass while the group count allows it: one row of each is read per source row,
+// and a small group count makes those reads hit the same few lines. The
+// standard-deviation backward reads three group rows, so it goes to GM for all
+// of them instead of reserving a third resident copy.
+template <ScatterSoftmaxMode Mode, typename T>
+__aicore__ inline void InitGroupCache(PhaseTensors<T>& tensors, TPipe& pipe,
+                                      const ScatterSoftmaxTilingData& tiling)
+{
+    if constexpr (Mode != kModeStd) {
+        if (GroupsFitUb(tiling)) {
+            pipe.InitBuffer(tensors.groupCacheBuffer,
+                            AlignedBytes(tiling.workspaceElems, sizeof(float)));
+            pipe.InitBuffer(tensors.groupCacheBuffer2,
+                            AlignedBytes(tiling.workspaceElems, sizeof(float)));
+            tensors.cachedOut = tensors.groupCacheBuffer.template Get<float>();
+            tensors.cachedGrad = tensors.groupCacheBuffer2.template Get<float>();
+        }
+    }
+}
+
+template <ScatterSoftmaxPhase Phase, ScatterSoftmaxMode Mode, typename T>
 __aicore__ inline void InitTensors(PhaseTensors<T>& tensors, TPipe& pipe,
                                    const ScatterSoftmaxTilingData& tiling)
 {
@@ -208,7 +298,14 @@ __aicore__ inline void InitTensors(PhaseTensors<T>& tensors, TPipe& pipe,
     pipe.InitBuffer(tensors.narrowBuffer2, AlignedBytes(rowElements, sizeof(T)));
     pipe.InitBuffer(tensors.wideBuffer, AlignedBytes(rowElements, sizeof(float)));
     pipe.InitBuffer(tensors.wideBuffer2, AlignedBytes(rowElements, sizeof(float)));
-    pipe.InitBuffer(tensors.wideBuffer3, AlignedBytes(rowElements, sizeof(float)));
+    // The standard-deviation backward compares one fp32 tile against zero with a
+    // whole-repeat count (the mask API rounds the count down to full 64-element
+    // repeats), so its last tile reads up to one repeat past `colTile` and the
+    // buffer keeps that much room.
+    const uint64_t wideExtra =
+        (Phase == kPhaseGradElement && Mode == kModeStd) ? kStdCompareRepeat : 0;
+    pipe.InitBuffer(tensors.wideBuffer3,
+                    AlignedBytes(rowElements + wideExtra, sizeof(float)));
     pipe.InitBuffer(tensors.groupBuffer, AlignedBytes(tiling.rowBatch, sizeof(int32_t)));
     tensors.narrow = tensors.narrowBuffer.template Get<T>();
     tensors.narrow2 = tensors.narrowBuffer2.template Get<T>();
@@ -216,6 +313,9 @@ __aicore__ inline void InitTensors(PhaseTensors<T>& tensors, TPipe& pipe,
     tensors.wide2 = tensors.wideBuffer2.template Get<float>();
     tensors.wide3 = tensors.wideBuffer3.template Get<float>();
     tensors.groups = tensors.groupBuffer.template Get<int32_t>();
+    if constexpr (Phase == kPhaseSum) {
+        InitCountBuffers(tensors, pipe, tiling);
+    }
     if constexpr (Phase == kPhaseGradElement) {
         // The elementwise gradient holds the source, the saved output and the
         // incoming gradient at the same time, so it needs a third dtype buffer
@@ -224,17 +324,7 @@ __aicore__ inline void InitTensors(PhaseTensors<T>& tensors, TPipe& pipe,
         // the 80 KB budget that is at most 96 KB, well inside the UB.
         pipe.InitBuffer(tensors.narrowBuffer3, AlignedBytes(rowElements, sizeof(T)));
         tensors.narrow3 = tensors.narrowBuffer3.template Get<T>();
-        if (GroupsFitUb(tiling)) {
-            // The saved output and its gradient stay in UB for the whole pass:
-            // one row of each is read per source row, and a small group count
-            // makes those reads hit the same few lines without overlapping.
-            pipe.InitBuffer(tensors.groupCacheBuffer,
-                            AlignedBytes(tiling.workspaceElems, sizeof(float)));
-            pipe.InitBuffer(tensors.groupCacheBuffer2,
-                            AlignedBytes(tiling.workspaceElems, sizeof(float)));
-            tensors.cachedOut = tensors.groupCacheBuffer.template Get<float>();
-            tensors.cachedGrad = tensors.groupCacheBuffer2.template Get<float>();
-        }
+        InitGroupCache<Mode>(tensors, pipe, tiling);
     }
     if (tiling.localAccum != 0 && UsesUbWorkspace<Phase>()) {
         // The workspace is resident in UB for the whole pass: the reduction
@@ -302,6 +392,46 @@ __aicore__ inline uint64_t OutBase(const ScatterSoftmaxTilingData& tiling, uint6
     const uint64_t batch = row / tiling.dimLength;
     return (batch * tiling.groupCount + static_cast<uint64_t>(group)) * tiling.after;
 }
+
+// Maps the rows of one batch to their reduction slot without dividing per row.
+//
+// `WorkBase` divides the row by `dimLength` for every row, and a 64-bit
+// division on the scalar unit costs more than the rest of the loop body: the
+// batch pass is scalar bound exactly because of it. A batch walks its rows in
+// order, so the slice offset advances by one workspace block whenever the row
+// crosses a slice boundary, which is one comparison per row and one division
+// per batch. `rowStride` selects the workspace row (`afterPadded`) or the
+// reduced output row (`after`).
+class BatchRowSlices {
+public:
+    __aicore__ inline BatchRowSlices(const ScatterSoftmaxTilingData& tiling, uint64_t base,
+                                     uint64_t rowStride)
+        : offset_((base / tiling.dimLength) * tiling.groupCount * rowStride),
+          next_((base / tiling.dimLength + 1) * tiling.dimLength),
+          block_(tiling.groupCount * rowStride),
+          length_(tiling.dimLength),
+          rowStride_(rowStride)
+    {
+    }
+
+    // Offset of the (batch, group) row that starts at `row`. Rows must be
+    // requested in increasing order; a gap (a row that was skipped) is walked.
+    __aicore__ inline uint64_t Row(uint64_t row, int32_t group)
+    {
+        while (row >= next_) {
+            offset_ += block_;
+            next_ += length_;
+        }
+        return offset_ + static_cast<uint64_t>(group) * rowStride_;
+    }
+
+private:
+    uint64_t offset_;
+    uint64_t next_;
+    uint64_t block_;
+    uint64_t length_;
+    uint64_t rowStride_;
+};
 
 __aicore__ inline bool IsParticipating(const ScatterSoftmaxTilingData& tiling)
 {

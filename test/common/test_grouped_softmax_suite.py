@@ -19,7 +19,10 @@ output is reduced).
 ``GroupedFamilySuite`` holds the cases that every member of the family runs
 unchanged - argument handling, gradients, boundary values - and the operator
 suites only provide the float64 reference plus three small hooks for the parts
-that really differ.
+that really differ. ``StdSuite`` (the standard deviation) lives here as well:
+its output is reduced like the log-sum-exp one, so it cannot reuse the
+``src``-shaped softmax cases, but it takes the same arguments and keeps the same
+family cases.
 
 The module keeps the ``test_`` name prefix even though it only defines base
 classes: that prefix is what CodeCheck uses to treat a file as test code, and
@@ -35,9 +38,10 @@ import torch
 
 from common.grouped_softmax_cases import (CASES, DTYPES, INFINITY_VALUES,
                                           INVALID_CASES, LONG_GROUP_ROWS,
-                                          invalid_inputs, reference_gradient,
-                                          source, to_npu)
-from common.grouped_softmax_golden import assert_close, grouped_reference
+                                          WIDE_FEATURE_ROWS, invalid_inputs,
+                                          reference_gradient, source, to_npu)
+from common.grouped_softmax_golden import (assert_close, grouped_reference,
+                                           grouped_std_reference, std_gradient)
 
 
 def check(condition, message) -> None:
@@ -377,3 +381,275 @@ class GroupedSoftmaxSuite(GroupedFamilySuite):
 
         check(bool(torch.isnan(out).all()), f"got {out.flatten().tolist()}")
         assert_close(out, self.expected(src, index, 0, 1), torch.float32)
+
+
+class StdSuite(GroupedFamilySuite):
+    """Cases of ``scatter_std``; an operator module binds the API name.
+
+    The standard deviation reduces its output like ``scatter_logsumexp``, so it
+    cannot take the ``src``-shaped softmax cases, but it takes the same
+    arguments and rejects the same inputs, which is what ``GroupedFamilySuite``
+    covers. The cases below add the two normalizations, the groups without
+    spread and the accuracy a centered two-pass deviation is there to buy.
+    """
+
+    @staticmethod
+    def reference(src, index, dim=0, dim_size=None):
+        """float64 reference; operator modules bind their ``golden.py``."""
+        return grouped_std_reference(src, index, dim, dim_size)
+
+    @staticmethod
+    def gradient_reference(src, index, dim, dim_size):
+        return std_gradient(src, index, dim, dim_size)
+
+    @staticmethod
+    def call_backward(backward, src, out, index):
+        """The backward also reads the saved means and the member counts."""
+        backward(src.npu(), out, torch.ones(out.numel()),
+                 torch.ones(out.numel()), torch.ones(out.numel()), index, 0, 3,
+                 True)
+
+    @staticmethod
+    def check_large_group(out, rows):
+        """A group of ``rows`` equal values has no spread: the deviation is 0."""
+        value = float(out[0, 0].float())
+        check(value == 0.0, f"group of {rows}: std={value}")
+
+    def call_with(self, api, src, index, dim=0, dim_size=None, unbiased=True):
+        """Call the operator with an explicit normalization."""
+        op = getattr(api, self.api_name)
+        return op(src, index, dim=dim, dim_size=dim_size, unbiased=unbiased)
+
+    @pytest.mark.npu
+    @pytest.mark.parametrize("dtype", DTYPES)
+    @pytest.mark.parametrize("index,shape,dim,dim_size", CASES)
+    def test_matches_reference(self, npu_api, dtype, index, shape, dim,
+                               dim_size):
+        src = source(shape, dtype)
+        expected = self.expected(src, index, dim, dim_size)
+
+        result = self.call(npu_api, src.npu(),
+                           torch.tensor(index, dtype=torch.int64).npu(),
+                           dim=dim, dim_size=dim_size)
+
+        check(result.shape == expected.shape,
+              f"shape {tuple(result.shape)} != {tuple(expected.shape)}")
+        check(result.dtype == dtype, f"dtype {result.dtype} != {dtype}")
+        check(result.device.type == "npu", f"device {result.device}")
+        assert_close(result, expected, dtype)
+
+    @pytest.mark.npu
+    @pytest.mark.parametrize("dtype", DTYPES)
+    @pytest.mark.parametrize("index,shape,dim,dim_size", CASES)
+    def test_biased_matches_reference(self, npu_api, dtype, index, shape, dim,
+                                      dim_size):
+        """The biased normalization divides by ``n`` instead of ``n - 1``."""
+        src = source(shape, dtype)
+        expected = grouped_std_reference(src, index, dim, dim_size,
+                                         unbiased=False)
+
+        result = self.call_with(
+            npu_api, src.npu(), torch.tensor(index, dtype=torch.int64).npu(),
+            dim=dim, dim_size=dim_size, unbiased=False)
+
+        check(result.shape == expected.shape,
+              f"shape {tuple(result.shape)} != {tuple(expected.shape)}")
+        assert_close(result, expected, dtype)
+
+    @pytest.mark.npu
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_wide_feature_row(self, npu_api, dtype):
+        """A feature row wider than one tile must be reduced in full."""
+        index = [0, 0, 1, 2, 2, 2]
+        src = source((6, WIDE_FEATURE_ROWS), dtype)
+
+        result = self.call(npu_api, src.npu(),
+                           torch.tensor(index, dtype=torch.int64).npu(),
+                           dim_size=3)
+
+        assert_close(result, self.expected(src, index, 0, 3), dtype)
+
+    @pytest.mark.npu
+    @pytest.mark.parametrize("unbiased", (True, False))
+    def test_many_groups_count_path(self, npu_api, unbiased):
+        """A count workspace beyond the UB budget counts members per row.
+
+        The dense count workspace of 20000 groups is larger than the 64 KB the
+        sum pass keeps in UB, so the pass falls back to one 32-byte atomic per
+        row. A lane built wrong there silently loses the counts of whole groups,
+        which shows up as NaN standard deviations.
+        """
+        rows, dim_size = 100000, 20000
+        generator = torch.Generator().manual_seed(rows + dim_size)
+        src = torch.randn(rows, 2, generator=generator)
+        index = torch.randint(0, dim_size, (rows,), generator=generator,
+                              dtype=torch.int64)
+
+        result = self.call_with(npu_api, src.npu(), index.npu(),
+                                dim_size=dim_size, unbiased=unbiased)
+        expected = grouped_std_reference(src, index, 0, dim_size,
+                                         unbiased=unbiased)
+
+        assert_close(result, expected, torch.float32)
+
+    @pytest.mark.npu
+    def test_empty_group_is_nan(self, npu_api):
+        """A group without members has no standard deviation."""
+        src = source((4, 2), torch.float32)
+        index = torch.tensor([0, 0, 2, 2], dtype=torch.int64)
+
+        out = self.call(npu_api, src.npu(), index.npu(), dim_size=4)
+        biased = self.call_with(npu_api, src.npu(), index.npu(), dim_size=4,
+                                unbiased=False)
+
+        for group in (1, 3):
+            check(bool(torch.isnan(out[group]).all()),
+                  f"group {group}: got {out[group].tolist()}")
+            check(bool(torch.isnan(biased[group]).all()),
+                  f"biased group {group}: got {biased[group].tolist()}")
+        assert_close(out, self.expected(src, index, 0, 4), torch.float32)
+
+    @pytest.mark.npu
+    @pytest.mark.parametrize("dtype", DTYPES)
+    @pytest.mark.parametrize("features", (16, 17))
+    def test_empty_group_mean_is_nan(self, npu_api, dtype, features):
+        """An empty group has no mean: its workspace row is NaN.
+
+        ``scatter_std_forward`` returns the per-(batch, group) mean workspace,
+        so a row the finalize pass never assigned is observable. 16 features
+        fit one aligned row, so the batch travels as a single burst; 17 pad the
+        row. Neither layout may report another row's mean or stale data.
+        """
+        src = torch.arange(2 * features, dtype=torch.float32).reshape(
+            2, features)
+        index = torch.tensor([0, 0], dtype=torch.int32)
+        pybind = getattr(npu_api, "_pybind")
+
+        out, means, counts = pybind.scatter_std_forward(
+            src.to(dtype).npu(), index.npu(), 0, 2, True)
+
+        width = means.numel() // 2
+        mean_rows = means.reshape(2, width).float().cpu()
+        check(bool(torch.isnan(mean_rows[1]).all()),
+              f"{features} features: empty mean {mean_rows[1].tolist()}")
+        expected = src.to(dtype).float().mean(dim=0)
+        check(torch.allclose(mean_rows[0][:features], expected, atol=1e-4),
+              f"{features} features: mean {mean_rows[0].tolist()} "
+              f"!= {expected.tolist()}")
+        out_cpu = out.float().cpu()
+        check(bool(torch.isnan(out_cpu[1]).all()),
+              f"{features} features: std {out_cpu[1].tolist()}")
+        counts_cpu = counts.int().cpu()
+        check(int(counts_cpu[0]) == 2 and int(counts_cpu[1]) == 0,
+              f"{features} features: counts {counts_cpu.tolist()}")
+
+    @pytest.mark.npu
+    def test_single_member_group(self, npu_api):
+        """One member: NaN unbiased, zero biased."""
+        src = torch.tensor([[3.5, -1.0], [7.0, 2.0]], dtype=torch.float32)
+        index = torch.tensor([0, 1], dtype=torch.int64)
+
+        unbiased = self.call(npu_api, src.npu(), index.npu(), dim_size=2)
+        biased = self.call_with(npu_api, src.npu(), index.npu(), dim_size=2,
+                                unbiased=False)
+
+        check(bool(torch.isnan(unbiased).all()),
+              f"got {unbiased.flatten().tolist()}")
+        check(bool((biased == 0).all()), f"got {biased.flatten().tolist()}")
+        assert_close(unbiased, self.expected(src, index, 0, 2), torch.float32)
+        assert_close(biased, grouped_std_reference(src, index, 0, 2, False),
+                     torch.float32)
+
+    @pytest.mark.npu
+    def test_large_offset_group_keeps_precision(self, npu_api):
+        """Values around 1000 with a 0.02 spread must not cancel out.
+
+        Expanding the deviation into ``sum(x^2) - n * mean^2`` would subtract
+        two float32 values close to a million to recover a variance of ``1e-4``
+        and lose every significant digit; the centered two-pass deviation keeps
+        the result, which is what this case pins down.
+        """
+        src = torch.tensor([[1000.01], [999.99]], dtype=torch.float32)
+        index = torch.zeros(2, dtype=torch.int64)
+
+        out = self.call(npu_api, src.npu(), index.npu(), dim_size=1)
+
+        expected = grouped_std_reference(src, index, 0, 1)
+        torch.testing.assert_close(
+            out.cpu().double(), expected, rtol=1e-3, atol=0.0)
+
+    @pytest.mark.npu
+    @pytest.mark.parametrize("values", INFINITY_VALUES)
+    def test_infinite_member_is_nan(self, npu_api, values):
+        """An infinite member makes the mean infinite and the deviation NaN."""
+        src = torch.tensor(values, dtype=torch.float32).unsqueeze(1)
+        index = torch.zeros(len(values), dtype=torch.int64)
+
+        out = self.call(npu_api, src.npu(), index.npu(), dim_size=1)
+
+        check(bool(torch.isnan(out).all()), f"got {out.flatten().tolist()}")
+        assert_close(out, self.expected(src, index, 0, 1), torch.float32)
+
+    @pytest.mark.npu
+    def test_nan_group_is_nan(self, npu_api):
+        src = torch.tensor([[float("nan")], [0.0], [1.0]], dtype=torch.float32)
+        index = torch.zeros(3, dtype=torch.int64)
+
+        out = self.call(npu_api, src.npu(), index.npu(), dim_size=1)
+
+        check(bool(torch.isnan(out).all()), f"got {out.flatten().tolist()}")
+
+    @pytest.mark.npu
+    def test_gradient_of_constant_group_is_zero(self, npu_api):
+        """A group without spread has no gradient, exactly like ``torch.std``.
+
+        ``torch.std`` zeroes the variance gradient before it propagates, so a
+        zero deviation reports 0 instead of the ``0 / 0`` the quotient alone
+        would give; the backward must do the same.
+        """
+        src = torch.ones((4, 2), dtype=torch.float32)
+        index = torch.zeros(4, dtype=torch.int64)
+
+        npu_src = src.npu().detach().requires_grad_(True)
+        out = self.call(npu_api, npu_src, index.npu(), dim_size=1)
+        check(bool((out == 0).all()), f"got {out.flatten().tolist()}")
+        out.sum().backward()
+
+        check(npu_src.grad is not None, "backward did not fill src.grad")
+        check(bool((npu_src.grad == 0).all()),
+              f"got {npu_src.grad.flatten().tolist()}")
+
+        ref_src, ref_out = std_gradient(src, index, 0, 1)
+        ref_out.sum().backward()
+        torch.testing.assert_close(
+            npu_src.grad.cpu().double(), ref_src.grad, equal_nan=True,
+            rtol=1e-4, atol=1e-5)
+
+    @pytest.mark.npu
+    def test_biased_gradient_matches_reference(self, npu_api):
+        """The biased Jacobian divides by ``n * std`` instead of ``(n-1) * std``."""
+        src = source((6, 3), torch.float32)
+        index = torch.tensor([0, 0, 1, 2, 2, 2], dtype=torch.int64)
+        grad_out = source((3, 3), torch.float32)
+
+        npu_src = src.npu().detach().requires_grad_(True)
+        result = self.call_with(npu_api, npu_src, index.npu(), dim_size=3,
+                                unbiased=False)
+        (result * grad_out.npu()).sum().backward()
+
+        ref_src, ref_out = std_gradient(src, index, 0, 3, unbiased=False)
+        (ref_out * grad_out.double()).sum().backward()
+
+        check(npu_src.grad is not None, "backward did not fill src.grad")
+        torch.testing.assert_close(
+            npu_src.grad.cpu().double(), ref_src.grad, equal_nan=True,
+            rtol=1e-4, atol=1e-5)
+
+    @pytest.mark.npu
+    def test_unbiased_must_be_bool(self, npu_api):
+        src = source((4, 2), torch.float32)
+        index = torch.tensor([0, 0, 1, 2], dtype=torch.int64)
+
+        with pytest.raises(TypeError, match="unbiased"):
+            self.call_with(npu_api, src.npu(), index.npu(), dim_size=3,
+                           unbiased=1)

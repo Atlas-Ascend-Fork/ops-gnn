@@ -36,6 +36,32 @@ namespace ScatterSoftmaxNpu {
 // Per-batch data movement.
 // ---------------------------------------------------------------------------
 
+// True when the rows of a batch form one contiguous span in both the global
+// tensor and the row buffers, which needs a tile that covers a whole row and a
+// workspace row that is not padded. The rows of a source-shaped tensor and of
+// the reduced output are then consecutive along `dim`, so the whole batch
+// travels as a single burst instead of one burst per row: a narrow row copies
+// 128 bytes, which is far below what one MTE2/MTE3 issue is worth.
+__aicore__ inline bool BatchIsContiguous(const ScatterSoftmaxTilingData& tiling, uint64_t col,
+                                         uint32_t valid)
+{
+    return col == 0 && valid == tiling.after && tiling.colTile == tiling.after &&
+           tiling.afterPadded == tiling.after;
+}
+
+// True when every label of the batch selects a group, which lets a whole-batch
+// store run without the per-row guard the row-wise path applies.
+__aicore__ inline bool BatchGroupsValid(const ScatterSoftmaxTilingData& tiling,
+                                        LocalTensor<int32_t> groups, uint32_t count)
+{
+    for (uint32_t k = 0; k < count; ++k) {
+        if (!GroupValid(tiling, groups.GetValue(k))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Loads the group labels of the batch. Consecutive rows map to consecutive
 // columns while the batch stays inside one indexed slice, which is the common
 // case; a batch that straddles a slice boundary falls back to scalar reads.
@@ -63,22 +89,31 @@ __aicore__ inline void CopyGroupRowsIn(LocalTensor<T> dst, GlobalTensor<T> src,
                                        LocalTensor<int32_t> groups, uint64_t base,
                                        uint32_t count, uint64_t col, uint32_t valid)
 {
+    BatchRowSlices slices(tiling, base, tiling.after);
     for (uint32_t k = 0; k < count; ++k) {
         const int32_t group = groups.GetValue(k);
         if (!GroupValid(tiling, group)) {
             continue;
         }
-        DataCopyPad(dst[k * tiling.colTile], src[OutBase(tiling, base + k, group) + col],
+        DataCopyPad(dst[k * tiling.colTile], src[slices.Row(base + k, group) + col],
                     Bytes1D(valid * sizeof(T)), NoPadding<T>());
     }
 }
 
-// `count` row starts of the source-shaped tensors, one burst per row.
+// `count` row starts of the source-shaped tensors: one burst per row, or one
+// burst for the whole batch when its rows are contiguous (see
+// BatchIsContiguous).
 template <typename T>
 __aicore__ inline void CopyRowsIn(LocalTensor<T> dst, GlobalTensor<T> src,
                                   const ScatterSoftmaxTilingData& tiling, uint64_t base,
                                   uint32_t count, uint64_t col, uint32_t valid)
 {
+    if (BatchIsContiguous(tiling, col, valid)) {
+        DataCopyPad(dst, src[base * tiling.after],
+                    Bytes1D(count * static_cast<uint32_t>(tiling.after) * sizeof(T)),
+                    NoPadding<T>());
+        return;
+    }
     for (uint32_t k = 0; k < count; ++k) {
         DataCopyPad(dst[k * tiling.colTile], src[(base + k) * tiling.after + col],
                     Bytes1D(valid * sizeof(T)), NoPadding<T>());
@@ -91,6 +126,12 @@ __aicore__ inline void CopyRowsOut(GlobalTensor<T> dst, LocalTensor<T> src,
                                    LocalTensor<int32_t> groups, uint64_t base,
                                    uint32_t count, uint64_t col, uint32_t valid)
 {
+    if (BatchIsContiguous(tiling, col, valid) &&
+        BatchGroupsValid(tiling, groups, count)) {
+        DataCopyPad(dst[base * tiling.after], src,
+                    Bytes1D(count * static_cast<uint32_t>(tiling.after) * sizeof(T)));
+        return;
+    }
     for (uint32_t k = 0; k < count; ++k) {
         const int32_t group = groups.GetValue(k);
         if (!GroupValid(tiling, group)) {
@@ -101,19 +142,57 @@ __aicore__ inline void CopyRowsOut(GlobalTensor<T> dst, LocalTensor<T> src,
     }
 }
 
+// Walks the reduction-workspace rows of one batch: it skips the rows whose
+// label selects no group and yields both the row index and the workspace offset
+// of every other row. A batch divides once and then compares per row, which is
+// what a 64-bit division per row would otherwise dominate.
+class BatchWorkspaceRows {
+public:
+    __aicore__ inline BatchWorkspaceRows(const ScatterSoftmaxTilingData& tiling,
+                                         LocalTensor<int32_t> groups, uint64_t base,
+                                         uint64_t col, uint32_t count)
+        : slices_(tiling, base, tiling.afterPadded), tiling_(tiling), groups_(groups),
+          base_(base), col_(col), count_(count)
+    {
+    }
+
+    // Yields the next row whose label selects a group, or false at the end.
+    __aicore__ inline bool Next(uint32_t& row, uint64_t& offset)
+    {
+        while (next_ < count_) {
+            const int32_t group = groups_.GetValue(next_);
+            if (!GroupValid(tiling_, group)) {
+                ++next_;
+                continue;
+            }
+            row = next_++;
+            offset = slices_.Row(base_ + row, group) + col_;
+            return true;
+        }
+        return false;
+    }
+
+private:
+    BatchRowSlices slices_;
+    const ScatterSoftmaxTilingData& tiling_;
+    LocalTensor<int32_t> groups_;
+    uint64_t base_;
+    uint64_t col_;
+    uint32_t count_;
+    uint32_t next_ = 0;
+};
+
 // Reads the fp32 workspace row each batched row reduces into.
 __aicore__ inline void CopyWorkspaceIn(LocalTensor<float> dst, GlobalTensor<float> src,
                                        const ScatterSoftmaxTilingData& tiling,
                                        LocalTensor<int32_t> groups, uint64_t base,
                                        uint32_t count, uint64_t col, uint32_t width)
 {
-    for (uint32_t k = 0; k < count; ++k) {
-        const int32_t group = groups.GetValue(k);
-        if (!GroupValid(tiling, group)) {
-            continue;
-        }
-        DataCopy(dst[k * tiling.colTile], src[WorkBase(tiling, base + k, group) + col],
-                 static_cast<int32_t>(width));
+    BatchWorkspaceRows rows(tiling, groups, base, col, count);
+    uint32_t k = 0;
+    uint64_t offset = 0;
+    while (rows.Next(k, offset)) {
+        DataCopy(dst[k * tiling.colTile], src[offset], static_cast<int32_t>(width));
     }
 }
 
@@ -126,13 +205,11 @@ __aicore__ inline void CopyWorkspaceCached(LocalTensor<float> dst, LocalTensor<f
                                            LocalTensor<int32_t> groups, uint64_t base,
                                            uint32_t count, uint64_t col, uint32_t width)
 {
-    for (uint32_t k = 0; k < count; ++k) {
-        const int32_t group = groups.GetValue(k);
-        if (!GroupValid(tiling, group)) {
-            continue;
-        }
-        Adds(dst[k * tiling.colTile], cached[WorkBase(tiling, base + k, group) + col], 0.0F,
-             static_cast<int32_t>(width));
+    BatchWorkspaceRows rows(tiling, groups, base, col, count);
+    uint32_t k = 0;
+    uint64_t offset = 0;
+    while (rows.Next(k, offset)) {
+        Adds(dst[k * tiling.colTile], cached[offset], 0.0F, static_cast<int32_t>(width));
     }
 }
 

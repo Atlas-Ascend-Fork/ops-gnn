@@ -18,30 +18,14 @@
 
 #pragma once
 
-#include <cstdint>
-#include <limits>
-#include <vector>
-
-#include <torch/extension.h>
-
-#include "acl/acl.h"
-#include "c10/core/DeviceGuard.h"
+// The shared header brings the torch, acl and NPU-stream declarations below,
+// and it is the only include the two reduced-output operators list: keeping it
+// single keeps their scaffolding from repeating the same block.
 #include "scatter_softmax/common/grouped_softmax_shared.h"
-#include "scatter_softmax/op_kernel/common/scatter_softmax_tiling.h"
-#include "torch_npu/csrc/core/npu/NPUStream.h"
 
 namespace opsgnn {
 
 namespace grouped_logsumexp {
-
-// `src` shape with `dim` replaced by `dimSize`.
-inline std::vector<int64_t> ReducedSizes(const torch::Tensor& src, int64_t dim,
-                                         int64_t dimSize)
-{
-    std::vector<int64_t> sizes(src.sizes().begin(), src.sizes().end());
-    sizes[dim] = dimSize;
-    return sizes;
-}
 
 // Forward scaffolding: argument checks, the empty cases, the fp32 reduction
 // workspace and the three-pass launch. `launch` receives the device entry point,
@@ -54,7 +38,8 @@ inline torch::Tensor RunForward(const char* op, const torch::Tensor& src,
     grouped_softmax::ValidateInputs(op, src, index, dim, dimSize);
     const c10::DeviceGuard deviceGuard(src.device());
 
-    torch::Tensor out = torch::empty(ReducedSizes(src, dim, dimSize), src.options());
+    torch::Tensor out = torch::empty(
+        grouped_softmax::ReducedSizes(src, dim, dimSize), src.options());
     const ScatterSoftmaxTilingData tiling = grouped_softmax::BuildTiling(src, dim, dimSize);
     if (tiling.rows == 0) {
         // No member at all: every group is empty, and the log-sum-exp of an
@@ -95,22 +80,8 @@ inline torch::Tensor RunBackward(const char* op, const torch::Tensor& src,
                                  const torch::Tensor& index, int64_t dim,
                                  int64_t dimSize, Launch launch)
 {
-    grouped_softmax::ValidateInputs(op, src, index, dim, dimSize);
-    const std::vector<int64_t> expected = ReducedSizes(src, dim, dimSize);
-    TORCH_CHECK(out.is_contiguous(), op, ": out must be contiguous");
-    TORCH_CHECK(out.sizes() == at::IntArrayRef(expected),
-                op, ": out shape must be src with dim replaced by dim_size");
-    TORCH_CHECK(out.scalar_type() == src.scalar_type(),
-                op, ": out dtype must match src");
-    TORCH_CHECK(out.device() == src.device(),
-                op, ": out must be on the same device as src");
-    TORCH_CHECK(gradOut.is_contiguous(), op, ": grad_out must be contiguous");
-    TORCH_CHECK(gradOut.sizes() == out.sizes(),
-                op, ": grad_out shape must match the forward output");
-    TORCH_CHECK(gradOut.scalar_type() == out.scalar_type(),
-                op, ": grad_out dtype must match the forward output");
-    TORCH_CHECK(gradOut.device() == out.device(),
-                op, ": grad_out must be on the same device as the output");
+    const ScatterSoftmaxTilingData tiling =
+        grouped_softmax::BeginReducedBackward(op, src, out, gradOut, index, dim, dimSize);
     const c10::DeviceGuard deviceGuard(src.device());
 
     if (dimSize == 0) {
@@ -119,7 +90,6 @@ inline torch::Tensor RunBackward(const char* op, const torch::Tensor& src,
         return torch::zeros(src.sizes(), src.options());
     }
     torch::Tensor gradSrc = torch::empty(src.sizes(), src.options());
-    const ScatterSoftmaxTilingData tiling = grouped_softmax::BuildTiling(src, dim, dimSize);
     if (tiling.rows == 0 || tiling.after == 0) {
         return gradSrc;
     }

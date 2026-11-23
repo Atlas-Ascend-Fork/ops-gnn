@@ -17,6 +17,8 @@
 #include "kernel_operator.h"
 #include "scatter_softmax/op_kernel/common/scatter_softmax_kernel_common.h"
 #include "scatter_softmax/op_kernel/common/scatter_softmax_kernel_io.h"
+#include "scatter_softmax/op_kernel/common/scatter_softmax_kernel_reduce.h"
+#include "scatter_softmax/op_kernel/common/scatter_softmax_kernel_std.h"
 
 /**
  * Per-batch bodies of the grouped-softmax device kernels.
@@ -24,7 +26,7 @@
  * A core owns `rowChunk` consecutive rows, buffers `rowBatch` of them at a time
  * and walks the feature axis in 32-byte aligned tiles. Each pass contributes
  * only its own arithmetic; the transfers, the pipeline synchronisation and the
- * reduction bookkeeping are shared by all five passes.
+ * reduction bookkeeping are shared by every pass.
  *
  * The group of a row comes from `index`, which is not sorted, so the reduced
  * values of every (batch, group, feature) slot go through the MTE3 atomic unit
@@ -41,86 +43,16 @@
  *   - `kModeLogSumExp` (scatter_logsumexp): the same maximum and exponential
  *     passes, except that a `+inf` member contributes 1 to the sum, followed by
  *     a finalize pass that writes `maximum + ln(sum)` once per group and an
- *     elementwise backward `grad_out[group] * exp(src - out[group])`.
+ *     elementwise backward `grad_out[group] * exp(src - out[group])`;
+ *   - `kModeStd` (scatter_std): the passes of scatter_softmax_kernel_std.h.
+ *
+ * The bookkeeping the reduction passes share - the private accumulator, the
+ * per-row atomics and their flush - lives in scatter_softmax_kernel_reduce.h,
+ * and the standard-deviation passes in scatter_softmax_kernel_std.h, so both
+ * files stay readable next to this one.
  */
 
 namespace ScatterSoftmaxNpu {
-
-// ---------------------------------------------------------------------------
-// Reduction bookkeeping: private accumulator, or one atomic per row.
-// ---------------------------------------------------------------------------
-
-// Folds the batch into the private fp32 accumulator. `accum` indexes the
-// workspace layout directly, so the labels never have to be sorted.
-template <bool IsMaximum, typename T>
-__aicore__ inline void AccumulateRows(PhaseTensors<T>& t, const ScatterSoftmaxTilingData& tiling,
-                                      LocalTensor<float> values, uint64_t base,
-                                      uint32_t count, uint64_t col, uint32_t width)
-{
-    for (uint32_t k = 0; k < count; ++k) {
-        const int32_t group = t.groups.GetValue(k);
-        if (!GroupValid(tiling, group)) {
-            continue;
-        }
-        const uint64_t offset = WorkBase(tiling, base + k, group) + col;
-        if constexpr (IsMaximum) {
-            Max(t.accum[offset], t.accum[offset], values[k * tiling.colTile],
-                static_cast<int32_t>(width));
-        } else {
-            Add(t.accum[offset], t.accum[offset], values[k * tiling.colTile],
-                static_cast<int32_t>(width));
-        }
-    }
-}
-
-// One atomic write per row of the workspace, issued once per core.
-template <typename T>
-__aicore__ inline void StoreAccumulator(PhaseTensors<T>& t, GlobalTensor<float> dst,
-                                        const ScatterSoftmaxTilingData& tiling)
-{
-    const uint64_t workspaceRows = tiling.workspaceElems / tiling.afterPadded;
-    for (uint64_t row = 0; row < workspaceRows; ++row) {
-        const uint64_t offset = row * tiling.afterPadded;
-        DataCopy(dst[offset], t.accum[offset], static_cast<int32_t>(tiling.afterPadded));
-    }
-}
-
-template <ScatterSoftmaxPhase Phase, typename T>
-__aicore__ inline void InitAccumulator(PhaseTensors<T>& t, const ScatterSoftmaxTilingData& tiling)
-{
-    if constexpr (IsReductionPass<Phase>()) {
-        if (tiling.localAccum == 0) {
-            return;
-        }
-        const float neutral = (Phase == kPhaseMaximum) ? SCATTER_SOFTMAX_NEUTRAL_MAXIMUM : 0.0F;
-        Duplicate(t.accum, neutral, static_cast<int32_t>(tiling.workspaceElems));
-    }
-}
-
-template <ScatterSoftmaxPhase Phase, typename T>
-__aicore__ inline void FlushAccumulator(PhaseTensors<T>& t, const ScatterSoftmaxTilingData& tiling,
-                                        PipelineSync& sync)
-{
-    if constexpr (IsReductionPass<Phase>()) {
-        if (tiling.localAccum == 0) {
-            return;
-        }
-        SyncEvent<HardEvent::V_MTE3>(sync.computeToStore);
-        if constexpr (Phase == kPhaseMaximum) {
-            SetAtomicMax<float>();
-            StoreAccumulator(t, t.maximumGm, tiling);
-        } else {
-            SetAtomicAdd<float>();
-            StoreAccumulator(t, t.sumGm, tiling);
-        }
-        DisableDmaAtomic();
-        SyncEvent<HardEvent::MTE3_V>(sync.storeToCompute);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Per-batch bodies, one per pass.
-// ---------------------------------------------------------------------------
 
 // maximum[b][g][a] = max over the group. Padded lanes keep the neutral value.
 template <typename T>
@@ -142,20 +74,7 @@ __aicore__ inline void MaximumBatch(PhaseTensors<T>& t, const ScatterSoftmaxTili
         WidenToFp32(t.wide[offset], t.narrow[offset], valid);
     }
     SyncEvent<HardEvent::V_MTE3>(sync.computeToStore);
-    if (tiling.localAccum != 0) {
-        AccumulateRows<true>(t, tiling, t.wide, base, count, col, width);
-    } else {
-        SetAtomicMax<float>();
-        for (uint32_t k = 0; k < count; ++k) {
-            const int32_t group = t.groups.GetValue(k);
-            if (!GroupValid(tiling, group)) {
-                continue;
-            }
-            DataCopy(t.maximumGm[WorkBase(tiling, base + k, group) + col],
-                     t.wide[k * tiling.colTile], static_cast<int32_t>(width));
-        }
-        DisableDmaAtomic();
-    }
+    StoreReduced<true>(t, t.maximumGm, tiling, base, count, col, width, t.wide);
     SyncEvent<HardEvent::MTE3_V>(sync.storeToCompute);
 }
 
@@ -208,20 +127,7 @@ __aicore__ inline void ExpBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingDa
     if constexpr (kStore) {
         CopyRowsOut(t.outGm, t.narrow2, tiling, t.groups, base, count, col, valid);
     }
-    if (tiling.localAccum != 0) {
-        AccumulateRows<false>(t, tiling, t.wide, base, count, col, width);
-    } else {
-        SetAtomicAdd<float>();
-        for (uint32_t k = 0; k < count; ++k) {
-            const int32_t group = t.groups.GetValue(k);
-            if (!GroupValid(tiling, group)) {
-                continue;
-            }
-            DataCopy(t.sumGm[WorkBase(tiling, base + k, group) + col],
-                     t.wide[k * tiling.colTile], static_cast<int32_t>(width));
-        }
-        DisableDmaAtomic();
-    }
+    StoreReduced<false>(t, t.sumGm, tiling, base, count, col, width, t.wide);
     SyncEvent<HardEvent::MTE3_V>(sync.storeToCompute);
 }
 
@@ -307,20 +213,7 @@ __aicore__ inline void GradSumBatch(PhaseTensors<T>& t, const ScatterSoftmaxTili
         }
     }
     SyncEvent<HardEvent::V_MTE3>(sync.computeToStore);
-    if (tiling.localAccum != 0) {
-        AccumulateRows<false>(t, tiling, t.wide3, base, count, col, width);
-    } else {
-        SetAtomicAdd<float>();
-        for (uint32_t k = 0; k < count; ++k) {
-            const int32_t group = t.groups.GetValue(k);
-            if (!GroupValid(tiling, group)) {
-                continue;
-            }
-            DataCopy(t.sumGm[WorkBase(tiling, base + k, group) + col],
-                     t.wide3[k * tiling.colTile], static_cast<int32_t>(width));
-        }
-        DisableDmaAtomic();
-    }
+    StoreReduced<false>(t, t.sumGm, tiling, base, count, col, width, t.wide3);
     SyncEvent<HardEvent::MTE3_V>(sync.storeToCompute);
 }
 
@@ -367,24 +260,34 @@ __aicore__ inline void GradBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingD
     SyncEvent<HardEvent::MTE3_V>(sync.storeToCompute);
 }
 
-// out[b][g][a] = maximum[b][g][a] + ln(sum[b][g][a]).
+// The finalize pass of the grouped log-sum-exp: out[b][g][a] = maximum + ln(sum).
+// An empty group keeps the neutral maximum and a zero sum, and `neutral + ln(0)`
+// is `-inf`, which is what `torch_scatter` and `torch.logsumexp` report for a
+// group with no member.
 //
-// The reduced output rows are exactly the workspace rows, so the pass walks
-// them in order and needs no group labels. An empty group keeps the neutral
-// maximum and a zero sum, and `neutral + ln(0)` is `-inf`, which is what
-// `torch_scatter` and `torch.logsumexp` report for a group with no member.
-template <typename T>
+// The reduced output rows are exactly the workspace rows, so the pass walks them
+// in order and needs no group labels. The standard deviation has its own
+// finalize pass in scatter_softmax_kernel_std.h.
+template <ScatterSoftmaxMode Mode, typename T>
 __aicore__ inline void FinalizeBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingData& tiling,
                                      PipelineSync& sync, uint64_t base, uint32_t count,
                                      uint64_t col, uint32_t valid, uint32_t width)
 {
+    if constexpr (Mode == kModeStd) {
+        FinalizeStd(t, tiling, sync, base, count, col, valid, width);
+        return;
+    }
     SyncEvent<HardEvent::V_MTE2>(sync.computeToLoad);
-    for (uint32_t k = 0; k < count; ++k) {
-        const uint64_t offset = (base + k) * tiling.afterPadded + col;
-        DataCopy(t.wide[k * tiling.colTile], t.maximumGm[offset],
-                 static_cast<int32_t>(width));
-        DataCopy(t.wide2[k * tiling.colTile], t.sumGm[offset],
-                 static_cast<int32_t>(width));
+    if (BatchIsContiguous(tiling, col, valid)) {
+        const int32_t span = static_cast<int32_t>(count * tiling.afterPadded);
+        DataCopy(t.wide, t.maximumGm[base * tiling.afterPadded], span);
+        DataCopy(t.wide2, t.sumGm[base * tiling.afterPadded], span);
+    } else {
+        for (uint32_t k = 0; k < count; ++k) {
+            const uint64_t offset = (base + k) * tiling.afterPadded + col;
+            DataCopy(t.wide[k * tiling.colTile], t.maximumGm[offset], static_cast<int32_t>(width));
+            DataCopy(t.wide2[k * tiling.colTile], t.sumGm[offset], static_cast<int32_t>(width));
+        }
     }
     SyncEvent<HardEvent::MTE2_V>(sync.loadToCompute);
     for (uint32_t k = 0; k < count; ++k) {
@@ -394,25 +297,34 @@ __aicore__ inline void FinalizeBatch(PhaseTensors<T>& t, const ScatterSoftmaxTil
         NarrowFromFp32(t.narrow[offset], t.wide[offset], valid);
     }
     SyncEvent<HardEvent::V_MTE3>(sync.computeToStore);
-    for (uint32_t k = 0; k < count; ++k) {
-        DataCopyPad(t.outGm[(base + k) * tiling.after + col],
-                    t.narrow[k * tiling.colTile], Bytes1D(valid * sizeof(T)));
+    if (BatchIsContiguous(tiling, col, valid)) {
+        DataCopyPad(t.outGm[base * tiling.after], t.narrow,
+                    Bytes1D(count * static_cast<uint32_t>(tiling.after) * sizeof(T)));
+    } else {
+        for (uint32_t k = 0; k < count; ++k) {
+            DataCopyPad(t.outGm[(base + k) * tiling.after + col], t.narrow[k * tiling.colTile],
+                        Bytes1D(valid * sizeof(T)));
+        }
     }
     SyncEvent<HardEvent::MTE3_V>(sync.storeToCompute);
 }
 
-// grad_src = grad_out[group] * exp(src - out[group]).
-//
-// One pass, no workspace: the saved log-sum-exp output recovers
-// `exp(src - out)`, and the group gradient is read at the row of the label. A
-// `-inf` group gives `-inf - (-inf) = NaN`, a `+inf` member gives
+// The elementwise backward of the grouped log-sum-exp, one pass, no workspace:
+// grad_src = grad_out[group] * exp(src - out[group]). The saved log-sum-exp
+// output recovers `exp(src - out)`, and the group gradient is read at the row of
+// the label. A `-inf` group gives `-inf - (-inf) = NaN`, a `+inf` member gives
 // `+inf - (+inf) = NaN` while its finite siblings give `exp(-inf) = 0`, exactly
-// like the gradient of `torch.logsumexp`.
-template <typename T>
+// like the gradient of `torch.logsumexp`. The standard deviation has its own
+// elementwise backward in scatter_softmax_kernel_std.h.
+template <ScatterSoftmaxMode Mode, typename T>
 __aicore__ inline void GradElementBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingData& tiling,
                                         PipelineSync& sync, uint64_t base, uint32_t count,
                                         uint64_t col, uint32_t valid, uint32_t width)
 {
+    if constexpr (Mode == kModeStd) {
+        GradElementStd(t, tiling, sync, base, count, col, valid, width);
+        return;
+    }
     SyncEvent<HardEvent::V_MTE2>(sync.computeToLoad);
     CopyRowsIn(t.narrow, t.srcGm, tiling, base, count, col, valid);
     if (!GroupsFitUb(tiling)) {
@@ -420,6 +332,7 @@ __aicore__ inline void GradElementBatch(PhaseTensors<T>& t, const ScatterSoftmax
         CopyGroupRowsIn(t.narrow3, t.gradGm, tiling, t.groups, base, count, col, valid);
     }
     SyncEvent<HardEvent::MTE2_V>(sync.loadToCompute);
+    BatchRowSlices slices(tiling, base, tiling.afterPadded);
     for (uint32_t k = 0; k < count; ++k) {
         const int32_t group = t.groups.GetValue(k);
         if (!GroupValid(tiling, group)) {
@@ -430,7 +343,7 @@ __aicore__ inline void GradElementBatch(PhaseTensors<T>& t, const ScatterSoftmax
         if (GroupsFitUb(tiling)) {
             // Both group rows come from the resident copy; the same GM address
             // read once per source row is what the cache removes.
-            const uint64_t slot = WorkBase(tiling, base + k, group) + col;
+            const uint64_t slot = slices.Row(base + k, group) + col;
             Adds(t.wide2[offset], t.cachedOut[slot], 0.0F, static_cast<int32_t>(valid));
             Sub(t.wide[offset], t.wide[offset], t.wide2[offset], static_cast<int32_t>(valid));
             Exp(t.wide[offset], t.wide[offset], static_cast<int32_t>(valid));
@@ -465,10 +378,14 @@ __aicore__ inline void RunBatch(PhaseTensors<T>& tensors, const ScatterSoftmaxTi
         GradSumBatch<Mode>(tensors, tiling, sync, base, count, col, valid, width);
     } else if constexpr (Phase == kPhaseGrad) {
         GradBatch<Mode>(tensors, tiling, sync, base, count, col, valid, width);
+    } else if constexpr (Phase == kPhaseSum) {
+        SumBatch(tensors, tiling, sync, base, count, col, valid, width);
+    } else if constexpr (Phase == kPhaseDeviation) {
+        DeviationBatch(tensors, tiling, sync, base, count, col, valid, width);
     } else if constexpr (Phase == kPhaseFinalize) {
-        FinalizeBatch(tensors, tiling, sync, base, count, col, valid, width);
+        FinalizeBatch<Mode>(tensors, tiling, sync, base, count, col, valid, width);
     } else {
-        GradElementBatch(tensors, tiling, sync, base, count, col, valid, width);
+        GradElementBatch<Mode>(tensors, tiling, sync, base, count, col, valid, width);
     }
 }
 

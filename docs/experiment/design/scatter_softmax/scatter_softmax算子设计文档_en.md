@@ -92,8 +92,12 @@ cross-core barrier is needed.
   label, so `index` need not be sorted.
 - **Cost of keeping it resident**: the exp pass holds the cached maximum
   workspace and the sum it accumulates into at the same time, so the row budget
-  reserves two copies. Both are capped at 16 KB, and `rowBatch` stays at 8 for
-  `after = 128`.
+  reserves two copies. Both are capped at 16 KB, and the row budget puts
+  `rowBatch` at 32 for `after = 128`.
+- **Batch size and synchronization**: `rowBatch` is capped at 64 rows. A batch
+  pays one MTE2/V/MTE3 round of flag waits, so a small batch makes those waits
+  the dominant cost: raising the cap from 8 to 64 took the scalar wait of the
+  reduction pass of 1M x 32 from 1.78 ms to 0.13 ms.
 - **Padding lanes**: every vector instruction writes at a 32-byte aligned buffer
   base. Only when the tile still has padding lanes (`valid < width`) is the
   neutral value duplicated over the whole tile first (neutral maximum for pass 1,
@@ -172,8 +176,9 @@ cross-core barrier is needed.
 - The backward pass reuses the forward output, so one tensor the size of `src`
   stays alive for training.
 - Row batching trades UB for parallelism: a larger `rowBatch` removes
-  synchronisations but occupies more UB, and the current cap of 8 keeps
-  `colTile` at the full 2048 within the 192 KB UB budget.
+  synchronisations but occupies more UB. The cap is now 64 rows and the row
+  budget still derives the batch from 80 KB, so narrow rows reach 64 while wide
+  rows fall back to 1-8.
 - A resident workspace replaces one atomic write per row and one workspace read
   per row with one reduction per core, one atomic write-back and one workspace
   read per pass, at the cost of up to two 16 KB copies per core. A workspace

@@ -454,7 +454,7 @@ float32 range is reported as `-inf`.
 > Precision and cost: the workspace layout, the float32 reductions and the
 > scheduling knobs are the ones documented for `scatter_softmax` (MTE3 atomic
 > per-group accumulation, or a UB-resident accumulator when the workspace fits
-> in 16 KB; batches of up to 8 rows per core). `index` may be unsorted. The
+> in 16 KB; batches of up to 64 rows per core). `index` may be unsorted. The
 > output rounds in the source dtype and the standalone golden uses a float64
 > reference.
 
@@ -523,7 +523,7 @@ gradient, and its finite siblings get zero.
 > Precision and cost: the workspace layout, the float32 reductions and the
 > scheduling knobs are the ones documented for `scatter_softmax` (MTE3 atomic
 > per-group accumulation, or a UB-resident accumulator when the workspace fits
-> in 16 KB; batches of up to 8 rows per core). `index` may be unsorted. The
+> in 16 KB; batches of up to 64 rows per core). `index` may be unsorted. The
 > output rounds in the source dtype and the standalone golden uses a float64
 > reference. The backward needs no reduction workspace; when the group count is
 > small it widens the reduced output and the upstream gradient into a
@@ -546,6 +546,88 @@ result = ops_gnn.scatter_logsumexp(src, index, dim=0, dim_size=2)
 > Tests live in `test/scatter_logsumexp/arch22/` and
 > `test/scatter_logsumexp/arch35/`, each with its own
 > `benchmark_scatter_logsumexp.py`.
+
+---
+
+### scatter_std — Grouped Standard Deviation
+
+Computes the standard deviation of every group defined by `index` on Ascend
+A2/A3 (arch22) and Ascend 950 (arch35). The arguments match the grouped softmax
+family (`dim` defaults to 0, `index` is one-dimensional):
+
+```python
+scatter_std(src, index, dim=0, dim_size=None, unbiased=True)  # Tensor
+```
+
+For every group `g` the reduction along `dim` is:
+
+```text
+out[g] = sqrt(sum_j (src[j] - mean[g])**2 / (n - 1))   # unbiased=True
+out[g] = sqrt(sum_j (src[j] - mean[g])**2 / n)         # unbiased=False
+```
+
+where `j` runs over the `n` elements of group `g` and `mean[g]` is the mean of
+that group. Unlike the softmax family the output is reduced: it has one row per
+`(batch, group)` pair, so `src.size(dim)` is replaced by `dim_size`.
+
+| Argument | Constraint |
+| --- | --- |
+| `src` | NPU tensor; float16, float32 or bfloat16 |
+| `index` | 1-D int32/int64 tensor on the same device; length must equal `src.size(dim)`, values must be non-negative and below `dim_size` |
+| `dim` | Dimension along which the reduction is computed; negative dimensions are accepted, default 0 |
+| `dim_size` | Number of groups; defaults to `index.max() + 1` and may be larger to leave empty groups |
+| `unbiased` | Divide by `n - 1` (sample standard deviation) when true and by `n` (population standard deviation) when false, default true |
+
+The implementation reuses the device kernel of `scatter_softmax`
+(`csrc/npu/scatter_softmax/op_kernel/common`) with its standard-deviation mode
+enabled: two full passes plus one final pass. The first accumulates the group
+sums and counts the members of every group, the second accumulates the centered
+squared deviations `(src - sum / n)^2`, and the third walks only the
+`batch × groupCount` group rows to write the mean (back over the group-sum
+workspace, where the backward reads it), the variance and the standard
+deviation. The backward is a single elementwise pass:
+
+```text
+grad_src = grad_out[group] * (src - mean[group]) / ((n - correction) * out[group])
+```
+
+The variance is accumulated in two centered passes - mean first, then the
+squared deviations - instead of being expanded into `sum(x^2) - n * mean^2`:
+the expanded form subtracts two float32 values close to a million to recover a
+variance of order `1e-4` for data like `1000 ± 0.01` and cancels every
+significant digit.
+
+Edge cases follow `torch.std`: an empty group is `NaN`; the single member of an
+unbiased deviation is `NaN` while the biased one is `0`; a group that holds
+`±inf` or `NaN` is `NaN`; a group whose elements are all equal has a standard
+deviation of `0` and a gradient of `0`, because `torch.std` zeroes the variance gradient
+before it propagates.
+
+> Precision and cost: the workspace layout and the fp32 reduction are those of
+> `scatter_softmax` - every group is reduced through the MTE3 atomic unit, or
+> through a private per-core accumulator flushed once at the end of the pass
+> when the whole workspace fits in 16 KB. The member counts are one fp32 counter
+> per group; while that dense array fits in 64 KB (`dim_size <= 16384`) a core
+> accumulates in UB and flushes once per group, falling back to one 32-byte
+> atomic per row when it does not. Every reduction runs in float32, so the length
+> of an fp16/bf16 group is not limited by the 65504 bound; the output is rounded
+> to the source dtype and the independent golden runs in float64. The backward
+> reduces nothing.
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+src = torch.tensor([[1., 2.], [3., 4.], [5., 6.]], device="npu")
+index = torch.tensor([0, 1, 1], dtype=torch.int64, device="npu")
+result = ops_gnn.scatter_std(src, index, dim=0, dim_size=2)
+# group 0: [[1., 2.]]                 -> [[nan, nan]] (single member)
+# group 1: [[3., 4.], [5., 6.]]       -> [[1.4142, 1.4142]]
+```
+
+> Tests live in `test/scatter_std/arch22/` and `test/scatter_std/arch35/`, each
+> with its own `benchmark_scatter_std.py`.
 
 ---
 

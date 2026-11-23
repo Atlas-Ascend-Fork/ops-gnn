@@ -18,6 +18,7 @@
 #include "scatter_log_softmax/op_host/scatter_log_softmax.h"
 #include "scatter_logsumexp/op_host/scatter_logsumexp.h"
 #include "scatter_softmax/op_host/scatter_softmax.h"
+#include "scatter_std/op_host/scatter_std.h"
 #include "segment_coo/op_host/segment_coo.h"
 #include "segment_csr/op_host/segment_csr.h"
 #include "segment_logsumexp/op_host/segment_logsumexp.h"
@@ -184,6 +185,24 @@ void BindScatterLogSumExp(py::module_& module)
         py::call_guard<py::gil_scoped_release>());
 }
 
+// The standard deviation is the second-moment sibling of the log-sum-exp and
+// shares the same kernel core; its forward also returns the group means and the
+// member counts the backward reuses.
+void BindScatterStd(py::module_& module)
+{
+    module.def("scatter_std_forward", &opsgnn::scatter_std_forward,
+        py::arg("src"), py::arg("index"), py::arg("dim"), py::arg("dim_size"),
+        py::arg("unbiased"),
+        "Grouped standard deviation forward on NPU",
+        py::call_guard<py::gil_scoped_release>());
+    module.def("scatter_std_backward", &opsgnn::scatter_std_backward,
+        py::arg("src"), py::arg("out"), py::arg("grad_out"), py::arg("mean"),
+        py::arg("count"), py::arg("index"), py::arg("dim"), py::arg("dim_size"),
+        py::arg("unbiased"),
+        "Grouped standard deviation backward on NPU",
+        py::call_guard<py::gil_scoped_release>());
+}
+
 #ifndef OPSGNN_DAV_2201
 void RegisterKnn(py::module_& m)
 {
@@ -335,11 +354,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 #endif
     RegisterSegmentCsr(m);
     // arch22 and arch35 share the scatter_softmax / scatter_log_softmax /
-    // scatter_logsumexp kernels, so they are bound once here instead of in both
-    // architecture entry points.
+    // scatter_logsumexp / scatter_std kernels, so they are bound once here instead
+    // of in both architecture entry points.
     BindScatterSoftmax(m);
     BindScatterLogSoftmax(m);
     BindScatterLogSumExp(m);
+    BindScatterStd(m);
 #ifdef OPSGNN_DAV_2201
     BindArch22(m);
 #else

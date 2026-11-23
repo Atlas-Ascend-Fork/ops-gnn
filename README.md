@@ -186,6 +186,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `scatter_softmax` | 按 index 分组的分组 softmax（torch_scatter 兼容，可求导） | NPU（A2/A3、950） | [scatter_softmax — 分组 softmax](docs/zh/api_reference.md#scatter_softmax--分组-softmax) |
 | `scatter_log_softmax` | 按 index 分组的分组 log-softmax（torch_scatter 兼容，可求导） | NPU（A2/A3、950） | [scatter_log_softmax — 分组 log-softmax](docs/zh/api_reference.md#scatter_log_softmax--分组-log-softmax) |
 | `scatter_logsumexp` | 按 index 分组约简 log-sum-exp（torch_scatter 兼容，可求导） | NPU（A2/A3、950） | [scatter_logsumexp — 分组 log-sum-exp](docs/zh/api_reference.md#scatter_logsumexp--分组-log-sum-exp) |
+| `scatter_std` | 按 index 分组计算标准差（torch_scatter 兼容，可求导） | NPU（A2/A3、950） | [scatter_std — 分组标准差](docs/zh/api_reference.md#scatter_std--分组标准差) |
 | `radius` / `radius_graph` | 半径内邻居搜索（torch_cluster 兼容，Ascend 950PR） | NPU | [radius / radius_graph — 半径内邻居搜索](docs/zh/api_reference.md#radius--radius_graph--半径内邻居搜索) |
 | `knn` / `knn_graph` | 精确近邻检索与图构建（Ascend 950PR） | NPU | [knn / knn_graph — 精确近邻搜索](docs/zh/api_reference.md#knn--knn_graph--精确近邻搜索) |
 | `nearest` | 同batch最近y点的全局索引 | NPU（950，arch35） | [nearest](docs/zh/api_reference.md) |

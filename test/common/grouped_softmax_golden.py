@@ -15,9 +15,11 @@ dtype rounding. It deliberately does not import ``ops_gnn`` or
 ``scatter_softmax`` and ``scatter_log_softmax`` differ in the per-group
 reduction only, so the caller passes it in (``torch.softmax`` or
 ``torch.log_softmax``) and each operator's ``golden.py`` binds the matching one.
-``scatter_logsumexp`` additionally reduces the output, so it keeps one row per
-``(batch, group)`` pair and has its own reference here.
+``scatter_logsumexp`` and ``scatter_std`` additionally reduce the output, so they
+keep one row per ``(batch, group)`` pair and have their own references here.
 """
+
+import warnings
 
 import torch
 
@@ -96,6 +98,50 @@ def logsumexp_gradient(src: torch.Tensor, index, dim: int = 0, dim_size=None):
     """
     ref_src = src.to(torch.float64).requires_grad_(True)
     return ref_src, grouped_logsumexp_reference(ref_src, index, dim, dim_size)
+
+
+def grouped_std_reference(src: torch.Tensor, index, dim: int = 0, dim_size=None,
+                          unbiased: bool = True) -> torch.Tensor:
+    """Reduce every group of ``src`` with ``torch.std`` in float64.
+
+    Like the log-sum-exp reference the output is reduced: one row per
+    ``(batch, group)`` pair. The per-group reduction is ``torch.std`` itself, so
+    the empty-group and single-member conventions (NaN for both under
+    ``unbiased``, 0 for the biased single member) come from the same place the
+    operator claims to follow.
+    """
+    idx, values, dim, groups = normalized_groups(src, index, dim, dim_size)
+
+    shape = list(values.shape)
+    shape[dim] = groups
+    result = torch.full(shape, float("nan"), dtype=torch.float64)
+    correction = 1 if unbiased else 0
+    for group in range(groups):
+        positions = (idx == group).nonzero(as_tuple=False).flatten()
+        if positions.numel() == 0:
+            continue
+        subset = values.index_select(dim, positions)
+        # A group whose members are fewer than `correction + 1` makes torch warn
+        # about its degrees of freedom; those are exactly the NaN cases the
+        # operator documents, so the warning is expected and would otherwise
+        # bury the test log in one line per group.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="std\\(\\): degrees of freedom")
+            result.select(dim, group).copy_(
+                torch.std(subset, dim=dim, correction=correction))
+    return result
+
+
+def std_gradient(src: torch.Tensor, index, dim: int = 0, dim_size=None,
+                 unbiased: bool = True):
+    """Return the float64 forward of ``grouped_std_reference`` with a graph.
+
+    The forward reference assembles the groups and applies ``torch.std``, so the
+    gradient of the operator is compared against the gradient of exactly the
+    reduction it implements; ``requires_grad`` only adds the autograd graph.
+    """
+    ref_src = src.to(torch.float64).requires_grad_(True)
+    return ref_src, grouped_std_reference(ref_src, index, dim, dim_size, unbiased)
 
 
 def make_reference(reduce):
