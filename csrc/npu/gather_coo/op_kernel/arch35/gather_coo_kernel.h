@@ -159,7 +159,12 @@ private:
         const uint64_t indexBits =
             static_cast<uint64_t>(indexLocal.GetValue(localOffset)) |
             (static_cast<uint64_t>(indexLocal.GetValue(localOffset + 1)) << 32);
-        return static_cast<int64_t>(indexBits);
+        const int64_t value = static_cast<int64_t>(indexBits);
+        const int64_t lastRow = static_cast<int64_t>(sourceRows) - 1;
+        if (value < 0) {
+            return 0;
+        }
+        return value > lastRow ? lastRow : value;
     }
 
     __aicore__ inline void AdvancePosition()

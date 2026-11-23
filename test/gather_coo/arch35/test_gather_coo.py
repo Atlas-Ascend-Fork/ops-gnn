@@ -346,6 +346,29 @@ def test_gather_coo_argument_validation():
         )
 
 
+@pytest.mark.parametrize('src_shape, index', [
+    ((1, 2, 3), [[2]]),
+    ((2, 3), [-1]),
+    ((2, 3), [0, 2, 5]),
+    ((2, 4, 3), [[0, 4], [4, 4]]),
+], ids=['forward_prefix_batch', 'negative', 'forward_tail', 'batch_beyond_rows'])
+def test_gather_coo_rejects_out_of_range_indices(src_shape, index):
+    device = torch.device("npu")
+    src = torch.ones(src_shape, dtype=torch.float32, device=device)
+    idx = torch.tensor(index, dtype=torch.int64, device=device)
+    with pytest.raises(RuntimeError, match="out of range"):
+        ops_gnn.gather_coo(src, idx)
+
+
+def test_gather_coo_accepts_boundary_indices():
+    device = torch.device("npu")
+    src = torch.arange(12, dtype=torch.float32, device=device).reshape(6, 2)
+    index = torch.tensor([1, 0, 5, 5], dtype=torch.int64, device=device)
+    result = ops_gnn.gather_coo(src, index)
+    expected = src.cpu()[index.cpu()]
+    _assert_bitwise(result.cpu(), expected)
+
+
 def test_gather_coo_source_alias_out():
     device = torch.device("npu")
     src = torch.arange(8, dtype=torch.int32, device=device).reshape(4, 2)

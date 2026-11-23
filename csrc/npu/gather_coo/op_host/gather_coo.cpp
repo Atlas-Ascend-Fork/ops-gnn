@@ -123,6 +123,28 @@ void ValidateInputs(const torch::Tensor& src, const torch::Tensor& index)
     }
 }
 
+void ValidateIndexValues(
+    const torch::Tensor& index,
+    uint64_t sourceRows,
+    uint64_t logicalFeatures,
+    uint64_t totalRows)
+{
+    if (index.numel() == 0 || totalRows == 0 || logicalFeatures == 0 ||
+        sourceRows == 0) {
+        return;
+    }
+    const torch::Tensor indexHost = index.cpu();
+    const int64_t* values = indexHost.data_ptr<int64_t>();
+    const int64_t count = indexHost.numel();
+    for (int64_t i = 0; i < count; ++i) {
+        TORCH_CHECK(
+            values[i] >= 0 &&
+                static_cast<uint64_t>(values[i]) < sourceRows,
+            "gather_coo: index[", i, "]=", values[i],
+            " out of range [0, ", sourceRows, ")");
+    }
+}
+
 GatherCooShapeInfo BuildShapeInfo(
     const torch::Tensor& src,
     const torch::Tensor& index)
@@ -317,6 +339,8 @@ torch::Tensor gather_coo(
 {
     ValidateInputs(src, index);
     const GatherCooShapeInfo info = BuildShapeInfo(src, index);
+    ValidateIndexValues(
+        index, info.sourceRows, info.logicalFeatures, info.totalRows);
     if (optional_out.has_value()) {
         return GatherWithOut(src, index, optional_out, info);
     }
