@@ -53,17 +53,16 @@ def _reduce_rows(rows, seed, positions, mode, dtype):
             better = incoming < value if mode == "min" else incoming > value
             value = torch.where(better, incoming, value)
             argument = torch.where(better, position, argument)
+    if mode == "mean" and dtype.is_floating_point:
+        return (value / len(positions)).to(dtype), argument
     value = value.to(dtype)
     if mode == "mean":
         divisor = torch.tensor(len(positions), dtype=torch.int64).to(dtype)
         if divisor.item() == 0:
             raise ValueError("byte mean has an undefined narrowed-count zero divisor")
-        if dtype.is_floating_point:
-            value = (value / divisor).to(dtype)
-        else:
-            value = torch.div(
-                value.to(torch.int64), divisor.to(torch.int64), rounding_mode="trunc"
-            ).to(dtype)
+        value = torch.div(
+            value.to(torch.int64), divisor.to(torch.int64), rounding_mode="trunc"
+        ).to(dtype)
     return value, argument
 
 

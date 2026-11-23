@@ -76,6 +76,20 @@ SEGMENT_COO_GENERAL_SHAPES = [
 ]
 
 
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("cancel", [False, True])
+def test_mean_reference_divides_before_narrowing(dtype, cancel):
+    src = torch.full((100, 1), 1000.0, dtype=dtype)
+    if cancel:
+        src[50:] = -1000.0
+    index = torch.zeros(100, dtype=torch.long)
+    expected = src.float().mean(0, keepdim=True).to(dtype)
+    reference = segment_mean_reference(src, index, dim_size=1)
+    torch.testing.assert_close(reference, expected, rtol=0, atol=0)
+    actual = ops_gnn.segment_mean_coo(src.npu(), index.npu(), dim_size=1)
+    torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+
 def _index_for_last_dim(index, src):
     """Broadcast a 1-D segment index over all leading source dimensions."""
     if src.dim() == 1:
