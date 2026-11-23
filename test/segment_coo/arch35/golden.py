@@ -121,30 +121,27 @@ def _validate_row_indices(row_index, segments):
         raise ValueError("indices must be sorted and within output bounds")
 
 
-def _reduce_segment(buffers, batch, segment, mode, limits):
+def _reduce_segment(buffers, batch, segment, mode):
     positions = (buffers.indices[batch] == segment).nonzero().flatten()
     seed = buffers.output[batch, segment]
     if not buffers.has_out and mode in ("min", "max"):
-        seed = torch.full_like(seed, limits.max if mode == "min" else limits.min)
+        seed = buffers.values[batch, positions[0]]
     elif buffers.has_out and positions[0].item() == 0:
         seed = buffers.output[batch, 0]
     value, arg = _reduce_rows(buffers.values[batch, positions], seed, positions,
                               mode, buffers.values.dtype)
+    if not buffers.has_out and mode in ("min", "max"):
+        arg = torch.where(arg >= 0, arg, positions[0])
     buffers.output[batch, segment] = value
     buffers.output_args[batch, segment] = torch.where(arg >= 0, arg, buffers.length)
 
 
 def _reduce_buffers(buffers, mode):
-    dtype = buffers.values.dtype
-    limits = torch.finfo(dtype) if dtype.is_floating_point else torch.iinfo(dtype)
     for batch in range(buffers.values.size(0)):
         row_index = buffers.indices[batch]
         _validate_row_indices(row_index, buffers.output.size(1))
         for segment in torch.unique_consecutive(row_index).tolist():
-            _reduce_segment(buffers, batch, segment, mode, limits)
-    if not buffers.has_out and mode in ("min", "max"):
-        empty_value = limits.max if mode == "min" else limits.min
-        buffers.result[buffers.result == empty_value] = 0
+            _reduce_segment(buffers, batch, segment, mode)
 
 
 def segment_coo_reference(

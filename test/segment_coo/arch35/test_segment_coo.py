@@ -1053,5 +1053,29 @@ def test_plan_path_transitions(dtype, mode, shared_index):
         torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("dtype", SEGMENT_COO_SUPPORTED_DTYPES)
+@pytest.mark.parametrize("mode", ["min", "max"])
+@pytest.mark.parametrize("batched", [False, True])
+def test_dtype_limit_nonempty_segments(npu_api, dtype, mode, batched):
+    limits = torch.finfo(dtype) if dtype.is_floating_point else torch.iinfo(dtype)
+    limit = limits.max if mode == "min" else limits.min
+    shape = (2, 2, 3) if batched else (2, 3)
+    source = torch.full(shape, limit, dtype=dtype)
+    index = torch.tensor([[1, 1]] if batched else [1, 1])
+    options = ReferenceOptions(reduce=mode, return_arg=True)
+    expected, args = segment_coo_reference(source, index, dim_size=3, options=options)
+    values = torch.zeros((2, 3, 3) if batched else (3, 3), dtype=dtype)
+    values[..., 1, :] = limit
+    expected_args = torch.full(values.shape, 2, dtype=torch.long)
+    expected_args[..., 1, :] = 0
+    torch.testing.assert_close(expected, values, rtol=0, atol=0)
+    torch.testing.assert_close(args, expected_args, rtol=0, atol=0)
+    actual, actual_args = getattr(npu_api, "segment_" + mode + "_coo")(
+        source.npu(), index.npu(), dim_size=3)
+    expected_args[..., 1, :] = 1
+    torch.testing.assert_close(actual.cpu(), values, rtol=0, atol=0)
+    torch.testing.assert_close(actual_args.cpu(), expected_args, rtol=0, atol=0)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
