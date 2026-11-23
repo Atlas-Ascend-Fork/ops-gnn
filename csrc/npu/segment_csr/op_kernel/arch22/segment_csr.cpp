@@ -1669,7 +1669,9 @@ void Dispatch(void *src, int64_t *index, void *out, int64_t *arg, SegmentCsrTili
               aclrtStream stream) {
 #define LAUNCH(R)                                                                                                      \
     SegmentCsrKernel<T, R>                                                                                             \
-        <<<t.usedBlockNum, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)index, (GM_ADDR)out, (GM_ADDR)arg, t)
+        <<<t.usedBlockNum, nullptr, stream>>>(                                                                         \
+            reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(index), reinterpret_cast<uint8_t *>(out),     \
+            reinterpret_cast<uint8_t *>(arg), t)
     switch (t.reduceCode) {
     case SegmentSum:
         LAUNCH(SegmentSum);
@@ -1690,10 +1692,14 @@ void Dispatch(void *src, int64_t *index, void *out, int64_t *arg, SegmentCsrTili
         // width is not a multiple of four int64 lanes uses one owner.
         if (t.reduceCode == SegmentMin)
             SegmentCsrArgCarryKernel<T, SegmentMin>
-                <<<argCarryBlocks, nullptr, stream>>>((GM_ADDR)index, (GM_ADDR)out, (GM_ADDR)arg, t);
+                <<<argCarryBlocks, nullptr, stream>>>(
+                    reinterpret_cast<uint8_t *>(index), reinterpret_cast<uint8_t *>(out),
+                    reinterpret_cast<uint8_t *>(arg), t);
         else
             SegmentCsrArgCarryKernel<T, SegmentMax>
-                <<<argCarryBlocks, nullptr, stream>>>((GM_ADDR)index, (GM_ADDR)out, (GM_ADDR)arg, t);
+                <<<argCarryBlocks, nullptr, stream>>>(
+                    reinterpret_cast<uint8_t *>(index), reinterpret_cast<uint8_t *>(out),
+                    reinterpret_cast<uint8_t *>(arg), t);
     }
 }
 
@@ -1868,12 +1874,14 @@ __global__ __aicore__ void ValidateInt64Kernel(GM_ADDR src, GM_ADDR flags, int64
 } // namespace
 
 void SegmentCsrValidateHalf(void *src, int64_t numel, int32_t *perCoreValid, int blocks, aclrtStream stream) {
-    ValidateHalfKernel<<<blocks, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)perCoreValid, numel);
+    ValidateHalfKernel<<<blocks, nullptr, stream>>>(
+        reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(perCoreValid), numel);
 }
 
 void SegmentCsrValidateInt64(void *src, int64_t numel, int64_t absBound, int32_t *perCoreValid, int blocks,
                              aclrtStream stream) {
-    ValidateInt64Kernel<<<blocks, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)perCoreValid, numel, absBound);
+    ValidateInt64Kernel<<<blocks, nullptr, stream>>>(
+        reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(perCoreValid), numel, absBound);
 }
 
 namespace {
@@ -1927,8 +1935,8 @@ __global__ __aicore__ void ValidateCsrPointersKernel(GM_ADDR ptr, GM_ADDR flags,
 
 void SegmentCsrValidatePointers(int64_t *indptr, int64_t pointerBatches, int64_t segments, int64_t length,
                                 int32_t *perCoreFlags, int blocks, aclrtStream stream) {
-    ValidateCsrPointersKernel<<<blocks, nullptr, stream>>>((GM_ADDR)indptr, (GM_ADDR)perCoreFlags, pointerBatches,
-                                                           segments, length);
+    ValidateCsrPointersKernel<<<blocks, nullptr, stream>>>(
+        reinterpret_cast<uint8_t *>(indptr), reinterpret_cast<uint8_t *>(perCoreFlags), pointerBatches, segments, length);
 }
 
 aclError SegmentCsrGeneral(void *src, int64_t *index, void *out, int64_t *arg, const SegmentCsrPlan &plan,

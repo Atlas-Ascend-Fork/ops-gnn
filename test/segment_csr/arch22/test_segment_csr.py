@@ -1126,3 +1126,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+@pytest.mark.parametrize("kind", ("csr", "coo"))
+@pytest.mark.parametrize("strided", (False, True))
+@pytest.mark.parametrize("mode", ("normal", "inference", "existing_inference"))
+def test_segment_out_invalidates_scatter_bounds(segment_out_bounds_check, kind, strided, mode):
+    segment_out_bounds_check(kind, strided, mode, coo_accumulates=True)

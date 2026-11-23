@@ -999,9 +999,11 @@ template <typename T> struct IntegerReduction {
 // Host has already validated eligibility and finalized every tiling field.
 void LaunchInt32Batch(void *src, void *out, const SegmentTilingData &t, aclrtStream stream) {
     if (t.reduceCode == SegmentSum)
-        SegmentInt32BatchKernel<SegmentSum><<<t.usedBlockNum, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)out, t);
+        SegmentInt32BatchKernel<SegmentSum><<<t.usedBlockNum, nullptr, stream>>>(
+            reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(out), t);
     else
-        SegmentInt32BatchKernel<SegmentMean><<<t.usedBlockNum, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)out, t);
+        SegmentInt32BatchKernel<SegmentMean><<<t.usedBlockNum, nullptr, stream>>>(
+            reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(out), t);
 }
 
 // Host proves uniform segments, bounded values and value-only output.
@@ -1128,7 +1130,8 @@ __global__ __aicore__ void ValidateInt64Kernel(GM_ADDR src, GM_ADDR flags, int64
 
 void SegmentCooValidateInt64(void *src, int64_t numel, int64_t absBound, int32_t *perCoreValid, int blocks,
                              aclrtStream stream) {
-    ValidateInt64Kernel<<<blocks, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)perCoreValid, numel, absBound);
+    ValidateInt64Kernel<<<blocks, nullptr, stream>>>(
+        reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(perCoreValid), numel, absBound);
 }
 
 // ============================================================================
@@ -1362,7 +1365,8 @@ void LaunchRepair(void *src, void *index, void *out, void *arg, void *initial, c
         (t.hasArg && reinterpret_cast<uintptr_t>(arg) % 32))
         launch.usedBlockNum = 1;
     RepairExtremaKernel<Raw, Dtype><<<launch.usedBlockNum, nullptr, stream>>>(
-        (GM_ADDR)src, (GM_ADDR)index, (GM_ADDR)out, (GM_ADDR)arg, (GM_ADDR)initial, launch);
+        reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(index), reinterpret_cast<uint8_t *>(out),
+        reinterpret_cast<uint8_t *>(arg), reinterpret_cast<uint8_t *>(initial), launch);
 }
 } // namespace
 

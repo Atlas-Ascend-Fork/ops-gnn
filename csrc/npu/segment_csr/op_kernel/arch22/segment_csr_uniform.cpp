@@ -1510,10 +1510,12 @@ template <typename T, bool WholeCast = false, bool Bounded = false>
 void LaunchOrderedCsr(void *src, void *out, const SegmentCsrTilingData &t, aclrtStream stream) {
     if (t.reduceCode == SegmentSum)
         SegmentCsrOrderedUniformKernel<T, SegmentSum, WholeCast, Bounded>
-            <<<t.usedBlockNum, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)out, t);
+            <<<t.usedBlockNum, nullptr, stream>>>(
+                reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(out), t);
     else
         SegmentCsrOrderedUniformKernel<T, SegmentMean, WholeCast, Bounded>
-            <<<t.usedBlockNum, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)out, t);
+            <<<t.usedBlockNum, nullptr, stream>>>(
+                reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(out), t);
 }
 
 template <typename T> bool LaunchHalfCsr(void *src, void *out, const SegmentCsrPlan &plan, aclrtStream stream) {
@@ -1530,10 +1532,12 @@ template <typename T> bool LaunchHalfCsr(void *src, void *out, const SegmentCsrP
         if (plan.path == SegmentCsrKernelPath::HalfExtreme) {
             if (t.reduceCode == SegmentMin)
                 SegmentCsrHalfExtremeKernel<SegmentMin>
-                    <<<t.usedBlockNum, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)out, t);
+                    <<<t.usedBlockNum, nullptr, stream>>>(
+                        reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(out), t);
             else
                 SegmentCsrHalfExtremeKernel<SegmentMax>
-                    <<<t.usedBlockNum, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)out, t);
+                    <<<t.usedBlockNum, nullptr, stream>>>(
+                        reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(out), t);
             return true;
         }
     }
@@ -1544,16 +1548,20 @@ template <typename T> bool LaunchHalfCsr(void *src, void *out, const SegmentCsrP
     do {                                                                                                               \
         switch (t.reduceCode) {                                                                                        \
         case SegmentSum:                                                                                               \
-            Kernel<SegmentSum><<<t.usedBlockNum, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)out, t);                    \
+            Kernel<SegmentSum><<<t.usedBlockNum, nullptr, stream>>>(                                                  \
+                reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(out), t);                               \
             break;                                                                                                     \
         case SegmentMean:                                                                                              \
-            Kernel<SegmentMean><<<t.usedBlockNum, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)out, t);                   \
+            Kernel<SegmentMean><<<t.usedBlockNum, nullptr, stream>>>(                                                 \
+                reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(out), t);                               \
             break;                                                                                                     \
         case SegmentMin:                                                                                               \
-            Kernel<SegmentMin><<<t.usedBlockNum, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)out, t);                    \
+            Kernel<SegmentMin><<<t.usedBlockNum, nullptr, stream>>>(                                                  \
+                reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(out), t);                               \
             break;                                                                                                     \
         case SegmentMax:                                                                                               \
-            Kernel<SegmentMax><<<t.usedBlockNum, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)out, t);                    \
+            Kernel<SegmentMax><<<t.usedBlockNum, nullptr, stream>>>(                                                  \
+                reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(out), t);                               \
             break;                                                                                                     \
         }                                                                                                              \
     } while (false)

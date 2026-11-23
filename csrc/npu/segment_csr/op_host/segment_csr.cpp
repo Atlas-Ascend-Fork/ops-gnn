@@ -1595,11 +1595,9 @@ void FinishOutput(torch::Tensor &out, const c10::optional<torch::Tensor> &outOpt
         outOpt->copy_(out);
         out = *outOpt;
     }
-#ifdef OPSGNN_DAV_2201
-    else if (outOpt.has_value() && outOpt->defined()) {
+    else if (outOpt.has_value() && outOpt->defined() && !out.is_inference()) {
         out.unsafeGetTensorImpl()->bump_version();
     }
-#endif
 }
 
 #ifdef OPSGNN_DAV_2201

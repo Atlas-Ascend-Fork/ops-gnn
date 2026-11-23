@@ -963,7 +963,7 @@ inline SegmentCooPlan CachedLaunchPlan(const arch22::PlanInputs &inputs, int dev
                   inputs.reduce,
                   inputs.hasOut,
                   inputs.hasArg,
-                  inputs.uniformRows,
+                  static_cast<int64_t>(inputs.uniformRows),
                   device,
                   inputs.blocks,
                   static_cast<int64_t>(inputs.ubBytes),
@@ -1115,11 +1115,9 @@ inline torch::Tensor FinalizeOutput(torch::Tensor out, const std::optional<torch
         optional_out->copy_(out);
         out = *optional_out;
     }
-#ifdef OPSGNN_DAV_2201
-    else if (optional_out.has_value()) {
+    else if (optional_out.has_value() && !out.is_inference()) {
         out.unsafeGetTensorImpl()->bump_version();
     }
-#endif
     return out;
 }
 } // namespace

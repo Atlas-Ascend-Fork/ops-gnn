@@ -108,24 +108,22 @@ __global__ __aicore__ void SegmentTypedKernel(GM_ADDR src, GM_ADDR index, GM_ADD
 
 template <typename Runner>
 inline void DispatchTyped(void *src, int64_t *index, void *out, int64_t *arg, SegmentTilingData t, aclrtStream stream) {
-#define LAUNCH(R)                                                                                                      \
-    SegmentTypedKernel<Runner, R>                                                                                      \
-        <<<t.usedBlockNum, nullptr, stream>>>((GM_ADDR)src, (GM_ADDR)index, (GM_ADDR)out, (GM_ADDR)arg, t)
+    const auto launch = [&](auto reduction) {
+        constexpr SegmentReduce reduce = decltype(reduction)::value;
+        SegmentTypedKernel<Runner, reduce><<<t.usedBlockNum, nullptr, stream>>>(
+            reinterpret_cast<uint8_t *>(src), reinterpret_cast<uint8_t *>(index),
+            reinterpret_cast<uint8_t *>(out), reinterpret_cast<uint8_t *>(arg), t);
+    };
     switch (t.reduceCode) {
         case SegmentSum:
-            LAUNCH(SegmentSum);
-            break;
+            return launch(std::integral_constant<SegmentReduce, SegmentSum>{});
         case SegmentMean:
-            LAUNCH(SegmentMean);
-            break;
+            return launch(std::integral_constant<SegmentReduce, SegmentMean>{});
         case SegmentMin:
-            LAUNCH(SegmentMin);
-            break;
+            return launch(std::integral_constant<SegmentReduce, SegmentMin>{});
         case SegmentMax:
-            LAUNCH(SegmentMax);
-            break;
+            return launch(std::integral_constant<SegmentReduce, SegmentMax>{});
     }
-#undef LAUNCH
 }
 
 

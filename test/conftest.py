@@ -263,3 +263,44 @@ def assert_large_random_graph(op, reference, dtype, rtol, atol):
     expected = reference(ptr, idx, x)
     result = op(ptr.npu(), idx.npu(), x.npu())
     torch.testing.assert_close(result.cpu(), expected, rtol=rtol, atol=atol)
+
+
+@pytest.fixture
+def segment_out_bounds_check(npu_api):
+    """Check segment output mutation and scatter bounds through public APIs."""
+    import torch
+    from ops_gnn.scatter import scatter_sum
+
+    def check(kind, strided, mode, *, coo_accumulates):
+        with torch.inference_mode(mode == "inference"):
+            backing = torch.tensor([0, 9, 1, 9] if strided else [0, 1],
+                                   dtype=torch.int64, device="npu")
+            out = backing[::2] if strided else backing
+            values = torch.ones(2, dtype=torch.int64, device="npu")
+            warmed = scatter_sum(values, out, dim=0)
+            torch.testing.assert_close(warmed.cpu(), torch.ones(2, dtype=torch.int64))
+            probe = None
+            if not out.is_inference():
+                token = torch.ones(2, device="npu", requires_grad=True)
+                probe = (token * out).sum()
+            source = [1, 1] if kind == "coo" and coo_accumulates else [1, 2]
+            src = torch.tensor(source, dtype=torch.int64, device="npu")
+            metadata = torch.tensor([0, 1, 2] if kind == "csr" else [0, 1],
+                                    dtype=torch.int64, device="npu")
+            with torch.inference_mode(mode != "normal"):
+                result = getattr(npu_api, f"segment_sum_{kind}")(src, metadata, out=out)
+            torch.npu.synchronize()
+            if result.data_ptr() != out.data_ptr():
+                pytest.fail("segment must return the supplied output storage")
+            torch.testing.assert_close(out.cpu(), torch.tensor([1, 2]))
+            if strided:
+                torch.testing.assert_close(backing[1::2].cpu(), torch.tensor([9, 9]))
+            if probe is not None:
+                with pytest.raises(RuntimeError, match="modified by an inplace operation"):
+                    probe.backward()
+            inferred = scatter_sum(values, out, dim=0)
+            torch.testing.assert_close(inferred.cpu(), torch.tensor([0, 1, 1]))
+            with pytest.raises(IndexError, match="out of bounds"):
+                scatter_sum(values, out, dim=0, dim_size=2)
+
+    return check

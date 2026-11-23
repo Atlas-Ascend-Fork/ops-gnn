@@ -952,3 +952,10 @@ class TestSegmentCsrGoldenLayout:
             segment_csr_cpu(torch.tensor([2.0, 4.0]), torch.tensor([0, 2]), "mean"),
             torch.tensor([3.0]),
         )
+
+
+@pytest.mark.parametrize("kind", ("csr", "coo"))
+@pytest.mark.parametrize("strided", (False, True))
+@pytest.mark.parametrize("mode", ("normal", "inference", "existing_inference"))
+def test_segment_out_invalidates_scatter_bounds(segment_out_bounds_check, kind, strided, mode):
+    segment_out_bounds_check(kind, strided, mode, coo_accumulates=False)
