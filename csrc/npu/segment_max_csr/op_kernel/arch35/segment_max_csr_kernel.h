@@ -39,7 +39,7 @@ struct SegmentMaxTraits<int32_t> {
 
 template <>
 struct SegmentMaxTraits<half> {
-    static __aicore__ inline half FillValue() { return static_cast<half>(-65504.0f); }
+    static __aicore__ inline half FillValue() { return static_cast<half>(-__builtin_inff()); }
 };
 template<>
 struct SegmentMaxTraits<uint16_t> {

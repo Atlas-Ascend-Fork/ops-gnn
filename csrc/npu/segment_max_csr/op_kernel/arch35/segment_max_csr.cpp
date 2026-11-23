@@ -10,6 +10,7 @@
 
 #include "segment_max_csr_kernel.h"
 #include "segment_max_csr.h"
+#include <type_traits>
 
 namespace opsgnn {
 
@@ -22,7 +23,8 @@ void SegmentMaxCsr(T* src, int32_t* indptr, T* optional_out, T* out,
     if (coreNum == 0) {
         coreNum = 1;
     }
-    segment_max_csr_kernel<T><<<coreNum, nullptr, stream>>>(
+    using ComputeT = std::conditional_t<std::is_same_v<T, uint16_t>, half, T>;
+    segment_max_csr_kernel<ComputeT><<<coreNum, nullptr, stream>>>(
         reinterpret_cast<uint8_t*>(src), reinterpret_cast<uint8_t*>(indptr),
         reinterpret_cast<uint8_t*>(optional_out), reinterpret_cast<uint8_t*>(out), tiling);
 }

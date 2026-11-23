@@ -21,6 +21,31 @@ _GOLDEN = runpy.run_path(Path(__file__).with_name("golden.py"))
 segment_max_csr_cpu = _GOLDEN["segment_max_csr_cpu"]
 
 
+@pytest.mark.parametrize("values", [(-1., 1.), (-1., -2.), (-65504., -32.), (-0., -1.)])
+@pytest.mark.parametrize("initial", [None, -0.5, -65504.])
+@pytest.mark.parametrize("features", [16, 2048, 2064])
+def test_half_negative_extrema(npu_api, values, initial, features):
+    source = torch.tensor(values, dtype=torch.float16).view(2, 1).repeat(1, features)
+    ptr = torch.tensor([0, 2], dtype=torch.int32, device="npu")
+    out = None if initial is None else torch.full((1, features), initial, dtype=torch.float16)
+    expected = source.amax(0, keepdim=True)
+    if out is not None:
+        expected = torch.maximum(expected, out)
+    actual = npu_api.segment_max_csr_legacy(source.npu(), ptr, None if out is None else out.npu())
+    torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("initial", [None, -9.])
+def test_half_empty_segments_preserve_fill(npu_api, initial):
+    source = torch.tensor([-1., 1.], dtype=torch.float16).view(2, 1).repeat(1, 16).npu()
+    ptr = torch.tensor([0, 0, 2, 2], dtype=torch.int32, device="npu")
+    out = None if initial is None else torch.full((3, 16), initial, dtype=torch.float16, device="npu")
+    expected = torch.full((3, 16), -float("inf") if initial is None else initial, dtype=torch.float16)
+    expected[1] = 1.
+    actual = npu_api.segment_max_csr_legacy(source, ptr, out)
+    torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("rows", (1, 129, 5000, 65536, 65537))
 @pytest.mark.parametrize("dtype", (torch.float16, torch.float32, torch.int16, torch.int32),
                          ids=("float16", "float32", "int16", "int32"))
