@@ -8,12 +8,20 @@
 
 """Farthest point sampling for Ascend NPU tensors."""
 
+from math import ceil
+from struct import pack, unpack
 from typing import List, NamedTuple, Optional, Tuple, Union
 
 import torch
 from torch import Tensor
 
 from . import _pybind
+
+
+# CPU Half scalar conversion uses different rounding paths across PyTorch versions.
+_HALF_SCALAR_VIA_FLOAT32 = torch.scalar_tensor(
+    0.500244140625 + 2.0 ** -30, dtype=torch.float16, device="cpu"
+).item() == 0.5
 
 
 @torch.jit._overload  # noqa: F811
@@ -80,9 +88,13 @@ def _single_sample_count(num_points: int, ratio: float, src_dtype: torch.dtype) 
     # The low-overhead pybind entry still needs the same two rounding stages
     # as the batch entry: scalar -> src dtype, then float32 multiplication.
     value = _validate_scalar_ratio(ratio)
-    stored_ratio = torch.scalar_tensor(value, dtype=src_dtype, device="cpu")
-    degree = torch.scalar_tensor(num_points, dtype=torch.float32, device="cpu")
-    return max(1, int(torch.ceil(degree * stored_ratio).item()))
+    if src_dtype == torch.float16 and _HALF_SCALAR_VIA_FLOAT32:
+        value = unpack("f", pack("f", value))[0]
+    format_code = "e" if src_dtype == torch.float16 else "f"
+    stored_ratio = unpack(format_code, pack(format_code, value))[0]
+    degree = unpack("f", pack("f", num_points))[0]
+    product = unpack("f", pack("f", degree * stored_ratio))[0]
+    return max(1, ceil(product))
 
 
 def _random_start(degree: Tensor) -> Tensor:

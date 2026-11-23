@@ -14,6 +14,8 @@ contract. This is not the unavailable reviewer's private 66-case suite.
 """
 
 import gc
+from importlib import import_module
+from math import nextafter
 import importlib.util
 import os
 import sys
@@ -37,6 +39,27 @@ libc_random_starts = _GOLDEN["libc_random_starts"]
 reset_libc_seed = _GOLDEN["reset_libc_seed"]
 
 SUPPORTED_DTYPES = (torch.float16, torch.float32)
+
+
+@pytest.mark.parametrize("dtype", SUPPORTED_DTYPES)
+def test_scalar_sample_count_rounding(dtype):
+    fps_module = import_module("ops_gnn.fps")
+    sample_count = getattr(fps_module, "_single_sample_count")
+    ratios = [2.0 ** -150, 2.0 ** -25, 0.1, 0.3, 0.5, 1.0]
+    for denominator in (1024, 2**24):
+        for numerator in range(1, 1024, 7):
+            midpoint = (numerator + 0.5) / denominator
+            ratios.extend([nextafter(midpoint, 0.0), midpoint, nextafter(midpoint, 1.0)])
+    for points in (1, 3, 127, 65535, 65536, 2**24 + 1, 2**31 - 1):
+        degree = torch.scalar_tensor(points, dtype=torch.float32)
+        for ratio in ratios:
+            stored = torch.scalar_tensor(ratio, dtype=dtype)
+            expected = max(1, int(torch.ceil(degree * stored).item()))
+            actual = sample_count(points, ratio, dtype)
+            if actual != expected:
+                pytest.fail(f"count mismatch: {dtype}, {points=}, {ratio=}: {actual} != {expected}")
+
+
 TEST_SHAPES = ((128, 3),
  (1024, 64),
  (4096, 128),
