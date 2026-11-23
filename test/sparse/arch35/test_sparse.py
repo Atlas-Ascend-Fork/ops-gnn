@@ -430,6 +430,28 @@ def test_ptr_monotonic_and_bounds():
         raise AssertionError('ptr values out of bounds')
 
 
+@pytest.mark.parametrize('ind, num_rows, match', [
+    ([5], 2, 'out of range'),
+    ([-2, -1], 3, 'out of range'),
+    ([0, 1, 1000], 4, 'out of range'),
+    ([2, 1], 4, 'non-decreasing'),
+    ([1, 1, 0], 4, 'non-decreasing'),
+], ids=['beyond_m', 'negative', 'far_value', 'decreasing', 'decreasing_tail'])
+def test_ind2ptr_rejects_invalid_indices(ind, num_rows, match):
+    _set_device()
+    row = torch.tensor(ind, dtype=torch.long, device='npu')
+    with pytest.raises(RuntimeError, match=match):
+        ops_gnn.ind2ptr(row, num_rows)
+
+
+def test_ind2ptr_zero_rows_all_zero_contract():
+    _set_device()
+    row = torch.tensor([0, 0, 0], dtype=torch.long, device='npu')
+    out = ops_gnn.ind2ptr(row, 0)
+    torch.npu.current_stream().synchronize()
+    assert_exact(out, torch.tensor([0], dtype=torch.long))
+
+
 def _set_device(device_id=None):
     if hasattr(torch, 'npu'):
         if device_id is None:

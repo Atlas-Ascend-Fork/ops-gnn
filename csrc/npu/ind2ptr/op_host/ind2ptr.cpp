@@ -34,6 +34,18 @@ torch::Tensor ind2ptr(torch::Tensor ind, int64_t M)
         ind = ind.contiguous();
     }
 
+    const torch::Tensor indHost = ind.cpu();
+    const int64_t* indValues = indHost.data_ptr<int64_t>();
+    const int64_t count = indHost.numel();
+    for (int64_t i = 0; i < count; ++i) {
+        const int64_t value = indValues[i];
+        TORCH_CHECK(value >= 0 && value <= M,
+                    "ind2ptr: ind[", i, "]=", value, " out of range [0, ", M, "]");
+        TORCH_CHECK(i == 0 || indValues[i - 1] <= value,
+                    "ind2ptr: ind must be non-decreasing, ind[", i - 1, "]=", indValues[i - 1],
+                    " > ind[", i, "]=", value);
+    }
+
     auto stream = c10_npu::getCurrentNPUStream(ind.device().index());
     Ind2Ptr(ind.data_ptr<int64_t>(), out.data_ptr<int64_t>(), M, ind.numel(), stream);
     return out;
