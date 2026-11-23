@@ -321,6 +321,57 @@ def test_rejects_non_square():
         ops_gnn.matrix_exp(a)
 
 
+@pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16))
+@pytest.mark.parametrize("n", (1, 2, 8, 128))
+@pytest.mark.parametrize("use_out", (False, True))
+def test_finite_large_negative_diagonal(dtype, n, use_out, npu_api):
+    magnitudes = torch.tensor(
+        [0.0, 0.125, 64.0, 2**28, 2**29, 2**30, 1e10, 1e20, 1e30,
+         torch.finfo(dtype).max], dtype=dtype)
+    a = -magnitudes[:, None, None] * torch.eye(n, dtype=dtype)
+    expected = torch.diag_embed(torch.exp(a.diagonal(dim1=-2, dim2=-1).double())).to(dtype)
+    x = a.npu()
+    out = torch.empty_like(x) if use_out else None
+    actual = npu_api.matrix_exp(x, out=out) if use_out else npu_api.matrix_exp(x)
+    if use_out:
+        assert actual is out
+    assert torch.isfinite(actual).all()
+    actual = actual.cpu()
+    assert torch.count_nonzero(actual[3:]) == 0
+    tol = 2e-2 if dtype == torch.bfloat16 else 1e-5
+    torch.testing.assert_close(actual, expected, rtol=tol, atol=tol)
+
+
+@pytest.mark.parametrize("magnitude", (1e10, 1e20, 1e30))
+def test_large_nilpotent_scaling(magnitude, npu_api):
+    a = torch.tensor([[0.0, magnitude], [0.0, 0.0]])
+    actual = npu_api.matrix_exp(a.npu()).cpu()
+    torch.testing.assert_close(actual, torch.eye(2) + a, rtol=1e-5, atol=0)
+
+
+@pytest.mark.parametrize("magnitude", (1e10, 1e20, 1e30))
+def test_mixed_negative_diagonal_scaling(magnitude, npu_api):
+    a = torch.diag(torch.tensor([-magnitude, -1.0]))
+    expected = torch.diag(torch.exp(a.diag().double())).float()
+    actual = npu_api.matrix_exp(a.npu()).cpu()
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=0)
+
+
+@pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16))
+def test_mixed_scaling_routes_repeated_batch(dtype, npu_api):
+    boundary = 2**29 / 2**0.5
+    magnitudes = torch.tensor(
+        [0.0, 0.125, 64.0, boundary * (1 - 1e-6), boundary,
+         boundary * (1 + 1e-6), 1e30], dtype=dtype).repeat(37)[:257]
+    a = -magnitudes[:, None, None] * torch.eye(2, dtype=dtype)
+    expected = torch.diag_embed(torch.exp(a.diagonal(dim1=-2, dim2=-1).double())).to(dtype)
+    actual = npu_api.matrix_exp(a.npu()).cpu()
+    assert torch.isfinite(actual).all()
+    assert torch.count_nonzero(actual[magnitudes > 1e8]) == 0
+    tol = 2e-2 if dtype == torch.bfloat16 else 1e-5
+    torch.testing.assert_close(actual, expected, rtol=tol, atol=tol)
+
+
 @pytest.mark.parametrize("device", ["cpu", "meta"])
 @pytest.mark.parametrize("shape", [(2, 2), (0, 2, 2)], ids=["matrix", "zero_batch"])
 @pytest.mark.parametrize("with_out", [False, True])

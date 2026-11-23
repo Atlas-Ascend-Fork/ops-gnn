@@ -25,7 +25,8 @@ namespace opsgnn {
 
 // 缩放平方 + Taylor-Horner 算法参数（设计文档 3.1）。
 constexpr float MATRIX_EXP_THETA = 0.5f;            // 保证 ||sigma*A||_F <= theta
-constexpr uint32_t MATRIX_EXP_S_MAX = 30;           // 平方次数上限（防御 inf/nan）
+constexpr uint32_t MATRIX_EXP_S_MAX = 136;          // FP32 最大指数 128 + n<=128 的范数余量 8
+constexpr uint32_t MATRIX_EXP_FAST_S_MAX = 30;
 constexpr uint32_t MATRIX_EXP_HORNER_ROUNDS = 8;    // K=9 阶，E 初始化免 1 次 Matmul
 
 // CrossCore flag id（MODE4，intra-block；AIC 只与 subBlock0 AIV 交互）。
@@ -48,6 +49,7 @@ constexpr uint8_t EVT_AIV_V_MTE2 = 3;  // V 清零 -> MTE2 搬入同 buffer 排�
 constexpr uint8_t EVT_AIV_S_MTE2 = 4;  // S 标量读 -> MTE2 重写同 buffer 排序
 constexpr uint8_t EVT_AIV_MTE2_MTE3 = 5;  // MTE2 搬入 -> MTE3 读出同 buffer 排序
 constexpr uint8_t EVT_AIV_MTE3_V = 6;     // MTE3 读出 -> V 改写同 buffer 排序
+constexpr uint8_t EVT_AIV_S_V = 7;       // 标量范数读完后才复用向量缓冲
 
 // GM workspace 布局见 matrix_exp.h（MATRIX_EXP_WS_META_FLOATS）。
 constexpr uint32_t MATRIX_EXP_SMALL_CHUNK = 8192;   // n==1 路径每块元素数

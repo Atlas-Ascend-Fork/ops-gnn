@@ -108,21 +108,21 @@ private:
     // GM nPad 方阵区（A/E/tmp 均按 nPad 布局，见 matrix_exp.h 布局契约）。
     __aicore__ inline auto MakeGmTensor(__gm__ uint8_t* src)
     {
-        return Te::MakeTensor(Te::MakeMemPtr<Te::Location::GM>(reinterpret_cast<__gm__ float*>(src)),
-                              Te::MakeFrameLayout<Te::NDExtLayoutPtn>(nPad_, nPad_));
+        return asc::te::make_tensor(asc::te::make_mem_ptr<Te::Location::GM>(reinterpret_cast<__gm__ float*>(src)),
+                                    asc::te::make_frame_layout<Te::NDExtLayoutPtn>(nPad_, nPad_));
     }
     // GM(nPad 方阵) -> L1 NZ(l1Off) -> L0A(NZ)。
     __aicore__ inline void LoadL1AndL0a(__gm__ uint8_t* src)
     {
         auto tGm = MakeGmTensor(src);
-        auto tL1 = Te::MakeTensor(Te::MakeMemPtr<Te::Location::L1, float>(0),
-                                  Te::MakeFrameLayout<Te::NZLayoutPtn, float>(nPad_, nPad_));
-        auto tL0 = Te::MakeTensor(Te::MakeMemPtr<Te::Location::L0A, float>(0),
-                                   Te::MakeFrameLayout<Te::NZLayoutPtn, float>(nPad_, nPad_));
-        Te::Copy(Te::MakeCopy(Te::CopyGM2L1{}), tL1, tGm);
+        auto tL1 = asc::te::make_tensor(asc::te::make_mem_ptr<Te::Location::L1, float>(0),
+                                        asc::te::make_frame_layout<Te::NZLayoutPtn, float>(nPad_, nPad_));
+        auto tL0 = asc::te::make_tensor(asc::te::make_mem_ptr<Te::Location::L0A, float>(0),
+                                        asc::te::make_frame_layout<Te::NZLayoutPtn, float>(nPad_, nPad_));
+        asc::te::copy(asc::te::make_copy(Te::CopyGM2L1{}), tL1, tGm);
         SyncMte2ToMte1();
         SyncMte1ToMte2();
-        Te::Copy(Te::MakeCopy(Te::CopyL12L0A{}), tL0, tL1);
+        asc::te::copy(asc::te::make_copy(Te::CopyL12L0A{}), tL0, tL1);
         SyncMte1ToM();
     }
     // GM(nPad 方阵) -> L1 NZ(l1EBOff_) -> L0B(ZN)。B 侧 L1 沿用非转置 NZ 模式，
@@ -130,41 +130,43 @@ private:
     __aicore__ inline void LoadL1AndL0b(__gm__ uint8_t* src)
     {
         auto tGm = MakeGmTensor(src);
-        auto tL1 = Te::MakeTensor(Te::MakeMemPtr<Te::Location::L1, float>(l1EBOff_),
-                                  Te::MakeFrameLayout<Te::NZLayoutPtn, float>(nPad_, nPad_));
-        auto tL0 = Te::MakeTensor(Te::MakeMemPtr<Te::Location::L0B, float>(0),
-                                   Te::MakeFrameLayout<Te::ZNLayoutPtn, float>(nPad_, nPad_));
-        Te::Copy(Te::MakeCopy(Te::CopyGM2L1{}), tL1, tGm);
+        auto tL1 = asc::te::make_tensor(asc::te::make_mem_ptr<Te::Location::L1, float>(l1EBOff_),
+                                        asc::te::make_frame_layout<Te::NZLayoutPtn, float>(nPad_, nPad_));
+        auto tL0 = asc::te::make_tensor(asc::te::make_mem_ptr<Te::Location::L0B, float>(0),
+                                        asc::te::make_frame_layout<Te::ZNLayoutPtn, float>(nPad_, nPad_));
+        asc::te::copy(asc::te::make_copy(Te::CopyGM2L1{}), tL1, tGm);
         SyncMte2ToMte1();
         SyncMte1ToMte2();
-        Te::Copy(Te::MakeCopy(Te::CopyL12L0B{}), tL0, tL1);
+        asc::te::copy(asc::te::make_copy(Te::CopyL12L0B{}), tL0, tL1);
         SyncMte1ToM();
     }
     // L0C -> GM(nPad 方阵)。前置：SyncMToFix() 已保证 M 完成。
     __aicore__ inline void StoreL0cToGm(__gm__ uint8_t* dst)
     {
         // L0C 必须显式 BLOCK_CUBE=16（fp32 下 LayoutTraitDefault 会算成 C0=8，skill 陷阱表）。
-        auto tL0c = Te::MakeTensor(Te::MakeMemPtr<Te::Location::L0C, float>(0),
-                                   Te::MakeFrameLayout<Te::NZLayoutPtn, Std::Int<16>>(nPad_, nPad_));
+        auto tL0c = asc::te::make_tensor(asc::te::make_mem_ptr<Te::Location::L0C, float>(0),
+                                         asc::te::make_frame_layout<Te::NZLayoutPtn, Std::Int<16>>(nPad_, nPad_));
         auto tGm = MakeGmTensor(dst);
         // unitFlag=3（FINAL_ACCUMULATION）：单发 Mmad + 单次写回，Mmad/Fixpipe 须同为 3。
-        auto copyOp = Te::MakeCopy(Te::CopyL0C2GM{}).with(Te::FixpipeParams{3});
-        Te::Copy(copyOp, tGm, tL0c);
+        auto copyOp = asc::te::make_copy(Te::CopyL0C2GM{}).with(
+            asc::te::l0c_to_gm_params{asc::te::unit_flag_mode::enable_update});
+        asc::te::copy(copyOp, tGm, tL0c);
         SetFixUsedL0c();
     }
     // L0C = L0A @ L0B（cmatrixInitVal=true：单缓冲每轮重置累加器）。维度取 nPad：
     // 零填充分形不改变 n x n 有效块结果，且规避小维度/行宽 < 32B 的搬运约束。
     __aicore__ inline void Mmad()
     {
-        auto tL0a = Te::MakeTensor(Te::MakeMemPtr<Te::Location::L0A, float>(0),
-                                   Te::MakeFrameLayout<Te::NZLayoutPtn, float>(nPad_, nPad_));
-        auto tL0b = Te::MakeTensor(Te::MakeMemPtr<Te::Location::L0B, float>(0),
-                                   Te::MakeFrameLayout<Te::ZNLayoutPtn, float>(nPad_, nPad_));
-        auto tL0c = Te::MakeTensor(Te::MakeMemPtr<Te::Location::L0C, float>(0),
-                                   Te::MakeFrameLayout<Te::NZLayoutPtn, Std::Int<16>>(nPad_, nPad_));
-        auto atom = Te::MakeMmad(Te::MmadOperation{});
+        auto tL0a = asc::te::make_tensor(asc::te::make_mem_ptr<Te::Location::L0A, float>(0),
+                                         asc::te::make_frame_layout<Te::NZLayoutPtn, float>(nPad_, nPad_));
+        auto tL0b = asc::te::make_tensor(asc::te::make_mem_ptr<Te::Location::L0B, float>(0),
+                                         asc::te::make_frame_layout<Te::ZNLayoutPtn, float>(nPad_, nPad_));
+        auto tL0c = asc::te::make_tensor(asc::te::make_mem_ptr<Te::Location::L0C, float>(0),
+                                         asc::te::make_frame_layout<Te::NZLayoutPtn, Std::Int<16>>(nPad_, nPad_));
+        auto atom = asc::te::make_mmad(Te::MmadOperation{});
         const uint16_t nn = static_cast<uint16_t>(nPad_);
-        Te::Mmad(atom.with(Te::MmadParams{nn, nn, nn, 3, true}), tL0c, tL0a, tL0b);
+        asc::te::mmad(atom.with(asc::te::mmad_params{nn, nn, nn, asc::te::unit_flag_mode::enable_update, true}),
+                      tL0c, tL0a, tL0b);
         SetMUsedL0();
     }
 

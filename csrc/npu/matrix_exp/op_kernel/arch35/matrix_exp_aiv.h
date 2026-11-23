@@ -174,7 +174,9 @@ private:
         StageInputToWs(aF32);
         uint32_t s = 0;
         float sigma = 1.0f;
-        ComputeScaling(aF32, tmpF32, metaF32, s, sigma);
+        ComputeScaling(aF32, tmpF32, s, sigma);
+        Duplicate(metaF32, static_cast<float>(s), MATRIX_EXP_WS_META_FLOATS);
+        SetFlag<HardEvent::S_MTE2>(EVT_AIV_S_MTE2);
         InitM0(aF32, mF32, metaF32, sigma);
         RunHornerRounds(aF32, mF32, tmpF32, s, sigma);
         RunSquaringRounds(mF32, tmpF32, s);
@@ -212,17 +214,26 @@ private:
         }
     }
 
-    // 阶段 2：Frobenius 范数 -> s、sigma（标量，AIC 与本侧由相同输入决定，确定性一致）。
-    // 3510 无 (dst, src, ws, count) 形式的 WholeReduceSum（vec 形式已废弃且依赖保留
-    // UB 编译选项），改用树形归约：VEC 段按 8 元素(32B)对齐折半（src2 偏移必须
-    // 32B 对齐，错误码 340），尾段 <=16 元素转标量累加。
-    __aicore__ inline void ComputeScaling(const LocalTensor<float>& aF32, LocalTensor<float>& tmpF32,
-                                          LocalTensor<float>& metaF32, uint32_t& s, float& sigma)
+    __aicore__ inline void ScaleInput(LocalTensor<float>& aF32, uint32_t shifts)
+    {
+        // 每个乘数保持正规 FP32，避免大指数下单个缩放因子下溢。
+        while (shifts > 0) {
+            const uint32_t step = shifts > 64U ? 64U : shifts;
+            float factor = 1.0f;
+            for (uint32_t i = 0; i < step; ++i) {
+                factor *= 0.5f;
+            }
+            Muls(aF32, aF32, factor, bufElems_);
+            shifts -= step;
+        }
+    }
+
+    __aicore__ inline float SquaredNorm(const LocalTensor<float>& aF32, LocalTensor<float>& tmpF32)
     {
         Mul(tmpF32, aF32, aF32, bufElems_);
         uint32_t reduceLen = bufElems_;
         while (reduceLen > 16) {
-            const uint32_t half = reduceLen / 16U * 8U;  // 8 元素对齐
+            const uint32_t half = reduceLen / 16U * 8U;
             Add(tmpF32, tmpF32, tmpF32[half], reduceLen - half);
             reduceLen -= half;
         }
@@ -231,9 +242,63 @@ private:
         for (uint32_t i = 0; i < reduceLen; ++i) {
             normSq += tmpF32.GetValue(i);
         }
+        return normSq;
+    }
+
+    __aicore__ inline void ComputeStableScaling(LocalTensor<float>& aF32, LocalTensor<float>& tmpF32,
+                                                uint32_t& s)
+    {
+        // 先把最大绝对值缩至 <=1，再求平方和，避免有限输入的范数溢出。
+        Abs(tmpF32, aF32, bufElems_);
+        uint32_t reduceLen = bufElems_;
+        while (reduceLen > 16) {
+            const uint32_t half = reduceLen / 16U * 8U;
+            Max(tmpF32, tmpF32, tmpF32[half], reduceLen - half);
+            reduceLen -= half;
+        }
+        SyncVS();
+        float maxAbs = 0.0f;
+        for (uint32_t i = 0; i < reduceLen; ++i) {
+            const float value = tmpF32.GetValue(i);
+            maxAbs = value > maxAbs ? value : maxAbs;
+        }
         s = 0;
-        float bound = MATRIX_EXP_THETA * MATRIX_EXP_THETA;  // theta^2 * 4^0
-        while (s < MATRIX_EXP_S_MAX && normSq > bound) {
+        while (s < MATRIX_EXP_S_MAX && maxAbs > 1.0f) {
+            maxAbs *= 0.5f;
+            ++s;
+        }
+        SetFlag<HardEvent::S_V>(EVT_AIV_S_V);
+        WaitFlag<HardEvent::S_V>(EVT_AIV_S_V);
+        ScaleInput(aF32, s);
+        float normSq = SquaredNorm(aF32, tmpF32);
+        const uint32_t initialShifts = s;
+        while (s < MATRIX_EXP_S_MAX && normSq > MATRIX_EXP_THETA * MATRIX_EXP_THETA) {
+            normSq *= 0.25f;
+            ++s;
+        }
+        SetFlag<HardEvent::S_V>(EVT_AIV_S_V);
+        WaitFlag<HardEvent::S_V>(EVT_AIV_S_V);
+        ScaleInput(aF32, s - initialShifts);
+    }
+
+    __aicore__ inline void ComputeScaling(LocalTensor<float>& aF32, LocalTensor<float>& tmpF32,
+                                           uint32_t& s, float& sigma)
+    {
+        const float normSq = SquaredNorm(aF32, tmpF32);
+        s = 0;
+        float bound = MATRIX_EXP_THETA * MATRIX_EXP_THETA;
+        while (normSq > bound) {
+            // 仅超出原路径缩放上限的输入，才支付稳定预缩放的开销。
+            if (s == MATRIX_EXP_FAST_S_MAX) {
+                SetFlag<HardEvent::S_V>(EVT_AIV_S_V);
+                WaitFlag<HardEvent::S_V>(EVT_AIV_S_V);
+                ComputeStableScaling(aF32, tmpF32, s);
+                sigma = 1.0f;
+                SyncVMte3();
+                CopyUbToWs(wsAGm_, aF32);
+                SyncMte3V();
+                return;
+            }
             bound *= 4.0f;
             ++s;
         }
@@ -241,16 +306,11 @@ private:
         for (uint32_t i = 0; i < s; ++i) {
             sigma *= 0.5f;
         }
-        // meta 槽写 s（Duplicate 全 8 元素，AIC 只读 [0]；V pipe 产物，随 MTE3 一并发出）。
-        Duplicate(metaF32, static_cast<float>(s), MATRIX_EXP_WS_META_FLOATS);
-        // S pipe 标量读 tmpF32 已结束；Horner 首轮 MTE2 将重写 tmpF32，须 S->MTE2 排序
-        //（S 与 MTE2 并行，否则 copy 可能覆盖正在被读的归约结果）。
-        SetFlag<HardEvent::S_MTE2>(EVT_AIV_S_MTE2);
     }
 
-    // 阶段 3：M0 = (sigma/9) * A（拆分恒等项：全程维护 M = E - I，identity 不参与
+    // 阶段 3：M0 = sigma * A / 9（拆分恒等项：全程维护 M = E - I，identity 不参与
     // 矩阵乘，只在最终输出加回一次，避免幂零/大范数场景 (1+x)^2 - x^2 型大数对消，
-    // 见幂零回归用例）。aF32 常驻不缩放，供每轮 Horner 直接相加。
+    // 见幂零回归用例）。大范数路径已预缩放并更新 ws A 区，此时 sigma=1。
     __aicore__ inline void InitM0(const LocalTensor<float>& aF32, LocalTensor<float>& mF32,
                                   const LocalTensor<float>& metaF32, float sigma)
     {
@@ -265,7 +325,7 @@ private:
 
     // 阶段 4：Horner 8 轮嵌套递推（拆分恒等项形式）：
     //     M_{j+1} = (sigma/k_j) * (A + A @ M_j)，k_j = 8..1
-    // 8 轮后 M = sum_{k=1..9} (sigma*A)^k / k!。A 由 StageInputToWs 装入 aF32 常驻。
+    // 大范数路径使用 A=A_scaled、sigma=1；普通路径保留缩放折叠。
     __aicore__ inline void RunHornerRounds(const LocalTensor<float>& aF32, LocalTensor<float>& mF32,
                                            LocalTensor<float>& tmpF32, uint32_t s, float sigma)
     {
