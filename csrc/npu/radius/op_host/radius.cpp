@@ -233,6 +233,11 @@ GridHostData BuildGrid(const torch::Tensor& x_cpu,
     if (!ComputeGridDims(min_ptr, max_ptr, cell_size, grid_cell_count, dims)) {
         return out;
     }
+    constexpr int64_t kMaxDenseCells = 4 * 1024 * 1024;
+    const int64_t max_cells = (batch_size > 0) ? (kMaxDenseCells / batch_size) : 0;
+    if (grid_cell_count > max_cells) {
+        return out;
+    }
 
     auto cell_t = ComputeCellIds(x_f32, min_ptr, cell_size, dims);
 

@@ -364,6 +364,19 @@ def test_grid_path_batched(device):
     _assert_edges(edge, x, y, _QuerySpec(0.4, 32, (batch_x, batch_y)))
 
 
+def test_grid_path_batched_total_cells_cap(device):
+    coords = [
+        [0.0, 0.0, 0.0], [99.0, 0.0, 0.0], [0.0, 99.0, 0.0], [99.0, 99.0, 0.0],
+        [0.0, 0.0, 9.0], [99.0, 0.0, 9.0], [0.0, 99.0, 9.0], [99.0, 99.0, 9.0],
+    ]
+    x = torch.tensor(coords, dtype=torch.float32, device=device).repeat(64, 1)
+    y = x.clone()
+    batch_x = torch.repeat_interleave(torch.arange(64, device=device), 8)
+    batch_y = batch_x.clone()
+    edge = radius(x, y, 1.5, batch_x, batch_y, max_num_neighbors=8)
+    _assert_edges(edge, x, y, _QuerySpec(1.5, 8, (batch_x, batch_y)))
+
+
 def test_grid_path_truncation(device):
     # Dense queries overflow K=7, firing the truncation path (subset equiv).
     torch.manual_seed(19)
