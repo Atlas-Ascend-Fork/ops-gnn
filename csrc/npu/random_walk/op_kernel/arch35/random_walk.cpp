@@ -103,6 +103,13 @@ __simt_callee__ inline Node2VecStepResult SampleNode2VecStep(
         return result;
     }
     const uint32_t degree = static_cast<uint32_t>(degree64);
+    if (neighborThreshold == distantThreshold &&
+        !IsNeighbor(rowptr, col, current, previous, neighborsSorted)) {
+        const uint32_t index = SampleIndex(random, degree);
+        result.edge = begin + static_cast<int64_t>(index);
+        result.candidate = col[result.edge];
+        return result;
+    }
     while (true) {
         result.edge = begin + static_cast<int64_t>(SampleIndex(random, degree));
         result.candidate = col[result.edge];

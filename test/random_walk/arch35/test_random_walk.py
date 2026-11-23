@@ -102,6 +102,26 @@ def test_paths_are_graph_consistent(p, q):
     assert_walk_consistent(rowptr, sorted_col, node, edge)
 
 
+@pytest.mark.parametrize("p", [0.001, 0.01])
+def test_node2vec_unreachable_return_is_uniform(p):
+    row = torch.tensor([0, 1, 1], dtype=torch.int64)
+    col = torch.tensor([1, 2, 3], dtype=torch.int64)
+    start = torch.zeros(256, dtype=torch.int64)
+    rowptr, sorted_col = prepare_csr(row, col, start)
+    node, edge = random_walk_golden(
+        row,
+        col,
+        start,
+        2,
+        p=p,
+        q=1.0,
+        return_edge_indices=True,
+        seed=7303,
+    )
+    assert_walk_consistent(rowptr, sorted_col, node, edge)
+    assert set(node[:, 2].tolist()) == {2, 3}
+
+
 def test_coalesced_sort_and_edge_index_semantics():
     row = torch.tensor([1, 0, 1], dtype=torch.int64)
     col = torch.tensor([2, 1, 0], dtype=torch.int64)
