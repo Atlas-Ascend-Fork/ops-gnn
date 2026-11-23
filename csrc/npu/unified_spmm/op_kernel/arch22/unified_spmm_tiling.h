@@ -29,4 +29,5 @@ struct UnifiedSpmmTilingData {
     uint32_t reduce;
     uint32_t message;
     uint32_t hasNan;
+    uint32_t batchCount;
 };

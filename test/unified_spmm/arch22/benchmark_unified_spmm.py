@@ -61,7 +61,7 @@ import unittest
 import pytest
 
 _LOGGER = logging.getLogger(__name__)
-PATHS = ("fp16", "fp32", "batched_fp16", "copy_rhs")
+PATHS = ("fp16", "fp32", "batched_fp16", "batched_fp32", "copy_rhs")
 MODES = ("single", "cache-ab")
 INPUT_MODES = ("static", "changing", "fresh", "fresh-e2e")
 
@@ -181,7 +181,7 @@ def make_inputs(torch, case):
     idx_cpu = torch.arange(rows * degree, dtype=torch.int64) % rows
     dtype = torch.float16 if "fp16" in path else torch.float32
     source_rows = rows * degree if path == "copy_rhs" else rows
-    batch = 2 if path == "batched_fp16" else 1
+    batch = 2 if path.startswith("batched") else 1
     shape = (source_rows, 2, features) if batch == 2 else (source_rows, features)
     x_cpu = (torch.arange(source_rows * batch * features).reshape(shape) % 7 - 3).to(dtype)
     return ptr_cpu, idx_cpu, x_cpu
@@ -205,7 +205,7 @@ def benchmark_case(torch, ops_gnn, reference, case, repeat):
     _LOGGER.info("starting path=%s rows=%s changing=%s", path, case["rows"], changing)
     ptr_cpu, idx_cpu, x_cpu = make_inputs(torch, case)
     tensors = (ptr_cpu.npu(), idx_cpu.npu(), x_cpu.npu())
-    operation = ops_gnn.bspmm if path == "batched_fp16" else ops_gnn.spmm
+    operation = ops_gnn.bspmm if path.startswith("batched") else ops_gnn.spmm
     message = "copy_rhs" if path == "copy_rhs" else "copy_lhs"
     cold, got = timed_call(torch, operation, tensors, message, changing)
     _LOGGER.info("cold completed: %.4fms", cold)
@@ -241,7 +241,8 @@ def make_fresh_inputs(torch, case, sample):
     idx = torch.randint(rows, (edges,), generator=generator)
     path = case["path"]
     source_rows = edges if path == "copy_rhs" else rows
-    shape = (source_rows, 2, features) if path == "batched_fp16" else (source_rows, features)
+    shape = ((source_rows, 2, features) if path.startswith("batched")
+             else (source_rows, features))
     dtype = torch.float16 if "fp16" in path else torch.float32
     x = torch.randint(-3, 4, shape, generator=generator).to(dtype)
     return ptr, idx, x
@@ -259,7 +260,7 @@ def fresh_timed_call(torch, operation, cpu_inputs, device_inputs, message):
 
 def benchmark_fresh_case(torch, ops_gnn, reference, case, repeat):
     path, input_mode = case["path"], case["input_mode"]
-    operation = ops_gnn.bspmm if path == "batched_fp16" else ops_gnn.spmm
+    operation = ops_gnn.bspmm if path.startswith("batched") else ops_gnn.spmm
     message = "copy_rhs" if path == "copy_rhs" else "copy_lhs"
     _LOGGER.info("starting path=%s rows=%s mode=%s", path, case["rows"], input_mode)
     # Keep every CPU triple alive. In fresh mode also keep every device triple
@@ -430,19 +431,19 @@ def run_cache_ab(args):
 def test_benchmark_case_matrix():
     check = unittest.TestCase()
     cases = list(iter_cases(PATHS))
-    check.assertEqual(len(cases), 16)
+    check.assertEqual(len(cases), 20)
     keys = {(case["rows"], case["path"], case["changing"]) for case in cases}
-    check.assertEqual(len(keys), 16)
+    check.assertEqual(len(keys), 20)
     check.assertEqual({case["rows"] for case in cases}, {128, 4096})
-    check.assertEqual([case["changing"] for case in cases], [False, True] * 8)
+    check.assertEqual([case["changing"] for case in cases], [False, True] * 10)
 
 
 def test_fresh_case_matrix():
     check = unittest.TestCase()
     cases = list(iter_cases(PATHS, ("fresh", "fresh-e2e")))
-    check.assertEqual(len(cases), 16)
+    check.assertEqual(len(cases), 20)
     check.assertEqual(len({(case["rows"], case["path"], case["input_mode"])
-                           for case in cases}), 16)
+                           for case in cases}), 20)
     check.assertTrue(all(not case["changing"] for case in cases))
 
 
@@ -475,7 +476,7 @@ def test_benchmark_cpu_inputs(path):
     check.assertEqual((ptr[0].item(), ptr[-1].item()), (0, edges))
     check.assertEqual(idx.numel(), edges)
     check.assertEqual(x.size(0), edges if path == "copy_rhs" else case["rows"])
-    check.assertEqual(x.dim(), 3 if path == "batched_fp16" else 2)
+    check.assertEqual(x.dim(), 3 if path.startswith("batched") else 2)
     check.assertEqual(x.dtype, torch.float16 if "fp16" in path else torch.float32)
     check.assertEqual((x.min().item(), x.max().item()), (-3, 3))
 

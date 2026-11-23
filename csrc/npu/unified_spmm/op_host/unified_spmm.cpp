@@ -42,7 +42,7 @@ uint32_t MessageCode(const std::string& op)
 
 void CheckMetadata(const torch::Tensor& indptr, const torch::Tensor& indices,
                    const torch::Tensor& x, const std::optional<torch::Tensor>& out,
-                   int64_t m, int64_t n)
+                   int64_t m, int64_t n, int64_t batches, uint32_t message)
 {
     for (const auto& tensor : {indptr, indices, x}) {
         TORCH_CHECK(tensor.defined() && tensor.device().type() == c10::DeviceType::PrivateUse1,
@@ -50,8 +50,11 @@ void CheckMetadata(const torch::Tensor& indptr, const torch::Tensor& indices,
         TORCH_CHECK(tensor.device() == x.device(),
                     "unified_spmm_csr: inputs must be on the same NPU");
     }
-    TORCH_CHECK(x.dim() == 2 && (x.scalar_type() == at::kHalf || x.scalar_type() == at::kFloat),
-                "unified_spmm_csr: x must be a two-dimensional float16/float32 tensor");
+    TORCH_CHECK((x.dim() == 2 ||
+                 (x.dim() == 3 && message == UNIFIED_SPMM_COPY_LHS)) &&
+                (x.scalar_type() == at::kHalf || x.scalar_type() == at::kFloat),
+                "unified_spmm_csr: x must be a two-dimensional float16/float32 "
+                "tensor, or three-dimensional for copy_lhs");
     TORCH_CHECK(!x.requires_grad(), "unified_spmm_csr: autograd is not supported");
     TORCH_CHECK(indptr.dim() == 1 && indices.dim() == 1 && indptr.numel() >= 1,
                 "unified_spmm_csr: CSR tensors must be one-dimensional; indptr must be nonempty");
@@ -59,9 +62,11 @@ void CheckMetadata(const torch::Tensor& indptr, const torch::Tensor& indices,
                 indices.scalar_type() == indptr.scalar_type(),
                 "unified_spmm_csr: CSR tensors must have the same int32/int64 dtype");
     if (!out) return;
+    bool shapeMatches = out->defined() && out->dim() == x.dim() &&
+                        out->size(0) == m && out->size(-1) == n;
+    if (x.dim() == 3) shapeMatches = shapeMatches && out->size(1) == batches;
     TORCH_CHECK(out->defined() && out->device() == x.device() &&
-                out->scalar_type() == x.scalar_type() && out->dim() == 2 &&
-                out->size(0) == m && out->size(1) == n,
+                out->scalar_type() == x.scalar_type() && shapeMatches,
                 "unified_spmm_csr: out must match output shape, dtype and device");
     TORCH_CHECK(out->is_contiguous() && !out->requires_grad(),
                 "unified_spmm_csr: out must be contiguous and must not require gradients");
@@ -81,14 +86,14 @@ void CheckCsr(const torch::Tensor& indptr, const torch::Tensor& indices,
 }
 
 uint32_t CheckLimitsAndUb(int64_t m, int64_t k, int64_t n, int64_t nnz,
-                          int64_t elementBytes, uint32_t& blocks)
+                          int64_t batches, int64_t elementBytes, uint32_t& blocks)
 {
     const uint64_t limit = std::numeric_limits<uint32_t>::max();
-    TORCH_CHECK(m < limit && k <= limit && n > 0 && nnz <= limit &&
+    TORCH_CHECK(m < limit && k <= limit && n > 0 && batches > 0 && nnz <= limit &&
                 static_cast<uint64_t>(n) * elementBytes <= limit - 31,
                 "unified_spmm_csr: dimensions exceed uint32 limits or feature_dim is zero");
-    TORCH_CHECK(static_cast<uint64_t>(k) * n <= limit &&
-                static_cast<uint64_t>(m) * n <= limit &&
+    TORCH_CHECK(static_cast<uint64_t>(k) * batches * n <= limit &&
+                static_cast<uint64_t>(m) * batches * n <= limit &&
                 static_cast<uint64_t>(m + 1) * sizeof(uint32_t) <= limit &&
                 static_cast<uint64_t>(nnz) * sizeof(uint32_t) <= limit,
                 "unified_spmm_csr: element or address offsets exceed uint32 limits");
@@ -122,8 +127,9 @@ torch::Tensor UnifiedSpmmCsr(const torch::Tensor& indptr, const torch::Tensor& i
     uint32_t messageCode = MessageCode(op);
     int64_t m = indptr.defined() && indptr.dim() == 1 && indptr.numel() >= 1
                     ? indptr.numel() - 1 : 0;
-    int64_t n = x.defined() && x.dim() == 2 ? x.size(1) : 0;
-    CheckMetadata(indptr, indices, x, out, m, n);
+    int64_t n = x.defined() && (x.dim() == 2 || x.dim() == 3) ? x.size(-1) : 0;
+    int64_t batches = x.defined() && x.dim() == 3 ? x.size(1) : 1;
+    CheckMetadata(indptr, indices, x, out, m, n, batches, messageCode);
     TORCH_CHECK(op != "copy_rhs" || x.scalar_type() == at::kFloat,
                 "unified_spmm_csr: copy_rhs supports only float32");
     c10::DeviceGuard guard(x.device());
@@ -131,10 +137,13 @@ torch::Tensor UnifiedSpmmCsr(const torch::Tensor& indptr, const torch::Tensor& i
     int64_t k = x.size(0);
     int64_t nnz = indices.numel();
     CheckCsr(indptr, indices, m, k, nnz, messageCode);
+    auto result = out ? *out :
+                  (x.dim() == 3 ? torch::empty({m, batches, n}, x.options())
+                                : torch::empty({m, n}, x.options()));
+    if (m == 0 || batches == 0) return result;
     uint32_t blocks = 0;
-    uint32_t ubBytes = CheckLimitsAndUb(m, k, n, nnz, x.element_size(), blocks);
-    auto result = out ? *out : torch::empty({m, n}, x.options());
-    if (m == 0) return result;
+    uint32_t ubBytes = CheckLimitsAndUb(m, k, n, nnz, batches,
+                                        x.element_size(), blocks);
 
     auto split = torch::arange(static_cast<int64_t>(blocks) + 1,
                                indptr.options().dtype(at::kLong));
@@ -149,7 +158,8 @@ torch::Tensor UnifiedSpmmCsr(const torch::Tensor& indptr, const torch::Tensor& i
         static_cast<int32_t>(m), static_cast<int32_t>(k), static_cast<int32_t>(n),
         static_cast<int32_t>(nnz), static_cast<int32_t>(ubBytes),
         static_cast<int32_t>(dtype), static_cast<int32_t>(reduceCode),
-        static_cast<int32_t>(messageCode), static_cast<int32_t>(hasNan)};
+        static_cast<int32_t>(messageCode), static_cast<int32_t>(hasNan),
+        static_cast<int32_t>(batches)};
     auto tiling = torch::tensor(hostTiling, torch::TensorOptions().dtype(at::kInt)).to(x.device());
     auto stream = c10_npu::getCurrentNPUStream(x.get_device()).stream();
     UnifiedSpmm(blocks, stream, features.data_ptr(), result.data_ptr(), ptr.data_ptr(),

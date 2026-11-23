@@ -11,6 +11,7 @@
 The copy_rhs interface receives edge features already stored in CSR order.
 """
 import ast
+import importlib
 import math
 import os
 import runpy
@@ -587,7 +588,7 @@ def test_specialized_reference_empty_source(reduction, feature_shape, rows, dtyp
 # Run after building this checkout, with PYTHONPATH=python. No mocked
 # extension or CPU fallback: CPU-only machines explicitly skip these
 # integration tests.
-PATHS = ("fp16", "fp32", "batched_fp16", "copy_rhs")
+PATHS = ("fp16", "fp32", "batched_fp16", "batched_fp32", "copy_rhs")
 
 
 @pytest.fixture(scope="module")
@@ -607,7 +608,7 @@ def inputs(path, noncontiguous=False):
     ptr = torch.tensor([0, 2, 3, 3], dtype=torch.int64)
     idx = torch.tensor([0, 1, 0], dtype=torch.int64)
     dtype = torch.float16 if "fp16" in path else torch.float32
-    shape = (3, 2, 17) if path == "batched_fp16" else (3, 17)
+    shape = (3, 2, 17) if path.startswith("batched") else (3, 17)
     x = (torch.arange(math.prod(shape)).reshape(shape) % 7 - 3).to(dtype)
     if noncontiguous:
         def strided(value):
@@ -621,7 +622,7 @@ def inputs(path, noncontiguous=False):
 
 
 def invoke(operators, path, ptr, idx, x, reduce, out=None):
-    operation = operators[1] if path == "batched_fp16" else operators[0]
+    operation = operators[1] if path.startswith("batched") else operators[0]
     return operation(ptr, idx, x, reduce=reduce,
                      op="copy_rhs" if path == "copy_rhs" else "copy_lhs", out=out)
 
@@ -900,7 +901,8 @@ def test_external_operation_invalidates_proofs(operators, path):
     assert_result(result, path, ptr, idx, x, "sum")
 
 
-@pytest.mark.parametrize("path", ["fp16", "fp32", "batched_fp16"])
+@pytest.mark.parametrize(
+    "path", ["fp16", "fp32", "batched_fp16", "batched_fp32"])
 def test_warm_csr_source_count_change(operators, path):
     ptr, idx, x = inputs(path)
     smaller = x[:1]
@@ -952,3 +954,126 @@ def test_many_tensor_identities(operators, path):
     x.data[0].fill_(float("nan"))
     result = invoke(operators, path, ptr, idx, x, "max")
     assert_result(result, path, ptr, idx, x, "max")
+
+
+def _batched_copy_lhs_inputs(batches=2, features=17, dtype=torch.float32):
+    ptr = torch.tensor([0, 1, 3, 4, 4])
+    idx = torch.tensor([0, 0, 1, 2])
+    shape = (4, batches, features)
+    x = ((torch.arange(math.prod(shape)).reshape(shape) % 11) - 5).to(dtype)
+    return ptr, idx, x
+
+
+@pytest.mark.parametrize("reduce", ["sum", "min", "max"])
+@pytest.mark.parametrize("index_dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("batches,features", [(1, 17), (3, 1), (3, 16), (4, 33)])
+def test_copy_lhs_batched_fp32_native(bop, reduce, index_dtype, batches, features):
+    ptr, idx, x = _batched_copy_lhs_inputs(batches, features)
+    ptr, idx = ptr.to(index_dtype), idx.to(index_dtype)
+    expected = unified_spmm_reference(ptr, idx, x, reduce)
+    got = bop(ptr.npu(), idx.npu(), x.npu(), reduce=reduce)
+    assert got.shape == (4, batches, features)
+    assert got.dtype == torch.float32
+    torch.testing.assert_close(got.cpu(), expected, rtol=0, atol=0)
+
+
+def test_copy_lhs_batched_special_values(bop):
+    ptr = torch.tensor([0, 1, 3, 4, 4])
+    idx = torch.tensor([0, 0, 1, 2])
+    x = torch.tensor([
+        [[float("inf"), float("nan"), -2.0],
+         [-float("inf"), 3.0, 4.0]],
+        [[5.0, -1.0, float("nan")],
+         [2.0, float("nan"), -7.0]],
+        [[float("nan"), 0.0, 1.0],
+         [1.0, -float("inf"), 6.0]],
+        [[-3.0, 2.0, 0.5],
+         [8.0, 1.0, float("nan")]],
+    ], dtype=torch.float32)
+    for reduce in ("sum", "min", "max"):
+        expected = unified_spmm_reference(ptr, idx, x, reduce)
+        got = bop(ptr.npu(), idx.npu(), x.npu(), reduce=reduce)
+        torch.testing.assert_close(got.cpu(), expected, equal_nan=True,
+                                   rtol=0, atol=0)
+
+
+def test_copy_lhs_batched_noncontiguous_and_out(bop):
+    ptr = torch.tensor([0, 99, 2, 99, 3, 99], device="npu")[::2]
+    idx = torch.tensor([0, 99, 1, 99, 0, 99], device="npu")[::2]
+    base = torch.arange(3 * 2 * 17, device="npu",
+                        dtype=torch.float32).reshape(2, 17, 3)
+    x = base.permute(2, 0, 1)
+    out = torch.empty(2, 2, 17, device="npu", dtype=torch.float32)
+    expected = unified_spmm_reference(ptr.cpu(), idx.cpu(), x.cpu(), "sum")
+    got = bop(ptr, idx, x, reduce="sum", out=out)
+    assert got.data_ptr() == out.data_ptr()
+    torch.testing.assert_close(got.cpu(), expected, rtol=0, atol=0)
+
+
+def test_copy_lhs_batched_empty_batch(bop):
+    ptr = torch.tensor([0, 0, 0], device="npu")
+    idx = torch.empty(0, dtype=torch.int64, device="npu")
+    x = torch.empty((4, 0, 17), dtype=torch.float32, device="npu")
+    got = bop(ptr, idx, x, reduce="max")
+    assert got.shape == (2, 0, 17)
+    assert got.numel() == 0
+
+
+def test_copy_lhs_batched_uses_native_kernel(bop, monkeypatch):
+    core = importlib.import_module("ops_gnn._pybind")
+    calls = []
+    original = core.unified_spmm_csr
+
+    def counted(*args, **kwargs):
+        calls.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(core, "unified_spmm_csr", counted)
+    ptr, idx, x = _batched_copy_lhs_inputs(3, 33)
+    x = torch.rand(4, 3, 33, dtype=torch.float32)
+    got = bop(ptr.npu(), idx.npu(), x.npu(), reduce="sum")
+    expected = unified_spmm_reference(ptr, idx, x, "sum")
+    assert len(calls) == 1
+    torch.testing.assert_close(got.cpu(), expected, rtol=1e-6, atol=1e-6)
+
+
+def test_copy_lhs_batched_fp16_keeps_shared_kernel(bop, monkeypatch):
+    core = importlib.import_module("ops_gnn._pybind")
+
+    def rejected(*args, **kwargs):
+        raise AssertionError("fp16 batched copy_lhs must use the shared spmm kernels")
+
+    monkeypatch.setattr(core, "unified_spmm_csr", rejected)
+    ptr, idx, x = _batched_copy_lhs_inputs(2, 17, torch.float16)
+    got = bop(ptr.npu(), idx.npu(), x.npu(), reduce="max")
+    expected = unified_spmm_reference(ptr, idx, x, "max")
+    torch.testing.assert_close(got.cpu(), expected, rtol=0, atol=0)
+
+
+def test_copy_lhs_batched_mean_uses_reference_path(bop):
+    ptr, idx, x = _batched_copy_lhs_inputs(2, 17)
+    x = torch.rand(4, 2, 17, dtype=torch.float32)
+    got = bop(ptr.npu(), idx.npu(), x.npu(), reduce="mean")
+    expected = unified_spmm_reference(ptr, idx, x, "mean")
+    torch.testing.assert_close(got.cpu(), expected, rtol=1e-6, atol=1e-6)
+
+
+def test_copy_lhs_batched_bad_out(bop):
+    ptr = torch.tensor([0, 1, 2], device="npu")
+    idx = torch.tensor([0, 1], device="npu")
+    x = torch.ones(2, 3, 17, dtype=torch.float32, device="npu")
+    with pytest.raises(RuntimeError, match="spmm"):
+        bop(ptr, idx, x, reduce="sum", out=torch.empty(2, 17, device="npu"))
+
+
+@pytest.mark.parametrize("reduce", ["sum", "min", "max"])
+def test_unified_kernel_fp16_batched(bop, reduce):
+    # fp16 batched copy_lhs normally routes to the shared spmm kernels; exercise
+    # the unified kernel's own batched fp16 path through the pybind entry too.
+    core = importlib.import_module("ops_gnn._pybind")
+    ptr, idx, x = _batched_copy_lhs_inputs(3, 21, torch.float16)
+    expected = unified_spmm_reference(ptr, idx, x, reduce)
+    got = core.unified_spmm_csr(ptr.npu(), idx.npu(), x.npu(), "copy_lhs",
+                                reduce, None)
+    assert got.shape == (4, 3, 21)
+    torch.testing.assert_close(got.cpu(), expected, rtol=0, atol=0)

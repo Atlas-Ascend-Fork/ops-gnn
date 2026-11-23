@@ -32,6 +32,7 @@ public:
         reduce = tiling->reduce;
         message = tiling->message;
         hasNan = tiling->hasNan;
+        batchCount = tiling->batchCount;
         startRow = 0;
         localRowCount = 0;
 
@@ -47,18 +48,23 @@ public:
         for (uint32_t row = startRow; row < endRow; ++row) {
             uint32_t edgeBegin = indptrGm.GetValue(row);
             uint32_t edgeEnd = indptrGm.GetValue(row + 1);
-            ProcessRow(row, edgeBegin, edgeEnd);
+            for (uint32_t batch = 0; batch < batchCount; ++batch) {
+                ProcessRow(row, edgeBegin, edgeEnd, batch);
+            }
         }
     }
 
 private:
     __aicore__ inline bool IsInvalidTiling(uint32_t ubBytes) const
     {
-        if (ubBytes <= UNIFIED_UB_RESERVED || N == 0) return true;
+        if (ubBytes <= UNIFIED_UB_RESERVED || N == 0 || batchCount == 0) {
+            return true;
+        }
         uint32_t maxAlignedN =
             (0xffffffffU - (UNIFIED_ALIGN_BYTES - 1)) / sizeof(DType);
-        return N > maxAlignedN || K > 0xffffffffU / N ||
-               M > 0xffffffffU / N || M == 0xffffffffU;
+        return N > maxAlignedN || batchCount > 0xffffffffU / N ||
+               K > 0xffffffffU / N || M > 0xffffffffU / N ||
+               M == 0xffffffffU;
     }
 
     __aicore__ inline bool InitWorkRange(GM_ADDR rowSplitData)
@@ -76,14 +82,18 @@ private:
     __aicore__ inline void InitGlobalBuffers(GM_ADDR featureData,
         GM_ADDR outputData, GM_ADDR indptrData, GM_ADDR indicesData)
     {
-        featureGm.SetGlobalBuffer((__gm__ DType*)featureData, K * N);
-        outputGm.SetGlobalBuffer((__gm__ DType*)outputData, M * N);
+        featureGm.SetGlobalBuffer((__gm__ DType*)featureData,
+                                  K * batchCount * N);
+        outputGm.SetGlobalBuffer((__gm__ DType*)outputData,
+                                 M * batchCount * N);
         indptrGm.SetGlobalBuffer((__gm__ uint32_t*)indptrData, M + 1);
         indicesGm.SetGlobalBuffer((__gm__ uint32_t*)indicesData, nnz);
         if constexpr (sizeof(DType) == sizeof(uint16_t)) {
-            featureBits16Gm.SetGlobalBuffer((__gm__ uint16_t*)featureData, K * N);
+            featureBits16Gm.SetGlobalBuffer((__gm__ uint16_t*)featureData,
+                                            K * batchCount * N);
         } else {
-            featureBits32Gm.SetGlobalBuffer((__gm__ uint32_t*)featureData, K * N);
+            featureBits32Gm.SetGlobalBuffer((__gm__ uint32_t*)featureData,
+                                            K * batchCount * N);
         }
     }
 
@@ -114,25 +124,27 @@ private:
         }
     }
 
-    __aicore__ inline void ProcessRow(uint32_t row, uint32_t edgeBegin, uint32_t edgeEnd)
+    __aicore__ inline void ProcessRow(uint32_t row, uint32_t edgeBegin,
+                                      uint32_t edgeEnd, uint32_t batch)
     {
         AscendC::LocalTensor<DType> accum = accumQueue.AllocTensor<DType>();
         uint32_t degree = edgeEnd - edgeBegin;
         if (degree == 0) {
             AscendC::Duplicate<DType>(accum, DType(0.0f), rowAlignedElems);
         } else if constexpr (sizeof(DType) == sizeof(uint16_t)) {
-            ProcessFp16(accum, edgeBegin, edgeEnd);
+            ProcessFp16(accum, edgeBegin, edgeEnd, batch);
         } else {
             InitAccumulator(accum);
-            ProcessBatches(accum, edgeBegin, edgeEnd);
+            ProcessBatches(accum, edgeBegin, edgeEnd, batch);
         }
-        RepairNan(accum, edgeBegin, edgeEnd);
+        RepairNan(accum, edgeBegin, edgeEnd, batch);
         accumQueue.EnQue(accum);
-        CopyOut(row);
+        CopyOut(row, batch);
     }
 
     __aicore__ inline void ProcessFp16(AscendC::LocalTensor<DType>& accum,
-                                       uint32_t edgeBegin, uint32_t edgeEnd)
+                                       uint32_t edgeBegin, uint32_t edgeEnd,
+                                       uint32_t batch)
     {
         AscendC::LocalTensor<float> accumF32 = accumF32Buffer.Get<float>();
         if (reduce == UNIFIED_SPMM_REDUCE_MAX) {
@@ -143,12 +155,12 @@ private:
             AscendC::Duplicate<float>(accumF32, 0.0f, rowAlignedElems);
         }
 
-        uint32_t batchCount = (edgeEnd - edgeBegin) / batchSize +
+        uint32_t chunkCount = (edgeEnd - edgeBegin) / batchSize +
                               ((edgeEnd - edgeBegin) % batchSize != 0);
-        for (uint32_t batch = 0; batch < batchCount; ++batch) {
-            uint32_t begin = edgeBegin + batch * batchSize;
+        for (uint32_t chunk = 0; chunk < chunkCount; ++chunk) {
+            uint32_t begin = edgeBegin + chunk * batchSize;
             uint32_t count = batchSize > edgeEnd - begin ? edgeEnd - begin : batchSize;
-            CopyInBatch(begin, count);
+            CopyInBatch(begin, count, batch);
             AscendC::LocalTensor<DType> features = featureQueue.DeQue<DType>();
             AscendC::LocalTensor<float> featureF32 = featureF32Buffer.Get<float>();
             for (uint32_t i = 0; i < count; ++i) {
@@ -174,14 +186,15 @@ private:
     }
 
     __aicore__ inline void ProcessBatches(AscendC::LocalTensor<DType>& accum,
-                                           uint32_t edgeBegin, uint32_t edgeEnd)
+                                           uint32_t edgeBegin, uint32_t edgeEnd,
+                                           uint32_t batch)
     {
-        uint32_t batchCount = (edgeEnd - edgeBegin) / batchSize +
+        uint32_t chunkCount = (edgeEnd - edgeBegin) / batchSize +
                               ((edgeEnd - edgeBegin) % batchSize != 0);
-        for (uint32_t batch = 0; batch < batchCount; ++batch) {
-            uint32_t begin = edgeBegin + batch * batchSize;
+        for (uint32_t chunk = 0; chunk < chunkCount; ++chunk) {
+            uint32_t begin = edgeBegin + chunk * batchSize;
             uint32_t count = batchSize > edgeEnd - begin ? edgeEnd - begin : batchSize;
-            CopyInBatch(begin, count);
+            CopyInBatch(begin, count, batch);
             AscendC::LocalTensor<DType> features = featureQueue.DeQue<DType>();
             for (uint32_t i = 0; i < count; ++i) {
                 AscendC::LocalTensor<DType> feature = features[i * rowAlignedElems];
@@ -209,7 +222,8 @@ private:
         }
     }
 
-    __aicore__ inline void CopyInBatch(uint32_t edgeBegin, uint32_t count)
+    __aicore__ inline void CopyInBatch(uint32_t edgeBegin, uint32_t count,
+                                       uint32_t batch)
     {
         AscendC::LocalTensor<DType> local = featureQueue.AllocTensor<DType>();
         AscendC::DataCopyExtParams copy = {1, rowBytes, 0, 0, 0};
@@ -217,22 +231,26 @@ private:
             true, 0, static_cast<uint8_t>(rowAlignedElems - N), DType(0.0f)};
         for (uint32_t i = 0; i < count; ++i) {
             uint32_t edge = edgeBegin + i;
-            uint32_t source = message == UNIFIED_SPMM_COPY_RHS ? edge : indicesGm.GetValue(edge);
+            uint32_t source =
+                message == UNIFIED_SPMM_COPY_RHS ? edge : indicesGm.GetValue(edge);
             AscendC::DataCopyPad<DType>(local[i * rowAlignedElems],
-                                        featureGm[source * N], copy, pad);
+                                        featureGm[(source * batchCount + batch) * N],
+                                        copy, pad);
         }
         featureQueue.EnQue(local);
     }
 
     __aicore__ inline void RepairNan(AscendC::LocalTensor<DType>& accum,
-                                      uint32_t edgeBegin, uint32_t edgeEnd)
+                                      uint32_t edgeBegin, uint32_t edgeEnd,
+                                      uint32_t batch)
     {
         if (!hasNan || edgeBegin == edgeEnd) return;
         AscendC::PipeBarrier<PIPE_ALL>();
         for (uint32_t edge = edgeBegin; edge < edgeEnd; ++edge) {
-            uint32_t source = message == UNIFIED_SPMM_COPY_RHS ? edge : indicesGm.GetValue(edge);
+            uint32_t source =
+                message == UNIFIED_SPMM_COPY_RHS ? edge : indicesGm.GetValue(edge);
             for (uint32_t feature = 0; feature < N; ++feature) {
-                uint32_t offset = source * N + feature;
+                uint32_t offset = (source * batchCount + batch) * N + feature;
                 bool isNan;
                 if constexpr (sizeof(DType) == sizeof(uint16_t)) {
                     uint16_t bits = featureBits16Gm.GetValue(offset);
@@ -248,15 +266,16 @@ private:
         AscendC::PipeBarrier<PIPE_ALL>();
     }
 
-    __aicore__ inline void CopyOut(uint32_t row)
+    __aicore__ inline void CopyOut(uint32_t row, uint32_t batch)
     {
         AscendC::LocalTensor<DType> accum = accumQueue.DeQue<DType>();
         AscendC::DataCopyExtParams copy = {1, rowBytes, 0, 0, 0};
-        AscendC::DataCopyPad<DType>(outputGm[row * N], accum, copy);
+        AscendC::DataCopyPad<DType>(outputGm[(row * batchCount + batch) * N],
+                                    accum, copy);
         accumQueue.FreeTensor(accum);
     }
 
-    uint32_t M, K, N, nnz, reduce, message, hasNan;
+    uint32_t M, K, N, nnz, reduce, message, hasNan, batchCount;
     uint32_t startRow, localRowCount, rowBytes, rowAlignedBytes, rowAlignedElems;
     uint32_t rowF32Bytes, batchSize;
     AscendC::TQue<AscendC::TPosition::VECOUT, UNIFIED_BUFFER_NUM> accumQueue;

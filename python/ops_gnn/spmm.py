@@ -17,6 +17,7 @@ from . import _pybind
 
 _MESSAGE_OPS = {"copy_lhs", "copy_rhs", "add", "sub", "mul", "div"}
 _REDUCE_OPS = {"sum", "max", "min", "mean"}
+_NATIVE_REDUCES = {"sum", "max", "min"}
 _FP16_COPY_LHS_IMPL = {
     "sum": _pybind.spmm_sum_csr,
     "max": _pybind.spmm_max_csr,
@@ -227,12 +228,17 @@ def _run_copy_lhs_kernel(request: _SpmmRequest, lhs: torch.Tensor,
     if grad_required or request.op != "copy_lhs":
         return None
     if request.batched:
-        supported = lhs.dim() == 3 and lhs.dtype == torch.float16
-        if supported and request.reduce in _FP16_COPY_LHS_IMPL:
+        if lhs.dim() != 3:
+            return None
+        if lhs.dtype == torch.float16 and request.reduce in _NATIVE_REDUCES:
             implementation = _FP16_COPY_LHS_IMPL[request.reduce]
             return implementation(request.indptr, request.indices, lhs, request.out)
+        if lhs.dtype == torch.float32 and request.reduce in _NATIVE_REDUCES:
+            return _pybind.unified_spmm_csr(
+                request.indptr, request.indices, lhs, request.op,
+                request.reduce, request.out)
         return None
-    if lhs.dim() != 2 or request.reduce not in _FP16_COPY_LHS_IMPL:
+    if lhs.dim() != 2 or request.reduce not in _NATIVE_REDUCES:
         return None
     if lhs.dtype == torch.float16:
         implementation = _FP16_COPY_LHS_IMPL[request.reduce]
