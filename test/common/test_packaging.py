@@ -314,6 +314,33 @@ def _custom_command_blocks(text):
     return blocks
 
 
+@unittest.skipUnless(shutil.which("cmake"), "CMake installation tests require cmake")
+class TestMultiTargetInstall(unittest.TestCase):
+    def test_install_reports_single_target_requirement(self):
+        cmake = str(Path(shutil.which("cmake")).resolve())
+        environment = os.environ.copy()
+        for name in ("CANN_TARGET", "NPU_ARCH", "TARGET_NPU_ARCH"):
+            environment.pop(name, None)
+        with tempfile.TemporaryDirectory(prefix="opsgnn-install-") as temporary:
+            directory = Path(temporary)
+            for architecture in ("", "dav-2201"):
+                with self.subTest(architecture=architecture):
+                    build = directory / (architecture or "all")
+                    prefix = directory / (build.name + "-install")
+                    subprocess.run([
+                        cmake, "-S", str(PROJECT_ROOT), "-B", str(build),
+                        "-DOPSGNN_BUILD_WHEEL=OFF", "-DWITH_PYTHON=OFF",
+                        f"-DNPU_ARCH={architecture}",
+                    ], env=environment, check=True, capture_output=True, text=True)
+                    result = subprocess.run([
+                        cmake, "--install", str(build), "--prefix", str(prefix),
+                    ], env=environment, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("single-target build", result.stdout + result.stderr)
+                    self.assertIn("-DCANN_TARGET", result.stdout + result.stderr)
+                    self.assertFalse(prefix.exists())
+
+
 class TestCmakeCommandEscaping(unittest.TestCase):
     def test_args_commands_are_verbatim(self):
         """Custom commands passing ARGS must be VERBATIM.

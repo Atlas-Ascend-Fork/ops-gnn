@@ -75,6 +75,13 @@ if(NOT OPSGNN_SINGLE_TARGET
             VERBATIM
         )
     endif()
+    install(CODE [[
+        message(FATAL_ERROR
+            "OpsGNN multi-target installation requires a single-target build. "
+            "Configure a separate build directory with -DCANN_TARGET=a2, a3 or 950, "
+            "build it, then run cmake --install on that directory. "
+            "Use a distinct --prefix for each device target to avoid overwriting lib_pybind.so.")
+    ]])
     return()
 endif()
 
