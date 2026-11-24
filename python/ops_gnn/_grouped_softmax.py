@@ -76,11 +76,12 @@ def check_index_range(index: torch.Tensor, dim_size: int) -> None:
 
 def resolve_dim_size(index: torch.Tensor, dim_size: Optional[int]) -> int:
     if dim_size is None:
-        return int(index.max().item()) + 1 if index.numel() > 0 else 0
-    if not isinstance(dim_size, int) or isinstance(dim_size, bool):
+        # Keep negative indices in check_index_range's existing validation path.
+        dim_size = int(index.max().item()) + 1 if index.numel() > 0 else 0
+    elif not isinstance(dim_size, int) or isinstance(dim_size, bool):
         raise TypeError(
             f"dim_size must be an int, got {type(dim_size).__name__}")
-    if dim_size < 0:
+    elif dim_size < 0:
         raise ValueError(f"dim_size must be non-negative, got {dim_size}")
     if dim_size > 2 ** 31 - 1:
         raise ValueError(
