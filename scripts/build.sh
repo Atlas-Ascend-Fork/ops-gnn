@@ -104,6 +104,12 @@ BUILD_TARGET="python"
 
 CLEAN_BUILD="OFF"
 
+require_option_value() {
+    if [[ $# -lt 2 || -z $2 || $2 == -* ]]; then
+        log_error "选项 $1 缺少参数值" >&2
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         python|cpp|all|test)
@@ -111,14 +117,17 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -t|--type)
+            require_option_value "$@"
             BUILD_TYPE="$2"
             shift 2
             ;;
         --npu-arch)
+            require_option_value "$@"
             NPU_ARCH="$2"
             shift 2
             ;;
         --cann-target)
+            require_option_value "$@"
             CANN_TARGET="$2"
             shift 2
             ;;
