@@ -169,7 +169,7 @@ flowchart TD
 
 | 支持的芯片版本 | 涉及勾选 |
 | --- | :---: |
-| Ascend 950PR / Ascend 950DT（dav-3510 / arch35） | √ |
+| Ascend 950PR&950DT系列产品（dav-3510 / arch35） | √ |
 | Atlas A2/A3（dav-2201 / arch22） | × |
 
 ## 算子约束限制

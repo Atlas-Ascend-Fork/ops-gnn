@@ -854,9 +854,9 @@ assert returned.data_ptr() == provided.data_ptr()
 
 **Supported products:**
 
-- <term>Ascend 950PR&950DT series products</term>: Supported
-- <term>Atlas A3 series products</term>: Supported
-- <term>Atlas A2 series products</term>: Supported
+- <term>Ascend 950PR&950DT products</term>: Supported
+- <term>Atlas A3 products</term>: Supported
+- <term>Atlas A2 products</term>: Supported
 
 **Function signature:**
 
@@ -888,8 +888,8 @@ Converts sorted row indices to a CSR row pointer. Drop-in replacement for `torch
 - dtype must be `torch.long` (int64)
 - Non-contiguous inputs are supported
 - `ind` values must be in `[0, num_rows)`
-- <term>Ascend 950PR&950DT series products</term>: Runs asynchronously on the current NPU stream; synchronize with `torch.npu.synchronize()` before reading results on host if needed.
-- <term>Atlas A3 series products</term>, <term>Atlas A2 series products</term>: Calls with non-empty `ind` include device synchronization.
+- <term>Ascend 950PR&950DT products</term>: Runs asynchronously on the current NPU stream; synchronize with `torch.npu.synchronize()` before reading results on host if needed.
+- <term>Atlas A3 products</term>, <term>Atlas A2 products</term>: Calls with non-empty `ind` include device synchronization.
 
 **Example:**
 
@@ -908,9 +908,9 @@ rowptr = ops_gnn.ind2ptr(row, 8)
 
 **Supported products:**
 
-- <term>Ascend 950PR&950DT series products</term>: Supported
-- <term>Atlas A3 series products</term>: Supported
-- <term>Atlas A2 series products</term>: Supported
+- <term>Ascend 950PR&950DT products</term>: Supported
+- <term>Atlas A3 products</term>: Supported
+- <term>Atlas A2 products</term>: Supported
 
 **Function signature:**
 
@@ -942,8 +942,8 @@ Converts a CSR row pointer to row indices. Drop-in replacement for `torch.ops.to
 - `num_edges == 0` returns an empty index tensor
 - Non-contiguous inputs are supported
 - `ptr` must be non-empty and non-decreasing, start at 0 and end at `num_edges`
-- <term>Ascend 950PR&950DT series products</term>: Runs asynchronously on the current NPU stream; synchronize with `torch.npu.synchronize()` before reading results on host if needed.
-- <term>Atlas A3 series products</term>, <term>Atlas A2 series products</term>: Calls include device synchronization.
+- <term>Ascend 950PR&950DT products</term>: Runs asynchronously on the current NPU stream; synchronize with `torch.npu.synchronize()` before reading results on host if needed.
+- <term>Atlas A3 products</term>, <term>Atlas A2 products</term>: Calls include device synchronization.
 
 **Example:**
 
@@ -1077,7 +1077,7 @@ is updated and returned. Only forward execution is supported.
 
 | Item | Support |
 |------|---------|
-| Hardware | Ascend 950PR (`dav-3510`); Atlas A3 series products and Atlas A2 series products (`dav-2201`) |
+| Hardware | Ascend 950PR (`dav-3510`); Atlas A3 products and Atlas A2 products (`dav-2201`) |
 | `src/out` dtype | float16, bfloat16, float32, int8, int16, int32, uint8, float64, int64 |
 | `indptr` dtype | int64 |
 | Rank | `1 <= indptr.dim() <= src.dim()` |
@@ -1837,8 +1837,8 @@ torch.npu.synchronize()
 
 | Product | Supported |
 | --- | :---: |
-| Ascend 950PR / Ascend 950DT (arch35) | √ |
-| Atlas A2/A3 series products (arch22) | √ |
+| Ascend 950PR&950DT products (arch35) | √ |
+| Atlas A2/A3 products (arch22) | √ |
 
 #### Function
 

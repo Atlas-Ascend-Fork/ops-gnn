@@ -171,7 +171,7 @@ The output intervals of different batches may share a 32-byte GM transaction. To
 
 | Supported Chip Version | Selected |
 | --- | :---: |
-| Ascend 950PR / Ascend 950DT (dav-3510 / arch35) | √ |
+| Ascend 950PR&950DT products (dav-3510 / arch35) | √ |
 | Atlas A2/A3 (dav-2201 / arch22) | × |
 
 ## Operator Constraints and Limitations

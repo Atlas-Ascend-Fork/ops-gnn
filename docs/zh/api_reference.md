@@ -1688,7 +1688,7 @@ torch.npu.synchronize()
 
 | 产品 | 是否支持 |
 | --- | :---: |
-| Ascend 950PR / Ascend 950DT（arch35） | √ |
+| Ascend 950PR&950DT系列产品（arch35） | √ |
 | Atlas A2/A3 系列产品（arch22） | √ |
 
 #### 功能说明
