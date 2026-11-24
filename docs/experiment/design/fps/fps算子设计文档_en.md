@@ -17,8 +17,8 @@ Each FPS sampling iteration depends on the center point selected in the previous
 ### torch_cluster FPS Implementation Paths and Related API Paths
 
 - Python interface: `torch_cluster/fps.py`
-- CPU reference: `csrc/cpu/fps_cpu.cpp`
-- CUDA reference: `csrc/cuda/fps_cuda.cu`
+- CPU reference: `torch_cluster/csrc/cpu/fps_cpu.cpp`
+- CUDA reference: `torch_cluster/csrc/cuda/fps_cuda.cu`
 - Python interface of this implementation: `python/ops_gnn/fps.py`
 - Host of this implementation: `csrc/npu/fps/op_host/`
 - Kernel of this implementation: `csrc/npu/fps/op_kernel/arch35/`

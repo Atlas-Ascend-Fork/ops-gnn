@@ -15,8 +15,8 @@ FPS 的每轮采样依赖上一轮选出的中心点，属于强迭代依赖算�
 ### torch_cluster FPS 实现路径和相关 API 路径
 
 - Python 接口：`torch_cluster/fps.py`
-- CPU 参考：`csrc/cpu/fps_cpu.cpp`
-- CUDA 参考：`csrc/cuda/fps_cuda.cu`
+- CPU 参考：`torch_cluster/csrc/cpu/fps_cpu.cpp`
+- CUDA 参考：`torch_cluster/csrc/cuda/fps_cuda.cu`
 - 本实现 Python 接口：`python/ops_gnn/fps.py`
 - 本实现 Host：`csrc/npu/fps/op_host/`
 - 本实现 Kernel：`csrc/npu/fps/op_kernel/arch35/`

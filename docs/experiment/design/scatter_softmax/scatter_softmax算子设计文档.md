@@ -16,7 +16,7 @@ scatter_softmax(src, index, dim=0, dim_size=None)  # Tensor
 - arch22（A2/A3）与 arch35（950）使用同一份 AscendC 源码
   （`op_kernel/common/scatter_softmax_kernel.h`），各架构只有一层薄编译单元。
 
-验收：`test/scatter_softmax/` 全部 74 例通过（含精度、边界、`±inf`、长分组、
+验收：`test/scatter_softmax/<arch>/`（`arch22`/`arch35`）全部 74 例通过（含精度、边界、`±inf`、长分组、
 低精度梯度）；A2 全量回归 4804 passed。
 
 ## 2. Host 维度与输出契约
@@ -115,10 +115,10 @@ src[b, j, a] 地址 = (b * dimLength + j) * after + a
 
 ## 7. 测试与性能
 
-- 功能：`test/scatter_softmax/test_scatter_softmax.py`，74 例，覆盖 1-D/2-D/3-D、
+- 功能：`test/scatter_softmax/<arch>/test_scatter_softmax.py`，74 例，覆盖 1-D/2-D/3-D、
   空分组、单元素分组、`dim`/`dim_size` 推导、int32 索引、非连续源、大数、
   `+inf`/`-inf`、长低精度分组、fp32/fp16/bf16 梯度、非法参数。
-- golden：`test/scatter_softmax/golden.py`，CPU float64 独立实现。
+- golden：`test/scatter_softmax/<arch>/golden.py`，CPU float64 独立实现。
 - 性能（Ascend 910B4，`benchmark_scatter_softmax.py` 口径，iters=20 × 5 次取中位数）：
 
 | 形状 (edges × features, groups) | dtype | 旧 Python 组合 | 修正前内核 | 当前内核 |

@@ -405,8 +405,8 @@ result = ops_gnn.scatter_softmax(src, index, dim=0, dim_size=2)
 > Precision: the per-group reductions are evaluated in float32, so an fp16/bf16
 > group is not limited by the 65504 sum ceiling; `exp` and the output still
 > round in the source dtype. The standalone golden uses a float64 reference.
-> Tests live in `test/scatter_softmax/` and the performance script is
-> `test/scatter_softmax/benchmark_scatter_softmax.py`.
+> Tests live in `test/scatter_softmax/arch22/` and `test/scatter_softmax/arch35/`;
+> the performance script is `benchmark_scatter_softmax.py` in each architecture directory.
 
 ---
 
@@ -470,8 +470,8 @@ result = ops_gnn.scatter_log_softmax(src, index, dim=0, dim_size=2)
 # group 1: [[3., 4.], [5., 6.]]       -> [[-2.1269, -2.1269], [-0.1269, -0.1269]]
 ```
 
-> Tests live in `test/scatter_log_softmax/` and the performance script is
-> `test/scatter_log_softmax/benchmark_scatter_log_softmax.py`.
+> Tests live in `test/scatter_log_softmax/arch22/` and `test/scatter_log_softmax/arch35/`;
+> the performance script is `benchmark_scatter_log_softmax.py` in each architecture directory.
 
 ---
 

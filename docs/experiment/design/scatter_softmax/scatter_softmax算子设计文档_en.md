@@ -21,7 +21,7 @@ scatter_softmax(src, index, dim=0, dim_size=None)  # Tensor
   (`op_kernel/common/scatter_softmax_kernel.h`); each architecture only adds a
   thin compilation unit.
 
-Acceptance: all 74 cases in `test/scatter_softmax/` pass (precision, edge cases,
+Acceptance: all 74 cases in `test/scatter_softmax/<arch>/` (`arch22`/`arch35`) pass (precision, edge cases,
 `±inf`, long groups, low-precision gradients); the full A2 regression reports
 4804 passed.
 
@@ -139,12 +139,12 @@ cross-core barrier is needed.
 
 ## 7. Tests and performance
 
-- Function: `test/scatter_softmax/test_scatter_softmax.py`, 74 cases covering
+- Function: `test/scatter_softmax/<arch>/test_scatter_softmax.py`, 74 cases covering
   1-D/2-D/3-D inputs, empty groups, single-element groups, inferred
   `dim`/`dim_size`, int32 index, non-contiguous source, large magnitudes,
   `+inf`/`-inf`, long low-precision groups, fp32/fp16/bf16 gradients and invalid
   arguments.
-- Golden: `test/scatter_softmax/golden.py`, an independent float64 CPU
+- Golden: `test/scatter_softmax/<arch>/golden.py`, an independent float64 CPU
   implementation.
 - Performance (Ascend 910B4, `benchmark_scatter_softmax.py`, median of 5 x 20):
 

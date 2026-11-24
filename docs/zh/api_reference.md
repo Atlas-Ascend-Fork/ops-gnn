@@ -378,8 +378,8 @@ result = ops_gnn.scatter_softmax(src, index, dim=0, dim_size=2)
 
 > 说明：前向的逐组归约在 float32 中完成，因此 fp16/bf16 的单组长度不受 65504
 > 上限限制；`exp` 与输出仍按源 dtype 舍入。独立 golden 使用 float64 参考。
-> 测试位于 `test/scatter_softmax/`，性能脚本为
-> `test/scatter_softmax/benchmark_scatter_softmax.py`。
+> 测试位于 `test/scatter_softmax/arch22/`、`test/scatter_softmax/arch35/`，
+> 性能脚本为对应架构目录下的 `benchmark_scatter_softmax.py`。
 
 ---
 
@@ -438,8 +438,8 @@ result = ops_gnn.scatter_log_softmax(src, index, dim=0, dim_size=2)
 # 分组 1: [[3., 4.], [5., 6.]]       -> [[-2.1269, -2.1269], [-0.1269, -0.1269]]
 ```
 
-> 测试位于 `test/scatter_log_softmax/`，性能脚本为
-> `test/scatter_log_softmax/benchmark_scatter_log_softmax.py`。
+> 测试位于 `test/scatter_log_softmax/arch22/`、`test/scatter_log_softmax/arch35/`，
+> 性能脚本为对应架构目录下的 `benchmark_scatter_log_softmax.py`。
 
 ---
 
