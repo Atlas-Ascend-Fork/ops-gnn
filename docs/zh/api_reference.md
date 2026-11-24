@@ -1275,7 +1275,7 @@ tiling 缓冲）；kernel 按 AIV 均分边区间，UB 分块后原地加偏移�
 
 测试位于 `test/disjoint_union_coo/arch22/`。
 
-### 2.11 grid_cluster — 规则网格聚类
+### grid_cluster — 规则网格聚类
 
 将 `[N,D]` 点坐标映射为规则网格的线性 ID；落在同一网格单元的点得到相同 ID。接口兼容 `torch_cluster.grid_cluster`。
 
