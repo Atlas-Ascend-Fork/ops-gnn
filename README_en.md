@@ -189,6 +189,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `scatter_log_softmax` | Grouped log-softmax over an index (torch_scatter compatible, differentiable) | NPU (A2/A3, 950) | [scatter_log_softmax — Grouped Log-Softmax](docs/en/api_reference.md#scatter_log_softmax--grouped-log-softmax) |
 | `scatter_logsumexp` | Grouped log-sum-exp over an index (torch_scatter compatible, differentiable) | NPU (A2/A3, 950) | [scatter_logsumexp — Grouped Log-Sum-Exp](docs/en/api_reference.md#scatter_logsumexp--grouped-log-sum-exp) |
 | `scatter_std` | Grouped standard deviation over an index (torch_scatter compatible, differentiable) | NPU (A2/A3, 950) | [scatter_std — Grouped Standard Deviation](docs/en/api_reference.md#scatter_std--grouped-standard-deviation) |
+| `edge_softmax` | Edge softmax over every CSR segment (DGL compatible, differentiable) | NPU (A2/A3, 950) | [edge_softmax — CSR Edge Softmax](docs/en/api_reference.md#edge_softmax--csr-edge-softmax) |
 | `radius` / `radius_graph` | Radius neighbor search (torch_cluster compatible, Ascend 950PR) | NPU | [radius / radius_graph — Radius Neighbor Search](docs/en/api_reference.md#radius--radius_graph--radius-neighbor-search) |
 | `knn` / `knn_graph` | Exact neighbor search and graph construction (Ascend 950PR) | NPU | [knn / knn_graph — Exact Neighbor Search](docs/en/api_reference.md#knn--knn_graph--exact-neighbor-search) |
 | `nearest` | Global index of the nearest y point in the same batch | NPU (950, arch35) | [nearest](docs/en/api_reference.md) |

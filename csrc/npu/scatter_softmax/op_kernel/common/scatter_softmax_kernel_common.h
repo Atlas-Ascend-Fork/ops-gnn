@@ -55,16 +55,29 @@ enum ScatterSoftmaxPhase {
 };
 
 // Compile-time arithmetic of the shared phase bodies.
+//
+// `kModeEdgeCsr` is the softmax arithmetic driven by a CSR pointer vector
+// instead of per-row group labels: the segment that owns a row is resolved from
+// `indptr`, so the edge softmax runs the same three forward passes and the same
+// two backward passes as `kModeSoftmax`.
 enum ScatterSoftmaxMode {
     kModeSoftmax = 0,
     kModeLogSoftmax = 1,
     kModeLogSumExp = 2,
     kModeStd = 3,
+    kModeEdgeCsr = 4,
 };
 
 __aicore__ constexpr bool IsLogDomain(ScatterSoftmaxMode mode)
 {
-    return mode != kModeSoftmax;
+    return mode == kModeLogSoftmax || mode == kModeLogSumExp;
+}
+
+// The two softmax modes store `exp(src - maximum)` for the normalize pass and
+// weight the group gradient by the saved output in the backward.
+__aicore__ constexpr bool IsSoftmaxDomain(ScatterSoftmaxMode mode)
+{
+    return mode == kModeSoftmax || mode == kModeEdgeCsr;
 }
 
 // Passes that reduce into a (batch, group, feature) workspace slot.
@@ -233,6 +246,14 @@ struct PhaseTensors {
     LocalTensor<float> counts;
     // One 32-byte count block per lane, used by the per-row counting fallback.
     LocalTensor<float> onehot;
+    // Edge softmax only: the CSR segment cursor of `LoadGroups`. The group of a
+    // row is the segment that contains it, and rows are visited in order, so the
+    // cursor advances forwards only and reads one boundary per segment instead
+    // of one label per row.
+    uint64_t csrSegment;
+    uint64_t csrNext;
+    uint64_t csrColumn;
+    bool csrStarted;
     GlobalTensor<int32_t> indexGm;
     GlobalTensor<T> srcGm;
     GlobalTensor<T> gradGm;
@@ -313,6 +334,10 @@ __aicore__ inline void InitTensors(PhaseTensors<T>& tensors, TPipe& pipe,
     tensors.wide2 = tensors.wideBuffer2.template Get<float>();
     tensors.wide3 = tensors.wideBuffer3.template Get<float>();
     tensors.groups = tensors.groupBuffer.template Get<int32_t>();
+    tensors.csrSegment = 0;
+    tensors.csrNext = 0;
+    tensors.csrColumn = 0;
+    tensors.csrStarted = false;
     if constexpr (Phase == kPhaseSum) {
         InitCountBuffers(tensors, pipe, tiling);
     }

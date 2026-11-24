@@ -631,6 +631,75 @@ result = ops_gnn.scatter_std(src, index, dim=0, dim_size=2)
 
 ---
 
+### edge_softmax — CSR Edge Softmax
+
+Edge softmax over every row of a CSR graph (the incoming edges of a destination
+node), matching `dgl.nn.functional.edge_softmax`, on Ascend A2/A3 (arch22) and
+Ascend 950 (arch35):
+
+```python
+edge_softmax(src, indptr)  # Tensor
+```
+
+`indptr` is the CSR row pointer, so the graph has `indptr.numel() - 1` segments
+and `src` has `indptr[-1]` rows along axis 0 (one per edge). For every edge `e`
+of segment `i`:
+
+```text
+out[e] = exp(src[e] - max_i) / sum_{j in segment i} exp(src[j] - max_i)
+```
+
+`max_i` is the maximum of segment `i`. Every trailing feature is normalized
+independently, and the output keeps the shape, dtype and device of `src`.
+
+| Parameter | Constraint |
+| --- | --- |
+| `src` | NPU tensor of shape `(E, ...)`; supports float16, float32 and bfloat16 |
+| `indptr` | 1-D int32/int64 tensor on the same device, of length `segments + 1` (at least 2, that is, at least one segment); it must start at `0`, be nondecreasing and end at `E` |
+
+The operator reuses the device kernel of `scatter_softmax`
+(`csrc/npu/scatter_softmax/op_kernel/common`) with its compile-time CSR mode,
+which runs the same five passes: three forward passes (segment maximum, then
+`exp(src - max)` and its segment sum, then normalization) and two backward
+passes (segment sum of `out * grad_out`, then `out * (grad_out - sum)`). The only
+difference from `scatter_softmax` is where the group label comes from: a CSR
+segment is a contiguous row range and the rows are visited in order, so one
+segment boundary costs one `indptr` read (a core locates its first row with a
+binary search), instead of materialising an `E`-long index as
+`ptr2ind` + `scatter_softmax` does.
+
+Edge cases follow `torch.softmax`: an empty segment owns no edge and produces no
+output; a one-edge segment produces `1`; a segment holding `+inf` makes that
+feature column `NaN`; a segment holding `NaN` produces `NaN`.
+
+> Precision and cost: the reduction workspace holds
+> `segments x aligned trailing features` float32 values (the maximum and the
+> sum), the same order as the `groups x trailing features` workspace of
+> `scatter_softmax`. Segments are reduced through the MTE3 atomic unit, or
+> through a private per-core accumulator flushed once at the end of the pass when
+> the whole workspace fits in 16 KB. Every reduction runs in float32, so the
+> length of an fp16/bf16 segment is not limited by the 65504 bound. The `indptr`
+> values are checked on the Python side in a single synchronisation; an invalid
+> pointer (not starting at 0, decreasing, or ending away from `E`) raises a
+> `ValueError` that names the offending boundary.
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+src = torch.tensor([[1.], [2.], [3.], [4.]], device="npu")
+indptr = torch.tensor([0, 2, 4], dtype=torch.int32, device="npu")
+result = ops_gnn.edge_softmax(src, indptr)
+# segment 0: [[1.], [2.]]  -> [[0.2689], [0.7311]]
+# segment 1: [[3.], [4.]]  -> [[0.2689], [0.7311]]
+```
+
+> Tests live in `test/edge_softmax/arch22/` and `test/edge_softmax/arch35/`, each
+> with its own `benchmark_edge_softmax.py`.
+
+---
+
 ### radius / radius_graph — Radius Neighbor Search
 
 NPU implementation interface-compatible with `torch_cluster.radius` /

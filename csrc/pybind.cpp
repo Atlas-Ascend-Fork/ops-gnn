@@ -14,6 +14,7 @@
 #include <c10/core/DispatchKey.h>
 #include <pybind11/pybind11.h>
 #include <string>
+#include "edge_softmax/op_host/edge_softmax.h"
 #include "gather_csr/op_host/gather_csr.h"
 #include "scatter_log_softmax/op_host/scatter_log_softmax.h"
 #include "scatter_logsumexp/op_host/scatter_logsumexp.h"
@@ -203,6 +204,20 @@ void BindScatterStd(py::module_& module)
         py::call_guard<py::gil_scoped_release>());
 }
 
+// The edge softmax is the CSR form of the same kernel core, so it is bound on
+// both architectures as well.
+void BindEdgeSoftmax(py::module_& module)
+{
+    module.def("edge_softmax_forward", &opsgnn::edge_softmax_forward,
+        py::arg("src"), py::arg("indptr"),
+        "CSR edge softmax forward on NPU",
+        py::call_guard<py::gil_scoped_release>());
+    module.def("edge_softmax_backward", &opsgnn::edge_softmax_backward,
+        py::arg("out"), py::arg("grad_out"), py::arg("indptr"),
+        "CSR edge softmax backward on NPU",
+        py::call_guard<py::gil_scoped_release>());
+}
+
 #ifndef OPSGNN_DAV_2201
 void RegisterKnn(py::module_& m)
 {
@@ -354,12 +369,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 #endif
     RegisterSegmentCsr(m);
     // arch22 and arch35 share the scatter_softmax / scatter_log_softmax /
-    // scatter_logsumexp / scatter_std kernels, so they are bound once here instead
-    // of in both architecture entry points.
+    // scatter_logsumexp / scatter_std / edge_softmax kernels, so they are bound
+    // once here instead of in both architecture entry points.
     BindScatterSoftmax(m);
     BindScatterLogSoftmax(m);
     BindScatterLogSumExp(m);
     BindScatterStd(m);
+    BindEdgeSoftmax(m);
 #ifdef OPSGNN_DAV_2201
     BindArch22(m);
 #else

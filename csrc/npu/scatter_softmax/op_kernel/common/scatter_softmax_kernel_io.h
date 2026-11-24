@@ -65,9 +65,52 @@ __aicore__ inline bool BatchGroupsValid(const ScatterSoftmaxTilingData& tiling,
 // Loads the group labels of the batch. Consecutive rows map to consecutive
 // columns while the batch stays inside one indexed slice, which is the common
 // case; a batch that straddles a slice boundary falls back to scalar reads.
-template <typename T>
+//
+// In the edge-softmax CSR mode the label of a row is the segment that contains
+// it. The batch walks the rows in order, so the segment cursor only moves
+// forwards: a segment boundary costs one scalar pointer read, not one per row.
+// The first batch of a core is located with a binary search over `indptr`
+// instead of a linear walk, so a core that starts deep inside the segment range
+// pays O(log segments) reads.
+template <ScatterSoftmaxMode Mode, typename T>
 __aicore__ inline void LoadGroups(PhaseTensors<T>& t, const ScatterSoftmaxTilingData& tiling,
                                   uint64_t base, uint32_t count, PipelineSync& sync){
+    if constexpr (Mode == kModeEdgeCsr) {
+        const uint64_t column = base % tiling.dimLength;
+        if (column == 0) {
+            t.csrSegment = 0;
+            t.csrNext = static_cast<uint64_t>(t.indexGm.GetValue(1));
+            t.csrStarted = true;
+        } else if (!t.csrStarted || column < t.csrColumn) {
+            // First batch of this core, or a new batch slice: locate the segment
+            // whose start is the largest one not past `column`.
+            uint64_t low = 0;
+            uint64_t high = tiling.groupCount - 1;
+            while (low < high) {
+                const uint64_t middle = (low + high + 1) / 2;
+                if (static_cast<uint64_t>(t.indexGm.GetValue(middle)) <= column) {
+                    low = middle;
+                } else {
+                    high = middle - 1;
+                }
+            }
+            t.csrSegment = low;
+            t.csrNext = static_cast<uint64_t>(t.indexGm.GetValue(low + 1));
+            t.csrStarted = true;
+        }
+        for (uint32_t k = 0; k < count; ++k) {
+            const uint64_t row = column + k;
+            // Empty segments share their start with the next one; the cursor
+            // steps over them until it reaches the segment that owns `row`.
+            while (row >= t.csrNext && t.csrSegment + 1 < tiling.groupCount) {
+                ++t.csrSegment;
+                t.csrNext = static_cast<uint64_t>(t.indexGm.GetValue(t.csrSegment + 1));
+            }
+            t.groups.SetValue(k, static_cast<int32_t>(t.csrSegment));
+        }
+        t.csrColumn = column + count;
+        return;
+    }
     const uint64_t column = base % tiling.dimLength;
     if (column + count <= tiling.dimLength) {
         SyncEvent<HardEvent::V_MTE2>(sync.computeToLoad);
@@ -225,7 +268,7 @@ __aicore__ inline void LoadWorkspace(PhaseTensors<T>& t, const ScatterSoftmaxTil
     const int32_t count = static_cast<int32_t>(tiling.workspaceElems);
     if constexpr (Phase == kPhaseExp) {
         DataCopy(t.cached, t.maximumGm, count);
-    } else if constexpr (Mode != kModeSoftmax && Phase == kPhaseNormalize) {
+    } else if constexpr (IsLogDomain(Mode) && Phase == kPhaseNormalize) {
         // The log-domain normalization subtracts the maximum and multiplies by
         // nothing: it needs the maximum and the sum at the same time, so the
         // cached copy holds the maximum and the (otherwise idle) accumulator

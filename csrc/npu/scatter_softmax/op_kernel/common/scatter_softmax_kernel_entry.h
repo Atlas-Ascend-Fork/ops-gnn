@@ -103,7 +103,11 @@ __aicore__ inline void BindReductionTensors(PhaseTensors<T>& tensors,
                                             GM_ADDR maximum, GM_ADDR sum,
                                             GM_ADDR deviation, GM_ADDR count)
 {
-    tensors.indexGm.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(index), tiling.dimLength);
+    // The grouped operators index the labels of every row; the edge softmax
+    // indexes the CSR boundaries of every segment, one more than the segments.
+    const uint64_t labelElems =
+        (Mode == kModeEdgeCsr) ? tiling.groupCount + 1 : tiling.dimLength;
+    tensors.indexGm.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(index), labelElems);
     if constexpr (BindsSource<Phase, Mode>()) {
         tensors.srcGm.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(src), tiling.srcNumel);
     }

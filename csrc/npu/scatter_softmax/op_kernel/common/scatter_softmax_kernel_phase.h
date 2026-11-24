@@ -93,7 +93,7 @@ __aicore__ inline void ExpBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingDa
                                 PipelineSync& sync, uint64_t base, uint32_t count,
                                 uint64_t col, uint32_t valid, uint32_t width)
 {
-    constexpr bool kStore = (Mode == kModeSoftmax);
+    constexpr bool kStore = IsSoftmaxDomain(Mode);
     constexpr float kFiniteMax = 3.4028234663852886e38F;
     SyncEvent<HardEvent::V_MTE2>(sync.computeToLoad);
     CopyRowsIn(t.narrow, t.srcGm, tiling, base, count, col, valid);
@@ -142,7 +142,7 @@ __aicore__ inline void NormalizeBatch(PhaseTensors<T>& t, const ScatterSoftmaxTi
                                       uint64_t col, uint32_t valid, uint32_t width)
 {
     SyncEvent<HardEvent::V_MTE2>(sync.computeToLoad);
-    if constexpr (Mode != kModeSoftmax) {
+    if constexpr (IsLogDomain(Mode)) {
         // The stored exponential is not needed: the log output is recomputed
         // from the source, which also keeps a group with an underflowed
         // exponential sum from collapsing to `-inf` (see the kernel header).
@@ -170,7 +170,7 @@ __aicore__ inline void NormalizeBatch(PhaseTensors<T>& t, const ScatterSoftmaxTi
         }
         const uint64_t offset = k * tiling.colTile;
         WidenToFp32(t.wide[offset], t.narrow[offset], valid);
-        if constexpr (Mode != kModeSoftmax) {
+        if constexpr (IsLogDomain(Mode)) {
             Sub(t.wide[offset], t.wide[offset], t.wide2[offset], static_cast<int32_t>(valid));
             Ln(t.wide3[offset], t.wide3[offset], static_cast<int32_t>(valid));
             Sub(t.wide[offset], t.wide[offset], t.wide3[offset], static_cast<int32_t>(valid));
@@ -193,7 +193,7 @@ __aicore__ inline void GradSumBatch(PhaseTensors<T>& t, const ScatterSoftmaxTili
                                     uint64_t col, uint32_t valid, uint32_t width)
 {
     SyncEvent<HardEvent::V_MTE2>(sync.computeToLoad);
-    if constexpr (Mode == kModeSoftmax) {
+    if constexpr (IsSoftmaxDomain(Mode)) {
         CopyRowsIn(t.narrow, t.outGm, tiling, base, count, col, valid);
     }
     CopyRowsIn(t.narrow2, t.gradGm, tiling, base, count, col, valid);
@@ -204,7 +204,7 @@ __aicore__ inline void GradSumBatch(PhaseTensors<T>& t, const ScatterSoftmaxTili
         if (valid < width) {
             Duplicate(t.wide3[offset], 0.0F, static_cast<int32_t>(tiling.colTile));
         }
-        if constexpr (Mode != kModeSoftmax) {
+        if constexpr (IsLogDomain(Mode)) {
             WidenToFp32(t.wide3[offset], t.narrow2[offset], valid);
         } else {
             WidenToFp32(t.wide3[offset], t.narrow[offset], valid);
@@ -241,7 +241,7 @@ __aicore__ inline void GradBatch(PhaseTensors<T>& t, const ScatterSoftmaxTilingD
         const uint64_t offset = k * tiling.colTile;
         WidenToFp32(t.wide[offset], t.narrow[offset], valid);
         WidenToFp32(t.wide2[offset], t.narrow2[offset], valid);
-        if constexpr (Mode != kModeSoftmax) {
+        if constexpr (IsLogDomain(Mode)) {
             // dL/dx = grad_out - exp(out) * sum(grad_out): the group reduces the
             // plain gradient sum, and only then is it weighted by the
             // probability that `exp(out)` recovers.
@@ -408,7 +408,7 @@ __aicore__ inline void RunRows(PhaseTensors<T>& tensors, const ScatterSoftmaxTil
             count = batch;
         }
         if constexpr (UsesGroups<Phase>()) {
-            LoadGroups(tensors, tiling, base, count, sync);
+            LoadGroups<Mode>(tensors, tiling, base, count, sync);
         }
         for (uint64_t col = 0; col < tiling.after; col += tiling.colTile) {
             RunBatch<Phase, Mode>(tensors, tiling, sync, base, count, col,

@@ -576,6 +576,65 @@ result = ops_gnn.scatter_std(src, index, dim=0, dim_size=2)
 
 ---
 
+### edge_softmax — CSR 边 softmax
+
+在 Ascend A2/A3（arch22）与 Ascend 950（arch35）上按 CSR 的每一行（每个目标节点
+的入边）计算边 softmax，语义与 `dgl.nn.functional.edge_softmax` 一致：
+
+```python
+edge_softmax(src, indptr)  # Tensor
+```
+
+`indptr` 是 CSR 行指针，段数为 `indptr.numel() - 1`，`src` 第 0 维的长度为
+`indptr[-1]`（每条边一行）。对段 `i` 的每条边 `e ∈ [indptr[i], indptr[i+1])`：
+
+```text
+out[e] = exp(src[e] - max_i) / sum_{j ∈ 段 i} exp(src[j] - max_i)
+```
+
+其中 `max_i` 是段 `i` 的最大值；尾部特征逐元素独立归一化，输出形状、dtype 与
+设备均与 `src` 相同。
+
+| 参数 | 约束 |
+| --- | --- |
+| `src` | NPU 张量，形状 `(E, ...)`；支持 float16、float32、bfloat16 |
+| `indptr` | 同设备 1 维 int32/int64 张量，长度 `段数 + 1`（至少 2，即至少一个段）；必须以 0 开头、单调不减、末位等于 `E` |
+
+实现复用 `scatter_softmax` 的设备内核（`csrc/npu/scatter_softmax/op_kernel/common`），
+以编译期 CSR 模式打开同一套五遍流水：前向三遍（段内求最大值 → 计算
+`exp(src - max)` 并段内累加 → 归一化），反向两遍（段内累加 `out * grad_out` →
+`out * (grad_out - sum)`）。与 `scatter_softmax` 的唯一差别是组标记的来源：CSR 的
+每一段就是一段连续的行，行按顺序遍历，因此每个段边界只读一次 `indptr`（核的首行
+用二分定位起点），不必像 `ptr2ind` + `scatter_softmax` 那样先物化一条 E 长的索引
+再读回内核。
+
+边界取值与 `torch.softmax` 一致：空段没有边，不产生输出；单边段输出 `1`；段内含
+`+inf` 时该特征列整列为 `NaN`；含 `NaN` 的段输出 `NaN`。
+
+> 精度与开销：归约工作区为 `段数 × 对齐后的尾部元素数` 个 float32（最大值与和
+> 各一份），与 `scatter_softmax` 的 `分组数 × 尾部元素数` 同阶；段内归约由 MTE3
+> 原子单元完成，工作区不超过 16 KB 时改为核内累加、末尾每核一次回写。所有归约在
+> float32 中完成，fp16/bf16 的段长不受 65504 上限限制。`indptr` 的取值检查在
+> Python 层一次同步完成，非法指针（非 0 开头、递减、末位不等于 `E`）抛出带下标的
+> `ValueError`。
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+src = torch.tensor([[1.], [2.], [3.], [4.]], device="npu")
+indptr = torch.tensor([0, 2, 4], dtype=torch.int32, device="npu")
+result = ops_gnn.edge_softmax(src, indptr)
+# 段 0: [[1.], [2.]]  -> [[0.2689], [0.7311]]
+# 段 1: [[3.], [4.]]  -> [[0.2689], [0.7311]]
+```
+
+> 测试位于 `test/edge_softmax/arch22/` 与 `test/edge_softmax/arch35/`，性能脚本为
+> 各自目录下的 `benchmark_edge_softmax.py`。
+
+---
+
 ### radius / radius_graph — 半径内邻居搜索
 
 与 `torch_cluster.radius` / `radius_graph`（>= 1.6.0）接口完全一致的 NPU 实现，
