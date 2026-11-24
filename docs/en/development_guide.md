@@ -235,7 +235,7 @@ pytest test/ -v
 # Or target a directory directly
 pytest test/spmm_max/arch22/test_spmm_max.py -v                       # One arch22 operator
 pytest test/segment_max_csr/arch35/test_segment_max_csr.py -v             # Single operator test
-pytest test/segment_max_csr/arch35/test_segment_max_csr.py::test_func -v  # Single test case
+pytest test/segment_max_csr/arch35/test_segment_max_csr.py::test_segment_max_csr_basic -v  # Single test case
 ```
 
 > Note: `pytest test/` only collects the directory matching the local chip model — on 950 only `arch35` runs (`arch22` is ignored), on A2/A3 only `arch22` runs (`arch35` is ignored).
@@ -375,11 +375,12 @@ operators and the product-review request. The SIMT and AIV execution models keep
 separate translation units. Their arithmetic and dispatch are unchanged by this
 layout revision.
 
-The product test directory follows `test/segment_csr/arch35/` and contains three files:
+The product test directory follows `test/segment_csr/arch35/` and contains four files:
 
 | File | Responsibility |
 | --- | --- |
 | `test_segment_csr.py` | All API, cross-call semantic and vector-route cases in one parameterized suite |
+| `test_segment_csr_golden.py` | CPU golden regressions for exact integer mean |
 | `golden.py` | Pure PyTorch CPU values and first-extremum index reference |
 | `benchmark_segment_csr.py` | Standalone 29-shape timing; input and logging helpers are included here |
 

@@ -181,9 +181,12 @@ print(result.shape)  # torch.Size([4, 6, 64])
 |----------|-------------|----------------|---------------|
 | `gather_coo` | Expand source rows by sorted COO indices | NPU | [gather_coo — COO Row Expansion](docs/en/api_reference.md#gather_coo--coo-row-expansion) |
 | `gather_csr` | Expands segment features using CSR pointers | NPU | [gather_csr - CSR Segment Expansion](docs/en/api_reference.md#gather_csr---csr-segment-expansion) |
+| `disjoint_union_coo` | Concatenate COO matrices with cumulative offsets (DGL `DisjointUnionCoo` parity) | NPU (A2/A3, arch22) | [disjoint_union_coo — COO concatenation](docs/en/api_reference.md) |
 | `fps` | torch_cluster-compatible farthest point sampling | NPU (Ascend 950) | [fps — Farthest Point Sampling](docs/en/api_reference.md#fps--farthest-point-sampling) |
 | `random_walk` | Uniform or node2vec-biased random walks on COO graphs | NPU | [random_walk — NPU Random Walk](docs/en/api_reference.md#random_walk--npu-random-walk) |
 | `segment_max_csr` | Segmented max reduction on CSR format | NPU | [segment_max_csr — CSR Segmented Max](docs/en/api_reference.md#segment_max_csr--csr-segmented-max) |
+| `segment_csr` / `segment_*_csr` | int64 CSR segment reduction family (sum/add/mean/min/max) | NPU (A2/A3, 950) | [segment_csr — int64 CSR Segment Reductions](docs/en/api_reference.md#segment_csr--int64-csr-segment-reductions) |
+| `segment_coo` / `segment_*_coo` | Sorted COO segment reduction family (sum/add/mean/min/max) | NPU (A2/A3, 950) | [segment_coo — Sorted COO segment reductions](docs/en/api_reference.md#segment_coo--sorted-coo-segment-reductions) |
 | `segment_logsumexp` | Numerically stable segmented log-sum-exp on CSR format | NPU (A2/A3, 950) | [segment_logsumexp — CSR Segment Log-Sum-Exp](docs/en/api_reference.md#segment_logsumexp--csr-segment-log-sum-exp) |
 | `scatter_softmax` | Grouped softmax over an index (torch_scatter compatible, differentiable) | NPU (A2/A3, 950) | [scatter_softmax — Grouped Softmax](docs/en/api_reference.md#scatter_softmax--grouped-softmax) |
 | `scatter_log_softmax` | Grouped log-softmax over an index (torch_scatter compatible, differentiable) | NPU (A2/A3, 950) | [scatter_log_softmax — Grouped Log-Softmax](docs/en/api_reference.md#scatter_log_softmax--grouped-log-softmax) |
@@ -192,7 +195,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `edge_softmax` | Edge softmax over every CSR segment (DGL compatible, differentiable) | NPU (A2/A3, 950) | [edge_softmax — CSR Edge Softmax](docs/en/api_reference.md#edge_softmax--csr-edge-softmax) |
 | `radius` / `radius_graph` | Radius neighbor search (torch_cluster compatible, Ascend 950PR) | NPU | [radius / radius_graph — Radius Neighbor Search](docs/en/api_reference.md#radius--radius_graph--radius-neighbor-search) |
 | `knn` / `knn_graph` | Exact neighbor search and graph construction (Ascend 950PR) | NPU | [knn / knn_graph — Exact Neighbor Search](docs/en/api_reference.md#knn--knn_graph--exact-neighbor-search) |
-| `nearest` | Global index of the nearest y point in the same batch | NPU (950, arch35) | [nearest](docs/en/api_reference.md) |
+| `nearest` | Global index of the nearest y point in the same batch | NPU (A2/A3, 950) | [nearest](docs/en/api_reference.md) |
 | `grid_cluster` | Map point coordinates to linear int64 regular-grid IDs (torch_cluster compatible) | NPU (950, arch35) | [grid_cluster — Regular Grid Clustering](docs/en/api_reference.md) |
 | `matrix_exp` | Compute the matrix exponential of batched square matrices | NPU (Ascend 950, arch35) | [matrix_exp — Matrix Exponential](docs/en/api_reference.md#matrix_exp--matrix-exponential) |
 | `graclus_cluster` | Greedy graph clustering | NPU / CPU fallback for float64 | [graclus_cluster — Greedy Graph Clustering](docs/en/api_reference.md#graclus_cluster--greedy-graph-clustering) |

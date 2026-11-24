@@ -232,7 +232,7 @@ pytest test/ -v
 # 或直接指定目录
 pytest test/spmm_max/arch22/test_spmm_max.py -v                       # arch22 单个算子测试
 pytest test/segment_max_csr/arch35/test_segment_max_csr.py -v             # 单个算子测试
-pytest test/segment_max_csr/arch35/test_segment_max_csr.py::test_func -v  # 单个测试用例
+pytest test/segment_max_csr/arch35/test_segment_max_csr.py::test_segment_max_csr_basic -v  # 单个测试用例
 ```
 
 > 说明：`pytest test/` 会依据本地芯片型号只收集对应目录 —— 950 上只跑 `arch35`（`arch22` 被忽略），A2/A3 上只跑 `arch22`（`arch35` 被忽略）。
@@ -370,11 +370,12 @@ Kernel 入口为 `SegmentCsr` 和 `SegmentCsrVector`，Python 继续导出
 主头文件和主翻译单元按算子名命名，与同仓算子及产品评审要求对齐。
 SIMT 和 AIV 两种执行模型继续分别编译；本轮目录整改不改变计算与分发逻辑。
 
-产品测试采用 `test/segment_csr/arch35/`，只保留三个文件：
+产品测试采用 `test/segment_csr/arch35/`，只保留四个文件：
 
 | 文件 | 职责 |
 | --- | --- |
 | `test_segment_csr.py` | 将 API、跨调用语义和向量路径用例集中在一个参数化测试套件 |
+| `test_segment_csr_golden.py` | CPU golden 的整数 mean 精确性回归用例 |
 | `golden.py` | 纯 PyTorch CPU 值与首次极值索引参考 |
 | `benchmark_segment_csr.py` | 独立的 29 组形状计时，输入和日志辅助函数内聚于该文件 |
 

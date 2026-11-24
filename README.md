@@ -104,8 +104,9 @@ arch22（A2、A3）和 arch35（950），并分别打包
 
 Ascend 950 的 torch_sparse SpMM 随 `ops_gnn` 一起构建和安装。安装
 `torch_sparse` 后，在导入其前端函数前执行
-`from ops_gnn import torch_sparse_spmm` 注册 NPU 路径。接口、依赖与复现
-接口与约束见 [SpMM API 文档](docs/zh/api_reference.md#torch_sparse_spmm)，构建与测试命令见 [开发指南](docs/zh/development_guide.md#torch_sparse_spmm)。
+`from ops_gnn import torch_sparse_spmm` 注册 NPU 路径。接口与约束见
+[SpMM API 文档](docs/zh/api_reference.md#torch_sparse_spmm)，依赖、构建与测试命令见
+[开发指南](docs/zh/development_guide.md#torch_sparse_spmm)。
 
 
 ```bash
@@ -179,9 +180,12 @@ print(result.shape)  # torch.Size([4, 6, 64])
 |------|------|----------|----------|
 | `gather_coo` | 按有序 COO 索引扩展源行 | NPU | [gather_coo — COO 行扩展](docs/zh/api_reference.md#gather_coo--coo-行扩展) |
 | `gather_csr` | 按 CSR 指针展开 segment 特征 | NPU | [gather_csr - CSR 分段展开](docs/zh/api_reference.md#gather_csr---csr-分段展开) |
+| `disjoint_union_coo` | 多个 COO 按累积偏移合并（对齐 DGL `DisjointUnionCoo`） | NPU（A2/A3，arch22） | [disjoint_union_coo — 多个 COO 合并](docs/zh/api_reference.md) |
 | `fps` | 与 torch_cluster 对齐的最远点采样 | NPU（Ascend 950） | [fps — 最远点采样](docs/zh/api_reference.md#fps--最远点采样) |
 | `random_walk` | COO 图上的均匀或 node2vec 偏置随机游走 | NPU | [random_walk — NPU 随机游走](docs/zh/api_reference.md#random_walk--npu-随机游走) |
 | `segment_max_csr` | CSR 格式的分段最大值运算 | NPU | [segment_max_csr — CSR 分段最大值](docs/zh/api_reference.md#segment_max_csr--csr-分段最大值) |
+| `segment_csr` / `segment_*_csr` | int64 CSR 分段归约算子族（sum/add/mean/min/max） | NPU（A2/A3、950） | [segment_csr — int64 CSR 分段归约算子族](docs/zh/api_reference.md#segment_csr--int64-csr-分段归约算子族) |
+| `segment_coo` / `segment_*_coo` | 排序 COO 分段归约算子族（sum/add/mean/min/max） | NPU（A2/A3、950） | [segment_coo — 排序 COO 分段归约](docs/zh/api_reference.md#segment_coo--排序-coo-分段归约) |
 | `segment_logsumexp` | CSR 格式的分段 logsumexp（数值稳定） | NPU（A2/A3、950） | [segment_logsumexp — CSR 分段 logsumexp](docs/zh/api_reference.md#segment_logsumexp--csr-分段-logsumexp) |
 | `scatter_softmax` | 按 index 分组的分组 softmax（torch_scatter 兼容，可求导） | NPU（A2/A3、950） | [scatter_softmax — 分组 softmax](docs/zh/api_reference.md#scatter_softmax--分组-softmax) |
 | `scatter_log_softmax` | 按 index 分组的分组 log-softmax（torch_scatter 兼容，可求导） | NPU（A2/A3、950） | [scatter_log_softmax — 分组 log-softmax](docs/zh/api_reference.md#scatter_log_softmax--分组-log-softmax) |
@@ -190,7 +194,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `edge_softmax` | CSR 每段入边上的边 softmax（DGL 兼容，可求导） | NPU（A2/A3、950） | [edge_softmax — CSR 边 softmax](docs/zh/api_reference.md#edge_softmax--csr-边-softmax) |
 | `radius` / `radius_graph` | 半径内邻居搜索（torch_cluster 兼容，Ascend 950PR） | NPU | [radius / radius_graph — 半径内邻居搜索](docs/zh/api_reference.md#radius--radius_graph--半径内邻居搜索) |
 | `knn` / `knn_graph` | 精确近邻检索与图构建（Ascend 950PR） | NPU | [knn / knn_graph — 精确近邻搜索](docs/zh/api_reference.md#knn--knn_graph--精确近邻搜索) |
-| `nearest` | 同batch最近y点的全局索引 | NPU（950，arch35） | [nearest](docs/zh/api_reference.md) |
+| `nearest` | 同batch最近y点的全局索引 | NPU（A2/A3、950） | [nearest](docs/zh/api_reference.md) |
 | `grid_cluster` | 将点坐标映射为规则网格的线性 int64 ID（torch_cluster 兼容） | NPU（950，arch35） | [grid_cluster — 规则网格聚类](docs/zh/api_reference.md) |
 | `matrix_exp` | 计算批量方阵的矩阵指数 | NPU（Ascend 950，arch35） | [matrix_exp — 矩阵指数](docs/zh/api_reference.md#matrix_exp--矩阵指数) |
 | `graclus_cluster` | 图贪心聚类 | NPU / CPU float64 回退 | [graclus_cluster — 图贪心聚类](docs/zh/api_reference.md#graclus_cluster--图贪心聚类) |
