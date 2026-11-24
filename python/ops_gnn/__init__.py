@@ -42,6 +42,7 @@ except (ImportError, OSError, RuntimeError, ValueError) as exc:
     ) from exc
 
 if _pybind.npu_arch == 'dav-2201':
+    from .fps import fps
     from .gather_csr import gather_csr
     from .ind2ptr import ind2ptr
     from .ptr2ind import ptr2ind
@@ -70,6 +71,7 @@ if _pybind.npu_arch == 'dav-2201':
     from .spmm import spmm
     from .nearest import nearest
     __all__ = [
+        'fps',
         'gather_csr',
         'ind2ptr',
         'ptr2ind',

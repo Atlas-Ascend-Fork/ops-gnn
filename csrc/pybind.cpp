@@ -15,6 +15,7 @@
 #include <pybind11/pybind11.h>
 #include <string>
 #include "edge_softmax/op_host/edge_softmax.h"
+#include "fps/op_host/fps.h"
 #include "gather_csr/op_host/gather_csr.h"
 #include "scatter_log_softmax/op_host/scatter_log_softmax.h"
 #include "scatter_logsumexp/op_host/scatter_logsumexp.h"
@@ -39,7 +40,6 @@
 #include "grid_cluster/op_host/grid_cluster.h"
 #include "random_walk/op_host/random_walk.h"
 #include "segment_max_csr/op_host/segment_max_csr.h"
-#include "fps/op_host/fps.h"
 #include "radius/op_host/radius.h"
 #include "graclus_cluster/op_host/graclus_cluster.h"
 #include "ind2ptr/op_host/ind2ptr.h"
@@ -61,7 +61,6 @@ bool HasPrivateUse1Kernel(const std::string& opName)
 }
 }  // namespace opsgnn
 
-#ifndef OPSGNN_DAV_2201
 TORCH_LIBRARY_FRAGMENT(ops_gnn, m) {
     m.def("fps_single(Tensor src, int out_size, int start_index) -> Tensor",
           TORCH_FN(fps_npu_single));
@@ -75,7 +74,6 @@ TORCH_LIBRARY_FRAGMENT(ops_gnn, m) {
               c10::AliasAnalysisKind::CONSERVATIVE),
           TORCH_FN(fps_random_start));
 }
-#endif
 
 namespace {
 // Public ops_gnn kernels may write through independent storage aliases without
@@ -104,6 +102,17 @@ void BindSegmentCoo(py::module_& m)
           py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary, ExternalSpmmProofBoundary>());
 }
 
+void RegisterFps(py::module_& m)
+{
+    m.def("fps_single", &fps_npu_single, py::arg("src"), py::arg("out_size"),
+          py::arg("start_index"), "Single-batch farthest point sampling on NPU");
+    m.def("fps_batch", &fps_npu_batch, py::arg("src"), py::arg("ptr"),
+          py::arg("out_ptr"), py::arg("start"),
+          "Batched farthest point sampling on NPU");
+    m.def("fps_random_start", &fps_random_start, py::arg("degree"),
+          "Generate torch_cluster CPU-compatible random FPS starts");
+}
+
 #ifndef OPSGNN_DAV_2201
 void RegisterTorchSparseCompat(py::module_& module)
 {
@@ -114,17 +123,6 @@ void RegisterTorchSparseCompat(py::module_& module)
     module.def("torch_sparse_random_walk_with_rand", &opsgnn::torch_sparse_random_walk_with_rand_npu,
                py::arg("rowptr"), py::arg("col"), py::arg("start"), py::arg("walk_length"),
                py::arg("rand"));
-}
-
-void RegisterFps(py::module_& m)
-{
-    m.def("fps_single", &fps_npu_single, py::arg("src"), py::arg("out_size"),
-          py::arg("start_index"), "Single-batch farthest point sampling on NPU");
-    m.def("fps_batch", &fps_npu_batch, py::arg("src"), py::arg("ptr"),
-          py::arg("out_ptr"), py::arg("start"),
-          "Batched farthest point sampling on NPU");
-    m.def("fps_random_start", &fps_random_start, py::arg("degree"),
-          "Generate torch_cluster CPU-compatible random FPS starts");
 }
 #endif
 
@@ -290,6 +288,7 @@ void BindArch22(py::module_& m)
           py::arg("datas") = std::vector<std::optional<torch::Tensor>>{},
           "Concatenate COO matrices with cumulative row/column/nnz offsets on Ascend NPU",
           py::call_guard<py::gil_scoped_release>());
+    RegisterFps(m);
 }
 #else
 void BindTorchSparseSpmm(py::module_& m)

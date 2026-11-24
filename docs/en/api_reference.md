@@ -1838,7 +1838,7 @@ torch.npu.synchronize()
 | Product | Supported |
 | --- | :---: |
 | Ascend 950PR / Ascend 950DT (arch35) | √ |
-| Atlas A2/A3 series products (arch22) | × |
+| Atlas A2/A3 series products (arch22) | √ |
 
 #### Function
 
@@ -1894,8 +1894,8 @@ def fps(
 - The Host layer validates parameters, computes the output length, obtains the current stream, and plans UB capacity.
 - Eager mode uses the low-overhead pybind entry. TorchScript mode invokes the same Host/Kernel implementation through the registered `torch.ops.ops_gnn.fps_batch` Dispatcher entry; all four overloads can be compiled and executed.
 - Common performance shapes use SoA layout and vector instructions within one AIV core. The implementation retains minimum distances and performs the maximum reduction in UB, reducing GM round trips during each iteration.
-- Inputs with more than 16384 points, or high-dimensional shapes unsuitable for the vector UB path, use a 256-thread SIMT fallback. Distance computation, cross-lane combination, and tie comparison preserve the current CPU contract.
-- A single batch with a scalar `ratio` and `random_start=False` uses the low-overhead entry, avoiding transfers of unrelated small Tensor metadata.
+- Inputs with more than 16384 points, or high-dimensional shapes unsuitable for the vector UB path, use a 256-thread SIMT fallback on arch35 and a tiled vectorized fallback on arch22 (`dav-2201`). Distance computation, cross-lane/tile combination, and tie comparison preserve the current CPU contract.
+- A single batch with a scalar `ratio` and `random_start=False` uses the low-overhead entry, avoiding transfers of unrelated small Tensor metadata. Unit tests for arch22 live in `test/fps/arch22/test_fps.py`.
 
 #### Example
 

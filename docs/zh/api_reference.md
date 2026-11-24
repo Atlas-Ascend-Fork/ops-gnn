@@ -1689,7 +1689,7 @@ torch.npu.synchronize()
 | 产品 | 是否支持 |
 | --- | :---: |
 | Ascend 950PR / Ascend 950DT（arch35） | √ |
-| Atlas A2/A3 系列产品（arch22） | × |
+| Atlas A2/A3 系列产品（arch22） | √ |
 
 #### 功能说明
 
@@ -1745,8 +1745,8 @@ def fps(
 - Host 层完成参数检查、输出长度计算、当前 stream 获取和 UB 容量规划。
 - eager 模式使用低开销 pybind 入口；TorchScript 模式通过注册的 `torch.ops.ops_gnn.fps_batch` Dispatcher 入口调用同一 Host/Kernel 实现，四种 overload 均可编译执行。
 - 常用性能形状在一个 AIV 核内使用 SoA 数据排布和向量指令，在 UB 中维护最小距离并完成最大值归约，减少每轮 GM 往返。
-- 超过 16384 点或不适合向量 UB 路径的高维场景使用 256 线程 SIMT 回退；距离计算、跨 lane 合并和平局比较保持当前 CPU 合同。
-- 单 batch、标量 ratio 且 `random_start=False` 时走低开销入口，避免无关的小 Tensor 元数据搬运。
+- 超过 16384 点或不适合向量 UB 路径的高维场景：arch35 使用 256 线程 SIMT 回退，arch22（`dav-2201`）使用分块向量化回退；距离计算、跨 lane/分块合并和平局比较保持当前 CPU 合同。
+- 单 batch、标量 ratio 且 `random_start=False` 时走低开销入口，避免无关的小 Tensor 元数据搬运；arch22 单元测试位于 `test/fps/arch22/test_fps.py`。
 
 #### 使用示例
 

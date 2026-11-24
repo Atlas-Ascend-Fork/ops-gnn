@@ -16,7 +16,7 @@
 #include <limits>
 
 #include <c10/core/DeviceGuard.h>
-#include "fps/op_kernel/arch35/fps_kernel.h"
+#include "fps/op_kernel/common/fps_kernel.h"
 #include "tiling/platform/platform_ascendc.h"
 #include "torch_npu/csrc/core/npu/NPUStream.h"
 
