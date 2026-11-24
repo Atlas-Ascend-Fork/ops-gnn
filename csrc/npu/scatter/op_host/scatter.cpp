@@ -7,6 +7,7 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
+#ifndef OPSGNN_DAV_2201
 #include "scatter.h"
 
 #include <acl/acl.h>
@@ -267,3 +268,5 @@ std::tuple<torch::Tensor, torch::Tensor> scatter_forward(
 }
 
 }  // namespace opsgnn
+
+#endif // OPSGNN_DAV_2201

@@ -23,7 +23,10 @@
 #include "segment_coo/op_host/segment_coo.h"
 #include "segment_csr/op_host/segment_csr.h"
 #include "segment_logsumexp/op_host/segment_logsumexp.h"
+#include "scatter/op_host/scatter.h"
 #ifdef OPSGNN_DAV_2201
+#include <torch/csrc/Exceptions.h>
+#include <torch/csrc/autograd/VariableTypeUtils.h>
 #include "common/spmm/host_proof_cache.h"
 #include "disjoint_union_coo/op_host/disjoint_union_coo.h"
 #include "sddmm_csr/op_host/sddmm_csr.h"
@@ -42,7 +45,6 @@
 #include "ind2ptr/op_host/ind2ptr.h"
 #include "matrix_exp/op_host/matrix_exp.h"
 #include "ptr2ind/op_host/ptr2ind.h"
-#include "scatter/op_host/scatter.h"
 #include "torch_sparse_spmm/op_host/torch_sparse_spmm.h"
 #include "non_diag_mask/op_host/non_diag_mask.h"
 #include "torch_sparse_random_walk/op_host/torch_sparse_random_walk.h"
@@ -246,6 +248,20 @@ void BindArch22(py::module_& m)
     m.def("gather_csr", &opsgnn::gather_csr, py::arg("src"), py::arg("indptr"),
           py::arg("out") = py::none(), "Gather CSR (NPU)",
           py::call_guard<ExternalCsrProofBoundary>());
+    m.def("scatter_index_stats", &opsgnn::scatter_index_stats, py::arg("index"),
+          py::call_guard<py::gil_scoped_release>());
+    m.def("scatter_check_out",
+          torch::wrap_pybind_function(
+              [](const torch::Tensor &out) { torch::autograd::check_inplace(out, out.requires_grad()); }),
+          py::arg("out"), "Check forward mutation legality without writing the output");
+    m.def("scatter_a2_forward", &opsgnn::scatter_a2_forward, py::arg("src"), py::arg("index"),
+          py::arg("dim"), py::arg("out"), py::arg("dim_size"), py::arg("reduce"),
+          py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary, ExternalSpmmProofBoundary>());
+    m.def("scatter_forward", &opsgnn::scatter_forward, py::arg("src"), py::arg("index"),
+          py::arg("dim"), py::arg("out"), py::arg("reduce"), py::arg("has_out"),
+          py::arg("hot_target") = -1,
+          "Forward reduction; hot_target is an arch35 hint and is unused by A2",
+          py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary, ExternalSpmmProofBoundary>());
     BindSegmentCoo(m);
     BindSegmentLogSumExp(m);
     m.def("segment_coo_value",

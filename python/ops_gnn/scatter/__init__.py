@@ -36,9 +36,14 @@ def broadcast(src: torch.Tensor, other: torch.Tensor, dim: int) -> torch.Tensor:
 
 
 try:  # The extension is present after the CANN build.
-    from . import _pybind as _scatter_npu
+    from .. import _pybind as _scatter_npu
 except ImportError:  # CPU-only development and documentation builds.
     _scatter_npu = None
+
+if _scatter_npu is not None and _scatter_npu.npu_arch == "dav-2201":
+    from ._scatter_a2 import forward as _a2_forward
+else:
+    _a2_forward = None
 
 
 _L1_DTYPES = {
@@ -89,8 +94,13 @@ class _ReferenceViews:
 
 
 def native_available() -> bool:
-    """Return whether the Ascend C extension was imported successfully."""
-    return _scatter_npu is not None
+    """Return whether the loaded extension implements Scatter."""
+    if _scatter_npu is None or not hasattr(_scatter_npu, "scatter_forward"):
+        return False
+    return _scatter_npu.npu_arch != "dav-2201" or (
+        hasattr(_scatter_npu, "scatter_index_stats")
+        and hasattr(_scatter_npu, "scatter_a2_forward")
+    )
 
 
 def _normalize_dim(src: torch.Tensor, dim: int) -> int:
@@ -555,6 +565,10 @@ def _run_npu(
 def _scatter_forward(
     src: torch.Tensor, index: torch.Tensor, request: _ScatterRequest
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    if _scatter_npu is not None and _scatter_npu.npu_arch == "dav-2201":
+        if not native_available():
+            raise RuntimeError("The loaded A2 extension does not implement Scatter")
+        return _a2_forward(src, index, request, _scatter_npu)
     plan = _prepare_scatter(src, index, request)
 
     # torch_scatter.scatter_mean builds its count tensor from the *original*

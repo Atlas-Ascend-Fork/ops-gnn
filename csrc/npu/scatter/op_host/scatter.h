@@ -9,12 +9,21 @@
  */
 #pragma once
 
+#include <optional>
 #include <torch/extension.h>
 
 namespace opsgnn {
 
-std::tuple<torch::Tensor, torch::Tensor> scatter_forward(
-    torch::Tensor src, torch::Tensor index, int64_t dim, torch::Tensor out,
-    int64_t reduce, bool hasOut, int64_t hotTarget);
+std::tuple<torch::Tensor, torch::Tensor> scatter_forward(torch::Tensor src, torch::Tensor index, int64_t dim,
+                                                         torch::Tensor out, int64_t reduce, bool hasOut,
+                                                         int64_t hotTarget);
 
-}  // namespace opsgnn
+#ifdef OPSGNN_DAV_2201
+uint32_t ScatterA2DtypeCode(at::ScalarType dtype, const char *errorMessage);
+std::tuple<int64_t, int64_t> scatter_index_stats(torch::Tensor index);
+std::tuple<torch::Tensor, torch::Tensor> scatter_a2_forward(torch::Tensor src, torch::Tensor index, int64_t dim,
+                                                            std::optional<torch::Tensor> out,
+                                                            std::optional<int64_t> dimSize, int64_t reduce);
+#endif
+
+} // namespace opsgnn

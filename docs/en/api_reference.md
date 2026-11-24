@@ -1,3 +1,13 @@
+<!--
+Copyright (c) 2026 Huawei Technologies Co., Ltd.
+This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+CANN Open Software License Agreement Version 2.0 (the "License").
+Please refer to the License for details. You may not use this file except in compliance with the License.
+THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+See LICENSE in the root of the software repository for the full text of the License.
+-->
+
 # ops-gnn API Reference
 
 This document provides detailed API interface documentation for the ops-gnn library, including operator signatures, parameter descriptions, return values, and usage examples.
@@ -1138,6 +1148,10 @@ python test/gather_csr/arch35/benchmark_gather_csr.py --warmup 20 --iterations 1
 
 ### scatter — Scatter Reductions
 
+The signatures below are shared across architectures. The argument and execution
+rules before the A2 subsection describe the existing arch35 implementation;
+the A2 subsection specifies its CPU-compatible behavior and dependencies.
+
 The Scatter family follows the forward API of `torch_scatter` 2.1.2. See the
 min/max tie rule below.
 
@@ -1154,6 +1168,12 @@ ops_gnn.scatter_max(src, index, dim=-1, out=None, dim_size=None)
 `scatter_min` and `scatter_max` return `(out, arg_out)`; the other functions
 return `out`. `scatter_add` and `scatter_sum` have identical reduction
 semantics.
+
+None of these seven public Python APIs takes `hot_target`. The native
+`scatter_forward` binding exposes it as a performance hint for arch35 only.
+A2 retains the parameter for binding compatibility and validates that it is -1 or
+nonnegative, but does not use it for scheduling. The dedicated A2 native entry
+`scatter_a2_forward` does not accept this parameter.
 
 #### Arguments
 
@@ -1198,6 +1218,171 @@ values, arg = ops_gnn.scatter_max(src, index)
 # values: tensor([3., 4.], device='npu:0')
 # arg:    tensor([2, 3], device='npu:0')
 ```
+
+#### Ascend A2 (910B, arch22)
+
+The following rules apply to the A2 forward path, referenced to the original
+`torch_scatter==2.1.2` public CPU API with PyTorch 2.7.1. In particular, A2
+keeps the first effective source position for ordinary min/max ties, whereas
+the arch35 path described above selects the largest index.
+
+#### A2 arguments
+
+- `src`: NPU input Tensor with rank 1 through 8.
+- `index`: INT64 Tensor on src's device, broadcastable under `torch_scatter` rules; unordered and repeated indices are allowed.
+- `dim`: reduction dimension; negative dimensions are supported. Default: `-1`.
+- `out`: optional initial value matching src's dtype, device, and non-reduction dimensions; successful calls update it in place, with returned identity following the grad-state rules below.
+- `dim_size`: optional output size on dim, inferred from the effective index when both out and dim_size are absent. Supplied out determines its own shape.
+- `reduce`: `sum`, `add`, `mul`, `mean`, `min`, or `max`.
+
+#### A2 data types and execution paths
+
+| Level | `src/out` dtype | Execution path | Reductions |
+|---|---|---|---|
+| L1 | float16, bfloat16, float32, int8, int16, int32, uint8 | A2 Ascend C; eligible fused mean or native sum/count composition | all six |
+| L2 | float64, int64 | Original torch_scatter CPU extension with D2H/H2D back to the original NPU | all six |
+
+L1 requires no torch_scatter installation. L2 accepts PyTorch 2.7.1 and 2.12.0 and
+requires the original `torch_scatter==2.1.2` CPU extension compiled for the installed
+PyTorch. A missing dependency raises ImportError and a version mismatch raises
+RuntimeError. PyTorch 2.7.1 remains the numerical reference; 2.12.0 has completed
+independent CPU numerical and L2 equivalence checks, with the forward autograd
+version difference described below. This exact version list does not include
+other 2.12.x releases or other versions. Each L2 dtype emits
+a RuntimeWarning on first use. Supplied out retains supported storage aliases and CPU
+forward-state behavior; dedicated min/max return both values and INT64 arg on NPU.
+FLOAT64/INT64 are not reduced by narrowing their values to smaller data types.
+
+#### A2 out, count, and extrema rules
+
+- Out participates in sum/add accumulation, mul multiplication, and min/max comparison.
+  Mean first updates out through sum, then divides by the CPU-compatible count.
+- Mean counts the original index before broadcasting, using src dtype for count.
+  Overflow or rounding precedes replacing counts below one with one. Integer division
+  uses floor: 128 INT8 ones in one bucket produce -128, while 300 UINT8 ones produce 1.
+- Min/max update only on strict improvement. Ordinary ties keep the first effective
+  source position along dim. If no source improves supplied out, arg keeps its
+  `src.size(dim)` sentinel.
+- Without out, extrema still equal to the CPU initialization limit are cleared to
+  zero while their arg sentinel is retained. Buckets with no source elements are zero; mul uses one
+  for such a bucket in nonempty src, but zero when the entire src is empty and out is absent.
+- Non-contiguous src/index and zero-stride broadcasting are supported. Non-contiguous
+  out is copied back for sum/add/mean; mul/min/max raise RuntimeError. Overlapping
+  inputs follow CPU validation and permitted alias read/write semantics.
+
+With grad enabled, a requires-grad leaf out raises before sum/add/mean writes and
+after mul/min/max writes. The sum/add/mean precheck validates in-place modification
+without writing out or incrementing its version counter. Mul on a view of a
+requires-grad leaf succeeds in PyTorch 2.7.1; starting with
+[PyTorch 2.8](https://github.com/pytorch/pytorch/releases/tag/v2.8.0), the custom
+Function leaf-view check raises RuntimeError after writing. The adapter retains
+the runtime check and its version-dependent behavior. Min/max on a leaf view
+also raise after writing.
+
+An ordinary inference out used outside inference_mode raises after writing;
+mean completes only its sum. If inference out is also a requires-grad leaf and
+grad is enabled, sum/add/mean raise the leaf in-place error before writing when
+src or index is an ordinary Tensor. When src/index/out are all inference Tensors,
+they follow the CPU behavior that bypasses the Autograd precheck and raise the
+inference-mutation error after writing instead.
+Under no_grad/inference_mode with a requires-grad out, sum/add/mean return the
+original object, while mul/min/max return another wrapper sharing storage and having
+requires_grad=False. Ordinary out tensors are still returned directly on success.
+Only forward exceptions and return attributes are preserved; backward explicitly
+raises NotImplementedError.
+
+Nonempty inputs with compact 1D index and no out/src/index byte overlap prefer stable
+grouping. CPU constructs `rowptr`/rowlist from a private index snapshot only; NPU reduces
+L1 values in original source order. The default index-metadata cache compares every
+INT64 value exactly on NPU for every hit. An ordinary mismatched owner writes nothing.
+Some no-out FLOAT32 Sum/add hot hits combine validation and reduction, publishing their
+private output only after the complete producer finishes and validation succeeds. Mismatch
+discards the private result and rebuilds within the same public call, including inferred
+output-size changes. Set
+`OPSGNN_SCATTER_GROUP_CACHE=0` to measure per-call cold construction. Other routes
+compute physical index bounds on NPU and transfer a 32-byte summary per core.
+Exact validation, necessary contiguous copies, cold D2H/H2D, reduction, and synchronization
+all remain in complete-interface timing. Internal validation flags use a bounded pool
+with exclusive leases matched to device and actual stream; different streams do not
+reuse one resource. A supported registered Host mapping is read only after successful
+event synchronization; otherwise D2H remains. Asynchronous consumers retain stream lifetime
+records; private results retain ownership until the complete producer finishes, before
+publication. Pooling does not reduce full index validation on each call. Only geometrically
+eligible floating inputs without out use fused mean; other mean calls retain native
+sum/count composition.
+
+#### A2 build and validation
+
+L1 functional and precision tests and FLOAT16/FLOAT32 performance tests do not
+require torch_scatter. The complete functional and precision suite includes
+FLOAT64/INT64 L2 cases and requires the original `torch_scatter==2.1.2` CPU extension
+compiled for the installed PyTorch 2.7.1 or 2.12.0. PyTorch 2.7.1 remains the original
+numerical reference; 2.12.0 is a compatible version with verified CPU equivalence.
+An importable Python package alone is insufficient: its CPU reduction extension
+must execute successfully.
+
+With PyTorch 2.7.1 or 2.12.0, setuptools, wheel, a C++ compiler, and Python development headers
+already installed, build from the original source as follows. This also applies to
+aarch64 environments without a matching prebuilt wheel. `--no-deps` and
+`--no-build-isolation` preserve the installed PyTorch and use its build headers.
+The [upstream build option](https://github.com/rusty1s/pytorch_scatter/blob/140d3ad677aae615767412873b90982cbf97d35d/setup.py)
+`FORCE_ONLY_CPU=1` selects CPU extensions only.
+
+```bash
+FORCE_CUDA=0 FORCE_ONLY_CPU=1 python3 -m pip install \
+  --no-build-isolation --no-deps --no-binary=torch-scatter torch-scatter==2.1.2
+python3 - <<'PYCPU'
+import torch
+import torch_scatter
+
+assert torch.__version__.split("+", 1)[0] in ("2.7.1", "2.12.0")
+assert torch_scatter.__version__ == "2.1.2"
+src = torch.tensor([1., 2., 3.], dtype=torch.float64, device="cpu")
+index = torch.tensor([0, 1, 0], dtype=torch.int64, device="cpu")
+value = torch_scatter.scatter_mul(src, index, dim=0)
+torch.testing.assert_close(value, torch.tensor([3., 2.], dtype=torch.float64), rtol=0, atol=0)
+print(torch.__version__, torch_scatter.__version__, torch_scatter.__file__)
+print("torch_scatter CPU extension: PASS")
+PYCPU
+```
+
+When the dependency is missing, pytest skips only functional cases that need the
+L2 CPU extension, with an explicit reason. L1 cases, L1 dependency-isolation checks,
+and L2 missing-dependency error-contract checks still run. Skips are not passes;
+complete acceptance requires installing the dependency and executing every case.
+CPU equivalence checks and the autograd version differences above do not establish
+complete device validation for a PyTorch/CANN combination; actual device results
+belong in its validation record. L2 accepts only 2.7.1 and 2.12.0.
+
+After sourcing the installed CANN toolkit's `set_env.sh`, run from the repository root:
+
+```bash
+CANN_TARGET=a2 NPU_ARCH=dav-2201 python3 -m pip install --no-build-isolation --no-deps -e .
+CANN_TARGET=a2 NPU_DEVICE_ID=0 python3 -m pytest test/scatter/arch22/test_scatter.py -q \
+  --junitxml=output/scatter-a2-functional.xml -o junit_family=xunit1
+CANN_TARGET=a2 python3 test/scatter/arch22/benchmark_scatter.py \
+  --device npu:0 --dtype float16 float32 --reduce sum mean min max \
+  --official-shapes --json output/scatter-a2-performance.json
+```
+
+Choose an idle card and replace the device index. A2/A3 load
+`python/ops_gnn/A2-A3/_pybind.so` and `libopsgnn_npu_kernel-A2-A3.so`;
+record actual import paths and library hashes. Ordinary pytest does not automatically
+allocate giant experiments, and the benchmark requires explicit shapes or `--official-shapes`.
+JUnit properties record value/arg/out attempts and outcomes, current/legacy precision
+summaries, and individual comparisons for each unique test identifier. Generating CPU references
+does not count as an NPU comparison. Assertion counts are not unique test counts,
+and pytest remains authoritative for failures and skips.
+
+Floating-point comparison uses the clarified opbase standard at
+`a5e8e716743b20bfb2ffa16e0213c4aa73b823b3`; the earlier
+`adbe441e9254676174937047457419b6e645e384` is a parallel diagnostic only.
+Integers, arg, and L2 use strict comparison. The 40 published A100 cases require
+`T_A100/T_A2 >= 0.6` for every case and measured round under the official configuration.
+Mul, add, and other L1 data types retain `missing_baseline` when no original numeric
+reference exists; they cannot be reported as performance passes.
+See the [Scatter A2 design](../experiment/design/scatter/scatter_A2算子设计文档_en.md)
+for resource, special-value, and validation details.
 
 ### spmm — General CSR Aggregation
 

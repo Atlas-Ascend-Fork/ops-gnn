@@ -1,3 +1,13 @@
+<!--
+Copyright (c) 2026 Huawei Technologies Co., Ltd.
+This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+CANN Open Software License Agreement Version 2.0 (the "License").
+Please refer to the License for details. You may not use this file except in compliance with the License.
+THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+See LICENSE in the root of the software repository for the full text of the License.
+-->
+
 # ops-gnn API文档和使用示例
 
 本文档提供 ops-gnn 库的详细 API 接口说明，包括算子签名、参数说明、返回值和使用示例。
@@ -1066,6 +1076,9 @@ python test/gather_csr/arch35/benchmark_gather_csr.py --warmup 20 --iterations 1
 
 ### scatter — Scatter 系列归约
 
+以下签名由各架构共用。A2 小节之前的参数与执行规则描述已有 arch35 实现；
+A2 小节单独说明其 CPU 兼容行为和依赖。
+
 `scatter` 系列的前向接口对齐 `torch_scatter` 2.1.2。最值平局规则见下文。
 
 ```python
@@ -1080,6 +1093,11 @@ ops_gnn.scatter_max(src, index, dim=-1, out=None, dim_size=None)
 
 `scatter_min` 和 `scatter_max` 返回 `(out, arg_out)`，其他接口返回
 `out`；`scatter_add` 与 `scatter_sum` 使用相同的归约语义。
+
+以上七个公开 Python API 均无 `hot_target` 参数。原生 `scatter_forward` 绑定中的
+`hot_target` 是仅在 arch35 生效的性能提示；A2 保留该参数以兼容绑定签名，
+仍校验其值为 -1 或非负整数，但不用于 A2 调度。A2 专用原生入口
+`scatter_a2_forward` 不接受该参数。
 
 #### 参数
 
@@ -1122,6 +1140,140 @@ values, arg = ops_gnn.scatter_max(src, index)
 # values: tensor([3., 4.], device='npu:0')
 # arg:    tensor([2, 3], device='npu:0')
 ```
+
+#### Ascend A2（910B，arch22）
+
+以下规则适用于 A2 前向路径，语义参考固定为原版 `torch_scatter==2.1.2`
+与 PyTorch 2.7.1 CPU 公开 API。其中，A2 的普通 min/max 平局保留首次有效
+source 位置，上述 arch35 路径则选择最大下标。
+
+#### A2 参数
+
+- `src`：NPU 输入 Tensor，支持 1 至 8 维。
+- `index`：与 src 同设备的 INT64 Tensor，可按 `torch_scatter` 规则广播到 `src`，允许无序和重复。
+- `dim`：归约维度，支持负维度，默认为 `-1`。
+- `out`：可选归约初值，dtype、device 及非归约维须与 src 相同；成功时原地更新，返回身份受下述 grad 状态规则影响。
+- `dim_size`：可选输出归约维长度；无 out 且省略时由有效 index 推导。提供 out 时使用 out 的形状。
+- `reduce`：`sum`、`add`、`mul`、`mean`、`min` 或 `max`。
+
+#### A2 数据类型与执行路径
+
+| 级别 | `src/out` 数据类型 | 执行路径 | 支持的归约 |
+|---|---|---|---|
+| L1 | float16、bfloat16、float32、int8、int16、int32、uint8 | A2 Ascend C；mean 使用符合条件的融合路径或原生 sum/count 组成 | 全部六种 |
+| L2 | float64、int64 | 原版 torch_scatter CPU 扩展，D2H/H2D 后返回原 NPU 设备 | 全部六种 |
+
+L1 无需安装 torch_scatter。L2 接受 PyTorch 2.7.1 和 2.12.0，要求安装针对
+当前 PyTorch 编译且包含 CPU 扩展的原版 `torch_scatter==2.1.2`；
+缺失时抛 ImportError，版本不匹配时抛 RuntimeError。
+数值语义仍以 PyTorch 2.7.1 为参考；2.12.0 已完成独立 CPU 数值及 L2 等价核验，
+前向 autograd 的版本差异见下文。此精确版本列表不代表支持其他 2.12.x 或其他版本。
+L2 首次调用每种 dtype 会发出 RuntimeWarning。提供 out 时保留受支持的存储别名及 CPU 前向状态行为，
+专用 min/max 的 value 和 INT64 arg 都返回 NPU；不通过降精度实现 FLOAT64/INT64 归约。
+
+#### A2 的 out、计数与极值规则
+
+- out 参与 sum/add 累加、mul 连乘及 min/max 比较；mean 先更新 out，再按 CPU 规则除计数。
+- mean 按广播前 index 计数，count 使用 src dtype，溢出或舍入后将小于一的值置一。
+  整数除法采用 floor；128 个 INT8 的一落入同桶时结果为 -128，300 个 UINT8 的一则为 1。
+- min/max 仅严格改善时更新；普通平局保留沿 dim 的首次有效位置。
+  已有 out 未被严格改善时，arg 保持 `src.size(dim)` 哨兵。
+- 无 out 的 min/max 最终仍等于 CPU 初始化极值时，value 清零但 arg 保留哨兵。
+  无命中桶为零；非空 src 的 mul 空桶为一，而整体空 src、无 out 时 mul 输出为零。
+- 非连续 src/index 与广播零 stride 均可使用。非连续 out 的 sum/add/mean 原位写回，
+  mul/min/max 抛 RuntimeError；重叠输入遵循 CPU 原语的校验和合法别名读写规则。
+
+grad 开启时，requires_grad 叶子 out 的 sum/add/mean 在写入前报错，mul/min/max 在写入后报错。
+sum/add/mean 的前置检查只校验原位修改是否合法，不写入 out，也不增加其版本计数。
+requires_grad 叶子 view 的 mul 在 PyTorch 2.7.1 可成功；从
+[PyTorch 2.8](https://github.com/pytorch/pytorch/releases/tag/v2.8.0) 起，
+custom Function 增加了叶子 view 原位检查，该情形在写入后抛 RuntimeError。
+适配层沿用运行时的检查，不绕过该版本差异；min/max 的叶子 view 也在写入后报错。
+
+普通 inference out 在 inference_mode 外调用时先写入再报错，mean 只完成 sum 阶段。
+若 inference out 同时是 requires_grad 叶子且 grad 开启，sum/add/mean 在 src 或 index
+为普通 Tensor 时先报叶子原位错误，不写入 out；src/index/out 全为 inference Tensor 时，
+则遵循 CPU 跳过 Autograd 前置检查的行为，仍在写入后报 inference 修改错误。
+在 no_grad/inference_mode 中使用 requires_grad out，sum/add/mean 返回原对象，
+mul/min/max 返回共享存储但 requires_grad=False 的另一 Tensor wrapper。
+普通 out 成功时仍返回原对象。这里只保留前向异常与返回属性，backward 明确抛 NotImplementedError。
+
+非空、紧凑一维 index 且 out 不与 src/index 共享字节时，优先使用稳定分组：
+CPU 只从私有 index 快照构造 `rowptr`/rowlist，NPU 按原 source 行序执行 L1 数值归约。
+默认启用索引元数据缓存，每次命中仍在 NPU 对完整 INT64 index 逐元素精确比较；
+普通 owner 在不匹配时不写输出；部分无 out FLOAT32 Sum/add 热命中合并校验与归约，
+仅在完整生产者完成且校验成功后公开私有输出。不匹配时丢弃私有结果，
+在当前公开调用内重建后重跑，包括推导输出维度的变化。
+`OPSGNN_SCATTER_GROUP_CACHE=0` 关闭复用，用于测量逐次冷构建成本。
+其余路径在 NPU 统计物理 index 范围，仅取回每核 32 字节摘要。
+精确校验、必要连续化、冷构建 D2H/H2D、归约和同步都计入完整接口时间。
+内部校验 flags 通过有界资源池按设备和实际 stream 独占租赁；跨 stream 不复用同一资源。
+可用时采用已注册 Host 映射并在 event 同步成功后读取，否则保留 D2H。
+异步消费者保留 stream 生命周期记录；私有结果在完整生产者完成前强持所有权，完成后才公开。
+池化不减少逐次完整索引校验。
+mean 只有符合几何条件的无 out 浮点输入使用融合路径，其余保留原生 sum/count 组成。
+
+#### A2 构建与测试
+
+L1 功能、精度和 FLOAT16/FLOAT32 性能测试不依赖 torch_scatter。
+完整功能与精度套件包含 FLOAT64/INT64 的 L2 用例，须先安装
+原版 `torch_scatter==2.1.2` CPU 扩展，并与当前 PyTorch 2.7.1 或 2.12.0 编译匹配。
+原数值语义参考为 PyTorch 2.7.1；2.12.0 为已核验 CPU 等价的兼容版本。
+仅安装 Python 包或可导入包名并不足够，须能执行 CPU 扩展归约。
+
+在已安装 PyTorch 2.7.1 或 2.12.0、setuptools、wheel、C++ 编译器和 Python 开发头文件的环境中，
+可按以下方式从原版源码构建，包括没有匹配预编译 wheel 的 aarch64 环境。
+`--no-deps` 与 `--no-build-isolation` 保留当前 PyTorch 安装并使用其构建头文件；
+[上游构建选项](https://github.com/rusty1s/pytorch_scatter/blob/140d3ad677aae615767412873b90982cbf97d35d/setup.py)
+`FORCE_ONLY_CPU=1` 限定只构建 CPU 扩展。
+
+```bash
+FORCE_CUDA=0 FORCE_ONLY_CPU=1 python3 -m pip install \
+  --no-build-isolation --no-deps --no-binary=torch-scatter torch-scatter==2.1.2
+python3 - <<'PYCPU'
+import torch
+import torch_scatter
+
+assert torch.__version__.split("+", 1)[0] in ("2.7.1", "2.12.0")
+assert torch_scatter.__version__ == "2.1.2"
+src = torch.tensor([1., 2., 3.], dtype=torch.float64, device="cpu")
+index = torch.tensor([0, 1, 0], dtype=torch.int64, device="cpu")
+value = torch_scatter.scatter_mul(src, index, dim=0)
+torch.testing.assert_close(value, torch.tensor([3., 2.], dtype=torch.float64), rtol=0, atol=0)
+print(torch.__version__, torch_scatter.__version__, torch_scatter.__file__)
+print("torch_scatter CPU extension: PASS")
+PYCPU
+```
+
+依赖缺失时，pytest 仅跳过实际需要 L2 CPU 扩展的功能用例，并给出原因；
+L1 用例、L1 无依赖验证及 L2 缺依赖错误契约继续执行。
+跳过不计为通过，完整验收须安装依赖后执行全部用例。
+CPU 等价核验及上述 autograd 版本差异说明不等于相应 PyTorch/CANN 组合
+已通过完整设备验证；设备结果以实际验收记录为准。L2 仅接受 2.7.1 和 2.12.0。
+
+加载所安装 CANN 的 `set_env.sh` 后，在仓库根目录执行：
+
+```bash
+CANN_TARGET=a2 NPU_ARCH=dav-2201 python3 -m pip install --no-build-isolation --no-deps -e .
+CANN_TARGET=a2 NPU_DEVICE_ID=0 python3 -m pytest test/scatter/arch22/test_scatter.py -q \
+  --junitxml=output/scatter-a2-functional.xml -o junit_family=xunit1
+CANN_TARGET=a2 python3 test/scatter/arch22/benchmark_scatter.py \
+  --device npu:0 --dtype float16 float32 --reduce sum mean min max \
+  --official-shapes --json output/scatter-a2-performance.json
+```
+
+请选择空闲卡并替换设备编号。A2/A3 扩展位于 `python/ops_gnn/A2-A3/_pybind.so`，
+kernel 为 `libopsgnn_npu_kernel-A2-A3.so`；验证时记录实际导入路径和库哈希。
+普通 pytest 不自动执行巨型实验，性能脚本必须显式选择 shape 或 `--official-shapes`。
+JUnit 按唯一 测试标识 保存 value/arg/out 比较次数与通过/失败数、新旧精度摘要和逐次记录；
+CPU 参考生成不计作 NPU 比较，比较次数不等于唯一测试数，失败和跳过以 pytest 结果为准。
+
+浮点精度采用 opbase 固定提交 `a5e8e716743b20bfb2ffa16e0213c4aa73b823b3`
+的最新澄清版；旧版 `adbe441e9254676174937047457419b6e645e384` 仅并列诊断。
+整数、arg 和 L2 使用严格比较。性能沿用原任务书 40 项 A100 表，官方参数下每项、每轮
+均需 `T_A100/T_A2 >= 0.6`；mul、add 和其他 L1 dtype 缺少原数值时保留
+`missing_baseline`，不能记为性能通过。完整资源、特殊值和验证规则见
+[Scatter A2 设计](../experiment/design/scatter/scatter_A2算子设计文档.md)。
 
 ### spmm — CSR 通用聚合
 

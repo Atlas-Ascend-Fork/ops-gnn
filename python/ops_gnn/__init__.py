@@ -45,6 +45,10 @@ if _pybind.npu_arch == 'dav-2201':
     from .gather_csr import gather_csr
     from .ind2ptr import ind2ptr
     from .ptr2ind import ptr2ind
+    from .scatter import (
+        native_available, scatter, scatter_sum, scatter_add, scatter_mul,
+        scatter_mean, scatter_min, scatter_max,
+    )
     from .segment_csr import (
         segment_csr, segment_sum_csr, segment_add_csr,
         segment_mean_csr, segment_min_csr, segment_max_csr,
@@ -69,6 +73,8 @@ if _pybind.npu_arch == 'dav-2201':
         'gather_csr',
         'ind2ptr',
         'ptr2ind',
+        'native_available', 'scatter', 'scatter_sum', 'scatter_add',
+        'scatter_mul', 'scatter_mean', 'scatter_min', 'scatter_max',
         'spmm',
         'bspmm',
         'sddmm_csr',
