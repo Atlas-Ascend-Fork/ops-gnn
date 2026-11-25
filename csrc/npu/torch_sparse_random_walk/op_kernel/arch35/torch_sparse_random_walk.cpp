@@ -125,8 +125,9 @@ __simt_callee__ inline int64_t WalkStep(
         uint64_t walkLength, uint64_t nnz, uint64_t nodeCount, uint64_t seed, uint64_t offset
 
 
-// Content validation is part of every public call, even when S or L is zero.
-// It is fused into the launch; no cached validity or host copy. The compute
+// Content validation runs on every launch that produces a walk result. The
+// host short-circuits zero-workload calls (S == 0 or L == 0) before launch,
+// because their output never reads rowptr/col/rand. The compute
 // section also guards each gather, so it does not require a cross-block
 // barrier with these parallel scans. Each validator returns false after
 // trapping so the caller stops exactly where the fused loop used to return.

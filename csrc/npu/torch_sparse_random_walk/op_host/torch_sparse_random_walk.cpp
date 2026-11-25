@@ -67,6 +67,22 @@ torch::Tensor AllocateOutput(const torch::Tensor &start, int64_t walkLength)
     return torch::empty({startCount, walkLength + 1}, start.options());
 }
 
+// Zero-workload short circuit: when S == 0 or walkLength == 0 the output
+// never reads rowptr/col/rand, so the O(N+E) device-side content scan fused
+// into the launch would not protect any result. The host-side contract
+// checks in ValidateWalkInputs have already run, so return the trivially
+// correct output without launching the kernel.
+torch::Tensor FinishZeroWorkload(torch::Tensor out, const torch::Tensor &start,
+                                 int64_t walkLength)
+{
+    if (start.numel() == 0) {
+        return out;
+    }
+    // walkLength == 0: out[:, 0] == start, matching the reference layout.
+    out.copy_(start.view({start.numel(), 1}));
+    return out;
+}
+
 } // namespace
 
 torch::Tensor torch_sparse_random_walk_npu(
@@ -84,6 +100,9 @@ torch::Tensor torch_sparse_random_walk_npu(
     start = start.contiguous();
 
     torch::Tensor out = AllocateOutput(start, walkLength);
+    if (start.numel() == 0 || walkLength == 0) {
+        return FinishZeroWorkload(std::move(out), start, walkLength);
+    }
     TorchSparseRandomWalkLaunchParams params = BuildLaunchParams(rowptr, col, start, walkLength);
     if (start.numel() > 0 && walkLength > 0) {
         std::tie(params.seed, params.offset) = AcquirePhiloxState(start.get_device());
@@ -129,6 +148,9 @@ torch::Tensor torch_sparse_random_walk_with_rand_npu(
     start = start.contiguous();
 
     torch::Tensor out = AllocateOutput(start, walkLength);
+    if (start.numel() == 0 || walkLength == 0) {
+        return FinishZeroWorkload(std::move(out), start, walkLength);
+    }
     TorchSparseRandomWalkLaunchParams params = BuildLaunchParams(rowptr, col, start, walkLength);
     params.seed = 0;
     params.offset = 0;
