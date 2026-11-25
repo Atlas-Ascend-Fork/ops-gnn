@@ -505,6 +505,42 @@ def test_ind2ptr_async_after_arange():
     assert_exact(out, ind2ptr_cpu(row.cpu(), num_rows), msg='arange async')
 
 
+@pytest.mark.parametrize("rows,edges", [
+    (1, 4095), (1, 4096), (4, 1048576),
+    (16, 4095), (16, 4096), (16, 4097),
+    *[(rows, rows * degree) for rows in (4095, 4096, 4097) for degree in (255, 256)],
+])
+@pytest.mark.parametrize("concentrated", [False, True])
+@pytest.mark.parametrize("strided", [False, True])
+def test_ptr2ind_long_row_dispatch(rows, edges, concentrated, strided):
+    _set_device()
+    ptr_cpu = torch.arange(rows + 1, dtype=torch.long) * edges // rows
+    if concentrated:
+        ptr_cpu.zero_()
+        ptr_cpu[rows // 2 + 1:] = edges
+    expected = torch.repeat_interleave(torch.arange(rows), ptr_cpu.diff())
+    ptr = ptr_cpu.to("npu")
+    if strided:
+        backing = torch.empty((2 * (rows + 1),), dtype=torch.long, device="npu")
+        ptr = backing[::2]
+        ptr.copy_(ptr_cpu.to("npu"))
+    out = ops_gnn.ptr2ind(ptr, edges)
+    assert out.device == ptr.device
+    assert_exact(out, expected)
+
+
+def test_ptr2ind_long_row_stream_pipeline():
+    _set_device()
+    stream = torch.npu.Stream()
+    with torch.npu.stream(stream):
+        ptr = torch.arange(5, dtype=torch.long, device="npu") * 262144
+        out = ops_gnn.ptr2ind(ptr, 1048576)
+        consumed = out + 7
+    stream.synchronize()
+    expected = torch.arange(4, dtype=torch.long).repeat_interleave(262144) + 7
+    assert_exact(consumed, expected)
+
+
 def test_roundtrip_same_stream():
     _set_device()
     row = torch.tensor([2, 2, 4, 5, 5, 6], dtype=torch.long, device='npu')

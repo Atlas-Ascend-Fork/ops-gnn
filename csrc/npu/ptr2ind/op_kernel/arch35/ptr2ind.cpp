@@ -17,6 +17,7 @@
 constexpr uint32_t PTR2IND_SIMT_THREADS = 256;
 
 // numRows == ptr length - 1 (CSR row count).
+template <bool OutputMajor>
 __simt_vf__ __aicore__ LAUNCH_BOUND(256) void Ptr2IndKernelSimt(__gm__ int64_t* ptr, __gm__ int64_t* out,
                                                                 int64_t numRows, int64_t numEdges)
 {
@@ -25,6 +26,23 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(256) void Ptr2IndKernelSimt(__gm__ int64_t* 
     const int64_t globalThreadIdx =
         AscendC::Simt::GetBlockIdx() * threadNum + AscendC::Simt::GetThreadIdx();
     const int64_t totalThreadNum = blockNum * threadNum;
+
+    if constexpr (OutputMajor) {
+        for (int64_t edge = globalThreadIdx; edge < numEdges; edge += totalThreadNum) {
+            int64_t lower = 0;
+            int64_t upper = numRows;
+            while (lower < upper) {
+                const int64_t mid = lower + (upper - lower) / 2;
+                if (ptr[mid + 1] <= edge) {
+                    lower = mid + 1;
+                } else {
+                    upper = mid;
+                }
+            }
+            out[edge] = lower;
+        }
+        return;
+    }
 
     // One logical work item per CSR row; stride when rows exceed total SIMT threads.
     // Defense in depth: clamp the write range to [0, numEdges) so a pointer that
@@ -44,10 +62,11 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(256) void Ptr2IndKernelSimt(__gm__ int64_t* 
     }
 }
 
+template <bool OutputMajor>
 __attribute__((aiv)) __global__ __aicore__ void Ptr2IndKernel(__gm__ int64_t* ptr, __gm__ int64_t* out,
                                                               int64_t numRows, int64_t numEdges)
 {
-    AscendC::Simt::VF_CALL<Ptr2IndKernelSimt>(AscendC::Simt::Dim3{PTR2IND_SIMT_THREADS}, ptr, out,
+    AscendC::Simt::VF_CALL<Ptr2IndKernelSimt<OutputMajor>>(AscendC::Simt::Dim3{PTR2IND_SIMT_THREADS}, ptr, out,
                                               numRows, numEdges);
 }
 
@@ -55,13 +74,19 @@ namespace opsgnn {
 
 void Ptr2Ind(const int64_t* ptr, int64_t* out, int64_t numRows, int64_t numEdges, aclrtStream stream)
 {
-    // AscendC SIMT: each AIV runs PTR2IND_SIMT_THREADS threads; cover row in [0, numRows).
+    const bool outputMajor = numRows > 0 && numRows <= 4096 && numEdges >= 4096 &&
+                             numEdges / numRows >= 256;
+    const int64_t workItems = outputMajor ? numEdges : numRows;
     const uint32_t needCoreNum =
-        static_cast<uint32_t>((static_cast<uint64_t>(numRows) + PTR2IND_SIMT_THREADS - 1) /
+        static_cast<uint32_t>((static_cast<uint64_t>(workItems) + PTR2IND_SIMT_THREADS - 1) /
                               PTR2IND_SIMT_THREADS);
     const uint32_t coreNum = ops_gnn::sparse::ResolveAivCoreNum(needCoreNum);
 
-    Ptr2IndKernel<<<coreNum, nullptr, stream>>>(const_cast<int64_t*>(ptr), out, numRows, numEdges);
+    if (outputMajor) {
+        Ptr2IndKernel<true><<<coreNum, nullptr, stream>>>(const_cast<int64_t*>(ptr), out, numRows, numEdges);
+    } else {
+        Ptr2IndKernel<false><<<coreNum, nullptr, stream>>>(const_cast<int64_t*>(ptr), out, numRows, numEdges);
+    }
 }
 
 }  // namespace opsgnn
