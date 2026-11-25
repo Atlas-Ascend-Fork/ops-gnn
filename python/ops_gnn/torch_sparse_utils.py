@@ -126,10 +126,11 @@ def _diagonal_entries(entries, values=None, k=0):
         diagonal_value[...] = 1 if values is None else values
         new_value = torch.cat((value[keep], diagonal_value))
 
-    # Lexicographic sorting must not multiply int64 indices by a dimension.
-    # Stable passes also preserve the value order of existing duplicate edges.
-    order = torch.argsort(new_col, stable=True)
-    order = order[torch.argsort(new_row[order], stable=True)]
+    if rows * cols <= 1 << 63:
+        order = torch.argsort(new_row * cols + new_col, stable=True)
+    else:
+        order = torch.argsort(new_col, stable=True)
+        order = order[torch.argsort(new_row[order], stable=True)]
     new_row, new_col = new_row[order], new_col[order]
     if new_value is not None:
         new_value = new_value[order]

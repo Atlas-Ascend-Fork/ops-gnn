@@ -266,6 +266,25 @@ def test_unweighted_diagonal_ignores_values(values, device):
     assert torch.equal(actual[1].cpu(), expected[1])
 
 
+@pytest.mark.parametrize("shape", [(2**32, 2**31 - 1), (2**32, 2**31),
+                                  (2**32 + 1, 2**31), (2**63 - 1, 1), (2**63 - 1, 2)])
+@pytest.mark.parametrize("weighted", [False, True])
+def test_diagonal_sort_int64_key_boundaries(shape, weighted, device):
+    rows, cols = shape
+    row = torch.tensor([rows - 1, 0, rows - 1, rows - 2, 0])
+    col = torch.tensor([cols - 1, 0, cols - 1, max(cols - 2, 0), 0])
+    value = torch.arange(10, dtype=torch.float32).reshape(5, 2) if weighted else None
+    order = sorted(range(len(row)), key=lambda i: (int(row[i]), int(col[i])))
+    entries = row, col, value, shape
+    actual = _diagonal_entries(_to_device(entries, device), k=cols)
+    torch.testing.assert_close(actual[0].cpu(), row[order], rtol=0, atol=0)
+    torch.testing.assert_close(actual[1].cpu(), col[order], rtol=0, atol=0)
+    if weighted:
+        torch.testing.assert_close(actual[2].cpu(), value[order], rtol=0, atol=0)
+    elif actual[2] is not None:
+        pytest.fail("unweighted diagonal replacement must remain unweighted")
+
+
 @pytest.mark.parametrize("kind", ["none", "number", "empty", "scalar", "one", "one_by_one"])
 def test_empty_diagonal_preserves_weighted_entries(kind, device):
     entries = _entries()

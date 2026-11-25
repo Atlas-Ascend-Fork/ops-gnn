@@ -28,6 +28,25 @@ def _device():
     return torch.device("npu", index)
 
 
+@pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("offset", [-1, 0, 2])
+def test_public_set_diag_matches_torch_sparse_cpu(weighted, offset, device):
+    torch_sparse = pytest.importorskip("torch_sparse")
+    row = torch.tensor([6, 0, 2, 2, 0, 5])
+    col = torch.tensor([8, 1, 4, 4, 1, 3])
+    value = torch.arange(6, dtype=torch.float32) if weighted else None
+    source = torch_sparse.SparseTensor(row=row, col=col, value=value, sparse_sizes=(7, 9))
+    diagonal = min(7, 9 - offset) if offset >= 0 else min(7 + offset, 9)
+    values = torch.arange(diagonal, dtype=torch.float32) + 2.5 if weighted else None
+    expected = torch_sparse.set_diag(source, values=values, k=offset)
+    actual = torch_sparse.set_diag(source.to(device),
+                                   values=None if values is None else values.to(device), k=offset)
+    for layout in ("coo", "csr"):
+        for result, reference in zip(getattr(actual, layout)(), getattr(expected, layout)()):
+            actual_cpu = None if result is None else result.cpu()
+            torch.testing.assert_close(actual_cpu, reference, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("shape", [(0, 0), (0, 7), (7, 0), (3, 7), (7, 3)])
 @pytest.mark.parametrize("offset", [-4, 0, 4])
 def test_public_mask_keyword_arguments(shape, offset, device):
