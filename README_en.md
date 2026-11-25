@@ -202,6 +202,8 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `ind2ptr` | Sorted row indices to CSR row pointer (torch_sparse-aligned) | NPU | [ind2ptr — Sorted Row Indices to CSR Row Pointer](docs/en/api_reference.md#ind2ptr--sorted-row-indices-to-csr-row-pointer) |
 | `ptr2ind` | CSR row pointer to row indices (torch_sparse-aligned) | NPU | [ptr2ind — CSR Row Pointer to Row Indices](docs/en/api_reference.md#ptr2ind--csr-row-pointer-to-row-indices) |
 | `csr_transpose` | CSR structure to CSC (the structure half of torch_sparse `transpose`) | NPU (A2/A3, 950) | [csr_transpose — CSR Structural Transpose](docs/en/api_reference.md#csr_transpose--csr-structural-transpose) |
+| `index_sort` | Stable index sort returning the sorted keys and the permutation (PyG-aligned) | NPU (A2/A3, 950) | [index_sort — Stable Index Sort](docs/en/api_reference.md#index_sort--stable-index-sort) |
+| `sort_edge_index` | COO edge list sorted by source or destination node, with edge attributes moved (PyG-aligned) | NPU (A2/A3, 950) | [sort_edge_index — COO Edge List Sort](docs/en/api_reference.md#sort_edge_index--coo-edge-list-sort) |
 | `scatter` / `scatter_*` | torch_scatter-compatible indexed reductions | NPU / CPU fallback for float64 and int64 | [scatter — Scatter Reductions](docs/en/api_reference.md#scatter--scatter-reductions) |
 | `spmm` | CSR copy/binary messages with sum/max/min/mean aggregation | NPU (A2/A3, arch22) | [spmm — Rank-1 and Rank-2 CSR Aggregation](docs/en/api_reference.md#spmm--general-csr-aggregation) |
 | `bspmm` | Rank-3-and-higher CSR copy/binary message aggregation | NPU (A2/A3, arch22) | [bspmm — Higher-Rank CSR Aggregation](docs/en/api_reference.md#bspmm--general-batched-csr-aggregation) |

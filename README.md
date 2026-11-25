@@ -201,6 +201,8 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `ind2ptr` | 有序行索引转 CSR 行指针（对齐 torch_sparse） | NPU | [ind2ptr — 行索引转 CSR 行指针](docs/zh/api_reference.md#ind2ptr--行索引转-csr-行指针) |
 | `ptr2ind` | CSR 行指针转行索引（对齐 torch_sparse） | NPU | [ptr2ind — CSR 行指针转行索引](docs/zh/api_reference.md#ptr2ind--csr-行指针转行索引) |
 | `csr_transpose` | CSR 结构转置为 CSC（torch_sparse `transpose` 的结构部分） | NPU（A2/A3、950） | [csr_transpose — CSR 结构转置](docs/zh/api_reference.md#csr_transpose--csr-结构转置) |
+| `index_sort` | 稳定索引排序，返回排序结果与置换（对齐 PyG） | NPU（A2/A3、950） | [index_sort — 稳定索引排序](docs/zh/api_reference.md#index_sort--稳定索引排序) |
+| `sort_edge_index` | COO 边表按源/目标节点排序并搬移边属性（对齐 PyG） | NPU（A2/A3、950） | [sort_edge_index — COO 边表排序](docs/zh/api_reference.md#sort_edge_index--coo-边表排序) |
 | `scatter` / `scatter_*` | 与 torch_scatter 对齐的索引分组归约 | NPU / CPU float64、int64 回退 | [scatter — Scatter 系列归约](docs/zh/api_reference.md#scatter--scatter-系列归约) |
 | `spmm` | CSR copy/binary 消息与 sum/max/min/mean 聚合 | NPU（A2/A3，arch22） | [spmm — 一维与二维 CSR 聚合](docs/zh/api_reference.md#spmm--csr-通用聚合) |
 | `bspmm` | 三维及更高维 CSR copy/binary 消息聚合 | NPU（A2/A3，arch22） | [bspmm — 高维 CSR 聚合](docs/zh/api_reference.md#bspmm--批量-csr-通用聚合) |

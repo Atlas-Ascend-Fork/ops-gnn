@@ -1020,6 +1020,153 @@ out_indptr, out_indices = ops_gnn.csr_transpose(indptr, indices, 2)
 
 ---
 
+### index_sort — Stable Index Sort
+
+**Product support:**
+
+- <term>Ascend 950PR&950DT series</term>: supported
+- <term>Atlas A3 series</term>: supported
+- <term>Atlas A2 series</term>: supported
+
+**Function Signature:**
+
+```python
+def index_sort(
+    inputs: Tensor,
+    max_value: Optional[int] = None,
+) -> Tuple[Tensor, Tensor]:
+```
+
+**Parameters:**
+
+| Parameter | Type | In/Out | Description |
+|-----------|------|--------|-------------|
+| inputs | Tensor | Input | 1-D `torch.long` non-negative keys on NPU |
+| max_value | Optional[int] | Input | Exclusive upper bound of the keys, i.e. every key is inside `[0, max_value)`; defaults to `inputs.max() + 1` |
+
+**Returns:**
+
+`(sorted_inputs, perm)`: the sorted keys and the positions that produced them, both
+1-D `torch.long` with one element per input key, on the same device as the input.
+
+**Description:**
+
+Sorts non-negative integer keys in ascending order, matching
+`torch_geometric.utils.index_sort`. The sort is **stable**: equal keys keep their input
+order, so the result is determined by the input alone, independent of the number of AI
+cores, and can be compared element by element. `perm` moves any payload with the same
+order.
+
+**Notes:**
+
+- `inputs` must be 1-D `torch.long` on NPU; non-contiguous input is supported.
+- `max_value` is a caller guarantee, not a checked property: when it already proves the
+  keys fit in `2 ** 24`, the operator does not read them, so a bound below the real
+  maximum is undefined behaviour (same as upstream). A negative bound, or zero while the
+  vector holds keys, raises.
+- An omitted `max_value`, or a bound above `2 ** 24`, makes the operator read one device
+  scalar to pick the path, which synchronizes; every other call launches asynchronously
+  on the current NPU stream.
+- <term>Ascend 950PR&950DT series</term>: uses the native int64 stable sort kernel.
+- <term>Atlas A3 series</term>, <term>Atlas A2 series</term>: keys below `2 ** 24`
+  (16777216) are sorted as float32, which is exact for such integers, and converted back
+  to int64 losslessly; a bound above that range falls back to the int64 sort.
+- An empty vector returns empty keys and an empty permutation.
+
+**Example:**
+
+```python
+import torch
+import ops_gnn
+
+keys = torch.tensor([2, 0, 2, 1], dtype=torch.long, device='npu')
+sorted_keys, perm = ops_gnn.index_sort(keys, 3)
+# sorted_keys -> tensor([0, 1, 2, 2], device='npu:0')
+# perm        -> tensor([1, 3, 0, 2], device='npu:0')
+```
+
+---
+
+### sort_edge_index — COO Edge List Sort
+
+**Product support:**
+
+- <term>Ascend 950PR&950DT series</term>: supported
+- <term>Atlas A3 series</term>: supported
+- <term>Atlas A2 series</term>: supported
+
+**Function Signature:**
+
+```python
+def sort_edge_index(
+    edge_index: Tensor,
+    edge_attr: Union[OptTensor, List[Tensor], str] = MISSING,
+    num_nodes: Optional[int] = None,
+    sort_by_row: bool = True,
+) -> Union[Tensor, Tuple[Tensor, OptTensor], Tuple[Tensor, List[Tensor]]]:
+```
+
+**Parameters:**
+
+| Parameter | Type | In/Out | Description |
+|-----------|------|--------|-------------|
+| edge_index | Tensor | Input | `(2, E)` `torch.long` COO edge list on NPU |
+| edge_attr | Tensor / List[Tensor] | Input (optional) | Edge payload with one row per edge, or a list of such tensors |
+| num_nodes | Optional[int] | Input | Node count, at least `edge_index.max() + 1`; defaults to that value |
+| sort_by_row | bool | Input | Sort by source node when true, by destination node otherwise |
+
+**Returns:**
+
+- no `edge_attr`: the sorted edge list only, as a `Tensor`;
+- `edge_attr=None`: `(edge_index, None)`;
+- `edge_attr` as a `Tensor`: `(edge_index, edge_attr[perm])`;
+- `edge_attr` as a `list/tuple`: `(edge_index, [attr[perm] for attr in edge_attr])`.
+
+The outputs keep the `torch.long` / attribute dtype and live on the same NPU as the input.
+
+**Description:**
+
+Reorders a COO edge list by "primary key, then secondary key", matching
+`torch_geometric.utils.sort_edge_index`: with `sort_by_row=True` the edges are grouped by
+source node and ascending by destination, and the other way round with `False`. The sort
+is stable, so duplicate edges keep their input order, and edge payloads move with the same
+permutation.
+
+**Notes:**
+
+- `edge_index` must be `(2, E)` `torch.long` on NPU; non-contiguous input is supported.
+  An `EdgeIndex` subclass is handled as a plain tensor, and the sorted result is a plain
+  `Tensor`.
+- `num_nodes` is a caller guarantee, not a checked property; a value below the real
+  maximum is undefined behaviour (same as upstream).
+- Attributes must hold one row per edge on the same device as `edge_index`; a wrong row
+  count or device raises.
+- An omitted `num_nodes` reads one device scalar and synchronizes; every other call
+  launches asynchronously on the current stream.
+- <term>Ascend 950PR&950DT series</term>: one stable pass over the int64 composite key
+  `primary * num_nodes + secondary`; when `num_nodes ** 2` overflows int64 it sorts by the
+  secondary key and then stably by the primary key instead.
+- <term>Atlas A3 series</term>, <term>Atlas A2 series</term>: one float32 pass over the
+  composite key while `num_nodes ** 2` stays within `2 ** 24`; above that the two passes
+  above are used, which produce the same order bit for bit.
+- An empty edge list returns `(2, 0)`.
+
+**Example:**
+
+```python
+import torch
+import ops_gnn
+
+edge_index = torch.tensor([[2, 1, 1, 0], [1, 2, 0, 1]], dtype=torch.long, device='npu')
+edge_attr = torch.tensor([[1.], [2.], [3.], [4.]], device='npu')
+
+sorted_index, sorted_attr = ops_gnn.sort_edge_index(edge_index, edge_attr)
+# sorted_index -> tensor([[0, 1, 1, 2], [1, 0, 2, 1]], device='npu:0')
+# sorted_attr  -> tensor([[4.], [3.], [2.], [1.]], device='npu:0')
+```
+
+---
+
 ### random_walk — NPU Random Walk
 
 **Function Signature:**

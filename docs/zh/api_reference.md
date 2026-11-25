@@ -954,6 +954,141 @@ out_indptr, out_indices = ops_gnn.csr_transpose(indptr, indices, 2)
 
 ---
 
+### index_sort — 稳定索引排序
+
+**产品支持情况：**
+
+- <term>Ascend 950PR&950DT系列产品</term>：支持
+- <term>Atlas A3系列产品</term>：支持
+- <term>Atlas A2系列产品</term>：支持
+
+**函数签名：**
+
+```python
+def index_sort(
+    inputs: Tensor,
+    max_value: Optional[int] = None,
+) -> Tuple[Tensor, Tensor]:
+```
+
+**参数说明：**
+
+| 参数 | 类型 | 输入/输出 | 说明 |
+|------|------|------|------|
+| inputs | Tensor | 输入 | 1-D `torch.long` 非负整数键，必须位于 NPU |
+| max_value | Optional[int] | 输入 | 键的上界（不含），即所有键均在 `[0, max_value)`；省略时取 `inputs.max() + 1` |
+
+**返回值说明：**
+
+返回 `(sorted_inputs, perm)`：排序后的键与产生它们的下标，均为 1-D `torch.long`，
+长度与输入相同、与输入同 device。
+
+**功能说明：**
+
+对非负整数键做升序排序，API 对齐 `torch_geometric.utils.index_sort`。排序**稳定**：
+相等键保持输入先后顺序，因此结果只由输入决定，与 AIV 核数无关，可逐位比较；
+`perm` 可直接用于搬移任意载荷。
+
+**注意事项：**
+
+- `inputs` 必须是 1-D `torch.long`、位于 NPU，支持非连续输入。
+- `max_value` 是调用方承诺的上界，不是被校验的属性：当它已能证明键位于 `2 ** 24` 以内时，
+  算子不读取键，因此上界小于真实最大值属于未定义行为（与上游一致）。
+  取值为 0 且输入非空、或为负数时抛错。
+- 省略 `max_value`，或给定的上界超过 `2 ** 24` 时，算子会读取一次设备标量以选择实现路径，
+  该调用包含设备同步；其余情况在当前 NPU stream 上异步执行。
+- <term>Ascend 950PR&950DT系列产品</term>：使用原生 int64 稳定排序内核。
+- <term>Atlas A3系列产品</term>、<term>Atlas A2系列产品</term>：键全部小于 `2 ** 24`（16777216）时
+  转成 float32 稳定排序再无损转回 int64，该范围内整数在 float32 中精确可表示；
+  键的上界超过 `2 ** 24` 时回退 int64 排序。
+- 空输入返回空键与空置换。
+
+**使用示例：**
+
+```python
+import torch
+import ops_gnn
+
+keys = torch.tensor([2, 0, 2, 1], dtype=torch.long, device='npu')
+sorted_keys, perm = ops_gnn.index_sort(keys, 3)
+# sorted_keys -> tensor([0, 1, 2, 2], device='npu:0')
+# perm        -> tensor([1, 3, 0, 2], device='npu:0')
+```
+
+---
+
+### sort_edge_index — COO 边表排序
+
+**产品支持情况：**
+
+- <term>Ascend 950PR&950DT系列产品</term>：支持
+- <term>Atlas A3系列产品</term>：支持
+- <term>Atlas A2系列产品</term>：支持
+
+**函数签名：**
+
+```python
+def sort_edge_index(
+    edge_index: Tensor,
+    edge_attr: Union[OptTensor, List[Tensor], str] = MISSING,
+    num_nodes: Optional[int] = None,
+    sort_by_row: bool = True,
+) -> Union[Tensor, Tuple[Tensor, OptTensor], Tuple[Tensor, List[Tensor]]]:
+```
+
+**参数说明：**
+
+| 参数 | 类型 | 输入/输出 | 说明 |
+|------|------|------|------|
+| edge_index | Tensor | 输入 | `(2, E)` 的 `torch.long` COO 边表，必须位于 NPU |
+| edge_attr | Tensor / List[Tensor] | 输入（可选）| 每边一行的边属性，或这类张量组成的列表 |
+| num_nodes | Optional[int] | 输入 | 节点数，须不小于 `edge_index.max() + 1`；省略时由 `edge_index.max() + 1` 推导 |
+| sort_by_row | bool | 输入 | 为 True 时以源节点为主键，否则以目标节点为主键 |
+
+**返回值说明：**
+
+- 不传 `edge_attr`：只返回排好序的边表 `Tensor`；
+- `edge_attr=None`：返回 `(edge_index, None)`；
+- `edge_attr` 为 `Tensor`：返回 `(edge_index, edge_attr[perm])`；
+- `edge_attr` 为 `list/tuple`：返回 `(edge_index, [attr[perm] for attr in edge_attr])`。
+
+返回值均为 `torch.long` / 原属性 dtype，位于与输入相同的 NPU 上。
+
+**功能说明：**
+
+按「主键 + 次键」重排 COO 边表，API 对齐 `torch_geometric.utils.sort_edge_index`：
+`sort_by_row=True` 时先按源节点、再按目标节点升序；`False` 时先按目标节点、再按源节点。
+排序稳定，重复边保持输入顺序；边属性用同一置换搬移。
+
+**注意事项：**
+
+- `edge_index` 必须是 `(2, E)` 的 `torch.long`、位于 NPU，支持非连续输入；
+  `EdgeIndex` 子类输入按普通张量处理，返回普通 `Tensor`。
+- `num_nodes` 是调用方承诺的上界，不是被校验的属性；小于真实最大值时结果未定义（与上游一致）。
+- 属性必须每边一行、与 `edge_index` 同 device；行数或 device 不符时抛错。
+- 省略 `num_nodes` 时读取一次设备标量，该调用包含设备同步；其余情况在当前 stream 上异步执行。
+- <term>Ascend 950PR&950DT系列产品</term>：构造 int64 复合键 `主键 * num_nodes + 次键` 单趟稳定排序；
+  `num_nodes ** 2` 超出 int64 时改为「先次键、后主键」两趟稳定排序。
+- <term>Atlas A3系列产品</term>、<term>Atlas A2系列产品</term>：`num_nodes ** 2` 不超过 `2 ** 24` 时
+  用 float32 复合键单趟排序；否则按「先次键、后主键」两趟稳定排序，与复合键结果逐位相同。
+- 空边表返回 `(2, 0)`。
+
+**使用示例：**
+
+```python
+import torch
+import ops_gnn
+
+edge_index = torch.tensor([[2, 1, 1, 0], [1, 2, 0, 1]], dtype=torch.long, device='npu')
+edge_attr = torch.tensor([[1.], [2.], [3.], [4.]], device='npu')
+
+sorted_index, sorted_attr = ops_gnn.sort_edge_index(edge_index, edge_attr)
+# sorted_index -> tensor([[0, 1, 1, 2], [1, 0, 2, 1]], device='npu:0')
+# sorted_attr  -> tensor([[4.], [3.], [2.], [1.]], device='npu:0')
+```
+
+---
+
 ### random_walk — NPU 随机游走
 
 **函数签名：**

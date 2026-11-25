@@ -45,8 +45,10 @@ if _pybind.npu_arch == 'dav-2201':
     from .fps import fps
     from .gather_csr import gather_csr
     from .csr_transpose import csr_transpose
+    from .index_sort import index_sort
     from .ind2ptr import ind2ptr
     from .ptr2ind import ptr2ind
+    from .sort_edge_index import sort_edge_index
     from .scatter import (
         native_available, scatter, scatter_sum, scatter_add, scatter_mul,
         scatter_mean, scatter_min, scatter_max,
@@ -75,8 +77,10 @@ if _pybind.npu_arch == 'dav-2201':
         'fps',
         'gather_csr',
         'csr_transpose',
+        'index_sort',
         'ind2ptr',
         'ptr2ind',
+        'sort_edge_index',
         'native_available', 'scatter', 'scatter_sum', 'scatter_add',
         'scatter_mul', 'scatter_mean', 'scatter_min', 'scatter_max',
         'spmm',
@@ -121,8 +125,10 @@ else:
     from .gather_coo import gather_coo
     from .grid_cluster import grid_cluster
     from .ind2ptr import ind2ptr
+    from .index_sort import index_sort
     from .matrix_exp import matrix_exp
     from .ptr2ind import ptr2ind
+    from .sort_edge_index import sort_edge_index
     from .random_walk import random_walk
     from .scatter import (
         native_available,
@@ -182,8 +188,10 @@ else:
         'segment_min_coo',
         'segment_max_coo',
         'ind2ptr',
+        'index_sort',
         'matrix_exp',
         'ptr2ind',
+        'sort_edge_index',
         'radius',
         'radius_graph',
         'knn',
