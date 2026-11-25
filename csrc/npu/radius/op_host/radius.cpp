@@ -549,7 +549,6 @@ GridHostData BuildGridScoped(const torch::Tensor& x, const BatchContext& ctx,
 
 struct LaunchBundle {
     torch::Tensor counts;
-    torch::Tensor out_row0;
     torch::Tensor out_row1;
     torch::Tensor offsets_npu;
     torch::Tensor reordered_npu;
@@ -620,7 +619,6 @@ void AllocateBuffers(const torch::Tensor& x, int64_t m,
                      int64_t max_num_neighbors, LaunchBundle& b) {
     auto long_opts = torch::TensorOptions().dtype(torch::kLong).device(x.device());
     b.counts = torch::zeros({m}, long_opts);
-    b.out_row0 = torch::empty({m * max_num_neighbors}, long_opts);
     b.out_row1 = torch::empty({m * max_num_neighbors}, long_opts);
 }
 
@@ -679,7 +677,6 @@ void LaunchDispatch(const torch::Tensor& x, const torch::Tensor& y,
     args.reordered_orig_idx =
         grid.use_grid ? b.orig_npu.data_ptr<int64_t>() : nullptr;
     args.counts = b.counts.data_ptr<int64_t>();
-    args.out_row0 = b.out_row0.data_ptr<int64_t>();
     args.out_row1 = b.out_row1.data_ptr<int64_t>();
     args.config_ptr = grid.use_grid ? b.config_npu.data_ptr<uint8_t>() : nullptr;
     args.tiling_gm = b.tiling_npu.data_ptr<uint8_t>();
@@ -687,30 +684,19 @@ void LaunchDispatch(const torch::Tensor& x, const torch::Tensor& y,
                                  static_cast<T*>(y.data_ptr()), args, b.stream);
 }
 
-// Compact the dense m*K buffers into [2, E] on the device. row0[q*K+p] is
-// always q, so it is rebuilt from counts
-// with repeat_interleave; out_row1 is compressed with masked_select. Both ops
-// run on the NPU.
+// Compact valid neighbor prefixes without a dense m*K mask.
 torch::Tensor CompactResult(const torch::Tensor& x, const LaunchBundle& b,
                             int64_t m, int64_t max_num_neighbors) {
     const int64_t e = b.counts.sum().item<int64_t>();
-    if (e == 0) {
-        return torch::stack(
-                   {torch::empty({0}, torch::TensorOptions().dtype(torch::kLong)),
-                    torch::empty({0}, torch::TensorOptions().dtype(torch::kLong))},
-                   0)
-            .to(x.device());
-    }
     auto long_dev = torch::TensorOptions().dtype(torch::kLong).device(x.device());
-    auto arange_k = torch::arange(max_num_neighbors, long_dev);
-    // mask = (arange_k[None, :] < counts[:, None]) flattened; [m*K] bool.
-    auto mask_t =
-        arange_k.unsqueeze(0)
-            .expand({m, max_num_neighbors})
-            .lt(b.counts.unsqueeze(1).expand({m, max_num_neighbors}))
-            .reshape({-1});
-    auto compact1 = b.out_row1.masked_select(mask_t);
+    if (e == 0) {
+        return torch::empty({2, 0}, long_dev);
+    }
     auto compact0 = torch::arange(m, long_dev).repeat_interleave(b.counts);
+    auto offsets = b.counts.cumsum(0) - b.counts;
+    auto positions = torch::arange(e, long_dev) - offsets.index_select(0, compact0);
+    auto source = compact0 * max_num_neighbors + positions;
+    auto compact1 = b.out_row1.index_select(0, source);
     // The grid-path kernel k-way merges neighbor cells in ascending x-index
     // order, so compact0/compact1 are already in the exact order the CPU
     // reference produces (matches official test_radius.py torch.equal).

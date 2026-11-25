@@ -28,7 +28,6 @@ struct RadiusLaunchArgs {
     T* reordered_x;
     int64_t* reordered_orig_idx;
     int64_t* counts;
-    int64_t* out_row0;
     int64_t* out_row1;
     uint8_t* config_ptr;
     uint8_t* tiling_gm;

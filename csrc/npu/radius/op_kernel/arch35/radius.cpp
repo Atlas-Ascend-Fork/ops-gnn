@@ -240,7 +240,7 @@ __simt_callee__ __aicore__ inline int64_t GridQuery(
 template <typename T, int DType>
 __simt_callee__ __aicore__ inline int64_t BruteForceQuery(
     __gm__ T* x, __gm__ T* y, __gm__ int64_t* ptr_x, __gm__ int64_t* ptr_y,
-    __gm__ int64_t* out_row0, __gm__ int64_t* out_row1,
+    __gm__ int64_t* out_row1,
     const RadiusTilingData& tiling, int64_t q) {
     int64_t xStart = 0;
     int64_t xEnd = tiling.n;
@@ -262,7 +262,6 @@ __simt_callee__ __aicore__ inline int64_t BruteForceQuery(
         }
         if (dist2 > tiling.r2) continue;
         if (tiling.ignore_same_index != 0 && i == q) continue;
-        out_row0[q * maxNeighbors + kept] = q;
         out_row1[q * maxNeighbors + kept] = i;
         ++kept;
     }
@@ -275,7 +274,7 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(1024) void RadiusKernelSimt(
     __gm__ int64_t* ptr_x, __gm__ int64_t* ptr_y,
     __gm__ int64_t* unique_cell_ids, __gm__ int64_t* cell_offsets,
     __gm__ T* reordered_x, __gm__ int64_t* reordered_orig_idx,
-    __gm__ int64_t* counts, __gm__ int64_t* out_row0,
+    __gm__ int64_t* counts,
     __gm__ int64_t* out_row1, __gm__ uint8_t* config_ptr,
     __gm__ uint8_t* tiling_ptr)
 {
@@ -338,13 +337,12 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(1024) void RadiusKernelSimt(
                                     reordered_orig_idx, config_ptr, tiling,
                                     q, batch, top);
             for (int64_t i = 0; i < topLen; ++i) {
-                out_row0[q * maxNeighbors + i] = q;
                 out_row1[q * maxNeighbors + i] = top[i];
             }
             counts[q] = topLen;
         } else {
             counts[q] =
-                BruteForceQuery<T, DType>(x, y, ptr_x, ptr_y, out_row0,
+                BruteForceQuery<T, DType>(x, y, ptr_x, ptr_y,
                                           out_row1, tiling, q);
         }
     }
@@ -356,13 +354,13 @@ __attribute__((aiv)) __global__ __aicore__ void RadiusKernel(
     __gm__ int64_t* ptr_x, __gm__ int64_t* ptr_y,
     __gm__ int64_t* unique_cell_ids, __gm__ int64_t* cell_offsets,
     __gm__ T* reordered_x, __gm__ int64_t* reordered_orig_idx,
-    __gm__ int64_t* counts, __gm__ int64_t* out_row0,
+    __gm__ int64_t* counts,
     __gm__ int64_t* out_row1, __gm__ uint8_t* config_ptr,
     __gm__ uint8_t* tiling_ptr)
 {
     AscendC::Simt::VF_CALL<RadiusKernelSimt<T, DType>>(
         AscendC::Simt::Dim3{1024}, x, y, ptr_x, ptr_y, unique_cell_ids,
-        cell_offsets, reordered_x, reordered_orig_idx, counts, out_row0,
+        cell_offsets, reordered_x, reordered_orig_idx, counts,
         out_row1, config_ptr, tiling_ptr);
 }
 
@@ -380,7 +378,7 @@ void Radius(T* x, T* y, const RadiusLaunchArgs<T>& args,
     RadiusKernel<T, DType><<<coreNum, nullptr, stream>>>(
         x, y, args.ptr_x, args.ptr_y, args.unique_cell_ids,
         args.cell_offsets, args.reordered_x, args.reordered_orig_idx,
-        args.counts, args.out_row0, args.out_row1, args.config_ptr,
+        args.counts, args.out_row1, args.config_ptr,
         args.tiling_gm);
 }
 

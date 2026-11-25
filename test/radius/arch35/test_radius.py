@@ -478,6 +478,48 @@ def test_grid_path_no_internal_format_warning(device):
     assert not internal_warnings
 
 
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("dimensions", [3, 5])
+@pytest.mark.parametrize("cap", [1, 4, 65])
+@pytest.mark.parametrize("batched", [False, True])
+def test_compaction_keeps_query_prefixes(device, dtype, dimensions, cap, batched):
+    x = torch.zeros((12, dimensions), dtype=dtype)
+    y = torch.zeros((8, dimensions), dtype=dtype)
+    x[:, 0] = torch.tensor([0, 0, 1, 1, 1, 2, 3, 3, 4, 4, 4, 5], dtype=dtype)
+    y[:, 0] = torch.tensor([-10, 0, 1, 2, 3, 4, 5, 100], dtype=dtype)
+    bx = torch.tensor([0] * 6 + [2] * 6) if batched else None
+    by = torch.tensor([0] * 4 + [2] * 4) if batched else None
+    neighbors = full_neighbors(x, y, 0.25, False, None if bx is None else (bx, by))
+    pairs = [(q, i) for q, indices in enumerate(neighbors) for i in indices[:cap]]
+    expected = torch.tensor(pairs, dtype=torch.long).t().contiguous()
+    actual = radius(x.to(device), y.to(device), 0.25,
+                    batch_x=None if bx is None else bx.to(device),
+                    batch_y=None if by is None else by.to(device), max_num_neighbors=cap)
+    assert actual.dtype == torch.long
+    assert actual.device == x.to(device).device
+    assert torch.equal(actual.cpu(), expected)
+
+
+@pytest.mark.parametrize("dimensions", [3, 5])
+def test_compaction_empty_result_on_device(device, dimensions):
+    x = torch.zeros((64, dimensions), device=device)
+    y = torch.full((17, dimensions), 100., device=device)
+    actual = radius(x, y, 0.25, max_num_neighbors=64)
+    assert actual.shape == (2, 0)
+    assert actual.dtype == torch.long
+    assert actual.device == x.device
+
+
+def test_compaction_stream_pipeline(device):
+    stream = torch.npu.Stream()
+    with torch.npu.stream(stream):
+        x = torch.arange(32, dtype=torch.float32, device=device).view(-1, 1).repeat(1, 3)
+        actual = radius(x, x, 0.25, max_num_neighbors=64) + 7
+    stream.synchronize()
+    expected = torch.arange(32).repeat(2, 1) + 7
+    assert torch.equal(actual.cpu(), expected)
+
+
 def test_non_finite_coordinates_no_crash(device):
     x = torch.tensor(
         [[0.0, 0.0, 0.0], [float("nan"), 0.0, 0.0],
