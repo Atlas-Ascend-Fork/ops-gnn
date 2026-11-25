@@ -253,7 +253,9 @@ LaunchShapeInfo BuildLaunchShapeInfo(const torch::Tensor& src, const torch::Tens
     CheckedMultiply(batchCount, segmentCount + 1, "expanded indptr element count");
     CheckedMultiply(totalSegments, featureBytes, "src byte span");
 
-    const auto ptrInfo = ValidateIndptr(contiguousIndptr, batchCount, segmentCount);
+    const uint64_t ptrBatchCount = CheckedProduct(indptr.sizes(), 0, dim, "indptr batch count");
+    const auto& validationIndptr = ptrBatchCount < batchCount ? indptr : contiguousIndptr;
+    const auto ptrInfo = ValidateIndptr(validationIndptr, ptrBatchCount, segmentCount);
     const uint64_t outputRows = static_cast<uint64_t>(ptrInfo.outputRows);
     const uint64_t totalOutputRows = CheckedMultiply(batchCount, outputRows, "total output row count");
     CheckedMultiply(totalOutputRows, featureBytes, "out byte span");

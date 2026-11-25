@@ -423,6 +423,46 @@ def test_invalid_indptr(src, indptr, error):
         gather_csr(src.to("npu"), indptr.to("npu"))
 
 
+@pytest.mark.parametrize("prefix", [(1, 1), (2, 1), (1, 3), (2, 3)])
+@pytest.mark.parametrize("strided", [False, True])
+@pytest.mark.parametrize("with_out", [False, True])
+def test_shared_pointer_rows(prefix, strided, with_out):
+    _require_npu()
+    rows = torch.tensor([[1, 1, 3, 5], [0, 2, 2, 5], [0, 0, 4, 5]], dtype=torch.long)
+    ptr_cpu = rows[torch.arange(prefix[0] * prefix[1]) % 3].reshape(*prefix, 4)
+    src_cpu = torch.arange(2 * 3 * 3 * 8, dtype=torch.int32).reshape(2, 3, 3, 8)
+    expected = gather_csr_cpu(src_cpu, ptr_cpu)
+    ptr = ptr_cpu.to("npu")
+    if strided:
+        backing = torch.empty((*prefix, 8), dtype=torch.long, device="npu")
+        ptr = backing[..., ::2]
+        ptr.copy_(ptr_cpu.to("npu"))
+    src = src_cpu.to("npu")
+    out = torch.full(expected.shape, -99, dtype=src.dtype, device="npu") if with_out else None
+    actual = gather_csr(src, ptr, out)
+    assert torch.equal(actual.cpu(), expected)
+    if with_out:
+        assert actual is out
+
+
+@pytest.mark.parametrize("strided", [False, True])
+@pytest.mark.parametrize("invalid,error", [
+    ([0, -1, 2, 5], "out of range"),
+    ([0, 3, 2, 5], "non-decreasing"),
+    ([0, 1, 2, 6], "same endpoint"),
+])
+def test_shared_pointer_mutation_is_revalidated(strided, invalid, error):
+    _require_npu()
+    backing = torch.empty((2, 1, 8 if strided else 4), dtype=torch.long, device="npu")
+    ptr = backing[..., ::2] if strided else backing
+    ptr.copy_(torch.tensor([0, 1, 2, 5], dtype=torch.long, device="npu"))
+    src = torch.ones((2, 3, 3, 8), device="npu")
+    gather_csr(src, ptr)
+    ptr[1, 0].copy_(torch.tensor(invalid, dtype=torch.long, device="npu"))
+    with pytest.raises(RuntimeError, match=error):
+        gather_csr(src, ptr)
+
+
 def test_batched_endpoints_must_match():
     _require_npu()
     src = torch.ones((2, 2), device="npu")
