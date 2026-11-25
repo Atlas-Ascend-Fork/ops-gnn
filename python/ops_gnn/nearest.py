@@ -31,11 +31,17 @@ def _batch_ptr(batch: Optional[torch.Tensor], count: int, device: torch.device,
     if batch.device != device:
         raise ValueError(f"{name} must be on the same NPU as x and y")
     # Only batch metadata crosses to the host. Point coordinates never do.
-    values = batch.detach().cpu().tolist()
+    values = batch.detach().cpu()
+    lengths = None
+    if count >= 4096:
+        values, lengths = torch.unique_consecutive(values, return_counts=True)
+    values = values.tolist()
     if any(a > b for a, b in zip(values, values[1:])):
         raise ValueError(f"{name} is not sorted")
     if values and values[0] < 0:
         raise ValueError(f"{name} must contain non-negative batch IDs")
+    if lengths is not None:
+        return values, [0] + lengths.cumsum(0).tolist()
     labels, ptr = [], [0]
     for i, value in enumerate(values):
         if not labels or value != labels[-1]:

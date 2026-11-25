@@ -660,6 +660,40 @@ def test_scalar_half_large_candidate_ties(count):
     assert ops_gnn.nearest(x, y).cpu().tolist() == [0]
 
 
+@pytest.mark.parametrize("count", [4095, 4096, 4097])
+def test_large_batch_metadata_dispatch(count):
+    x = torch.zeros((count, 1), dtype=torch.float32)
+    batch = torch.tensor([2] * (count // 2) + [7] * (count - count // 2))
+    expected = torch.cat((torch.zeros(count // 2, dtype=torch.long),
+                          torch.ones(count - count // 2, dtype=torch.long)))
+    check(x, torch.zeros((2, 1)), batch, torch.tensor([2, 7]), expected)
+
+
+def test_large_batch_metadata_strided_half():
+    x = torch.zeros((4096, 1), dtype=torch.float16, device="npu")
+    backing = torch.zeros(8192, dtype=torch.long, device="npu")
+    batch = backing[::2]
+    batch[2048:] = 7
+    actual = ops_gnn.nearest(x, torch.zeros((2, 1), dtype=torch.float16, device="npu"),
+                             batch, torch.tensor([0, 7], device="npu"))
+    expected = torch.arange(4096) // 2048
+    assert torch.equal(actual.cpu(), expected)
+
+
+@pytest.mark.parametrize("invalid,error", [("unsorted", "not sorted"),
+                                          ("negative", "non-negative")])
+def test_large_batch_metadata_validation(invalid, error):
+    x = torch.zeros((4096, 1), device="npu")
+    batch = torch.zeros(4096, dtype=torch.long, device="npu")
+    if invalid == "unsorted":
+        batch[123] = 1
+    else:
+        batch.fill_(-1)
+    with pytest.raises(ValueError, match=error):
+        ops_gnn.nearest(x, torch.zeros((1, 1), device="npu"), batch,
+                        torch.zeros(1, dtype=torch.long, device="npu"))
+
+
 def test_scalar_half_large_candidates_nondefault_stream():
     torch.npu.set_device(int(os.getenv('NPU_DEVICE_ID', '0')))
     stream = torch.npu.Stream()
