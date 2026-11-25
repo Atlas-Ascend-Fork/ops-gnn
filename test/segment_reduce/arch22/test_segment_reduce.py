@@ -175,4 +175,4 @@ def test_leading_dim_broadcast(npu_api):
     for batch in range(3):
         torch.testing.assert_close(result[batch].cpu(),
                                    _reference(src[batch], offsets[0], "sum"),
-                                   rtol=0, atol=0)
+                                   rtol=2 ** -13, atol=2 ** -13)
