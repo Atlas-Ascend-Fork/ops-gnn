@@ -128,13 +128,25 @@ private:
         }
     }
 
+    template <typename DType>
+    __aicore__ inline void ComputeDataCopyIn(const GlobalTensor<DType>& src, const LocalTensor<DType>& dst, const uint32_t calCount)
+    {
+        int32_t numPerBlock = BLOCK_SIZE / sizeof(DType);
+        if (calCount % numPerBlock == 0) {
+            DataCopy(dst, src, calCount);
+        } else {
+            DataCopyExtParams copyParams{1, static_cast<uint32_t>(calCount * sizeof(DType)), 0, 0, 0};
+            DataCopyPad(dst, src, copyParams, DataCopyPadExtParams<DType>{false, 0, 0, static_cast<DType>(0)});
+        }
+    }
+
     __aicore__ inline void LoadSource(uint32_t srcOffset, uint32_t copyLength)
     {
         SetFlag<HardEvent::MTE3_MTE2>(eventIdMte3ToMte2_0);
         SetFlag<HardEvent::MTE3_V>(eventIdMte3ToV_0);
         WaitFlag<HardEvent::MTE3_MTE2>(eventIdMte3ToMte2_0);
         WaitFlag<HardEvent::MTE3_V>(eventIdMte3ToV_0);
-        DataCopy(srcLocal, srcGm[srcOffset], copyLength);
+        ComputeDataCopyIn<T>(srcGm[srcOffset], srcLocal, copyLength);
         SetFlag<HardEvent::MTE2_V>(eventIdMte2ToV_0);
     }
 
@@ -168,9 +180,9 @@ private:
         uint32_t Ktaillength = this->K - tailOffset;
         uint32_t KtaillengthCopy = GetAlignedCopyLen(Ktaillength);
 
-        LoadSource(srcBase + tailOffset, KtaillengthCopy);
+        LoadSource(srcBase + tailOffset, Ktaillength);
 
-        DataCopy(optionalOutLocal, reduceGm[outBase + tailOffset], KtaillengthCopy);
+        ComputeDataCopyIn<T>(reduceGm[outBase + tailOffset], optionalOutLocal, Ktaillength);
         SetFlag<HardEvent::MTE2_V>(eventIdMte2ToV_1);
 
         WaitFlag<HardEvent::MTE2_V>(eventIdMte2ToV_0);
@@ -199,7 +211,7 @@ private:
         uint32_t Ktaillength = this->K - tailOffset;
         uint32_t KtaillengthCopy = GetAlignedCopyLen(Ktaillength);
 
-        LoadSource(srcBase + tailOffset, KtaillengthCopy);
+        LoadSource(srcBase + tailOffset, Ktaillength);
 
         WaitFlag<HardEvent::MTE2_V>(eventIdMte2ToV_0);
 
@@ -268,9 +280,8 @@ private:
 
         uint32_t tailOffset = (this->KloopTime - 1) * MAX_DEAL_NUM;
         uint32_t Ktaillength = this->K - tailOffset;
-        uint32_t KtaillengthCopy = GetAlignedCopyLen(Ktaillength);
 
-        DataCopy(outLocal, optionalOutGm[outBase + tailOffset], KtaillengthCopy);
+        ComputeDataCopyIn<T>(optionalOutGm[outBase + tailOffset], outLocal, Ktaillength);
         SetFlag<HardEvent::MTE2_MTE3>(eventIdMte2ToMte3_0);
         WaitFlag<HardEvent::MTE2_MTE3>(eventIdMte2ToMte3_0);
 
