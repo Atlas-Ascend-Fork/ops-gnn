@@ -892,6 +892,68 @@ row = ops_gnn.ptr2ind(rowptr, 6)
 
 ---
 
+### csr_transpose — CSR 结构转置
+
+**产品支持情况：**
+
+- <term>Ascend 950PR&950DT系列产品</term>：支持
+- <term>Atlas A3系列产品</term>：支持
+- <term>Atlas A2系列产品</term>：支持
+
+**函数签名：**
+
+```python
+def csr_transpose(
+    indptr: Tensor,
+    indices: Tensor,
+    num_cols: Optional[int] = None,
+) -> Tuple[Tensor, Tensor]:
+```
+
+**参数说明：**
+
+| 参数 | 类型 | 输入/输出 | 说明 |
+|------|------|------|------|
+| indptr | Tensor | 输入 | 1-D `torch.long` CSR 行指针，长度 `N + 1`，非降序、首项为 0、末项为 `indices.numel()` |
+| indices | Tensor | 输入 | 1-D `torch.long` 列索引，长度 `E`，取值在 `[0, num_cols)` |
+| num_cols | int | 输入（可选）| 转置后的行数 `M`；省略时取 `indices.max() + 1`，会读取一次设备标量 |
+
+**返回值说明：**
+
+返回 `(out_indptr, out_indices)`：
+
+- `out_indptr`：1-D `torch.long`，长度 `M + 1`，转置矩阵的行指针；
+- `out_indices`：1-D `torch.long`，长度 `E`，转置矩阵的列索引（即原行号），每个分段内升序。
+
+**功能说明：**
+
+把 (N, M) CSR 的稀疏结构转置为 (M, N) CSR：每条边 `(row, column)` 变成 `(column, row)`。调用只重写两个索引数组，不搬移数值，也不合并重复边，相当于 `torch_sparse.transpose(..., coalesced=True)` 的结构部分，也是消息传递里构造反向图的步骤。
+
+**注意事项：**
+
+- 两个输入都必须是 `torch.long`，且位于同一 NPU 上；支持非连续输入。
+- `indptr` 的取值不在 Host 上校验（与 `ind2ptr`/`ptr2ind` 一致），由调用方保证非降序、首项为 0、末项为 `indices.numel()`。
+- 每个输出分段内的行号按升序排列，结果只取决于输入，与 AIV 核数无关，可逐位比较。
+- `E == 0` 时返回长度 `M + 1` 的全 0 指针与空索引；此时省略 `num_cols` 则 `M = 0`。
+- `num_cols == 0` 且 `E > 0` 属于矛盾输入，抛 `RuntimeError`。
+- A2/A3（arch22）由三趟设备内核实现（按列直方图、前缀和、按列回填）；950（arch35）由原生算子组合实现（`scatter_add` 直方图 + 稳定 `argsort`）。两者输出逐位一致，均在当前 NPU stream 上异步执行。
+- `indices` 非空时 `indptr` 至少要有一个行、即两个边界，否则抛 `RuntimeError`。
+
+**使用示例：**
+
+```python
+import torch
+import ops_gnn
+
+indptr = torch.tensor([0, 1, 3], dtype=torch.long, device='npu')
+indices = torch.tensor([0, 0, 1], dtype=torch.long, device='npu')
+out_indptr, out_indices = ops_gnn.csr_transpose(indptr, indices, 2)
+# out_indptr   -> tensor([0, 2, 3], device='npu:0')
+# out_indices  -> tensor([0, 1, 1], device='npu:0')
+```
+
+---
+
 ### random_walk — NPU 随机游走
 
 **函数签名：**

@@ -29,6 +29,7 @@
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/autograd/VariableTypeUtils.h>
 #include "common/spmm/host_proof_cache.h"
+#include "csr_transpose/op_host/csr_transpose.h"
 #include "disjoint_union_coo/op_host/disjoint_union_coo.h"
 #include "sddmm_csr/op_host/sddmm_csr.h"
 #include "spmm_max/op_host/spmm_max.h"
@@ -218,6 +219,19 @@ void BindEdgeSoftmax(py::module_& module)
         py::call_guard<py::gil_scoped_release>());
 }
 
+// The three-pass kernel is an A2/A3 build: on 950 a composition of native
+// primitives is about 40x faster than the kernel, so that build does not bind it
+// (see python/ops_gnn/csr_transpose.py).
+#ifdef OPSGNN_DAV_2201
+void BindCsrTranspose(py::module_& m)
+{
+    m.def("csr_transpose", &opsgnn::CsrTranspose, py::arg("indptr"), py::arg("indices"),
+          py::arg("num_cols") = py::none(),
+          "Structural CSR -> CSC transpose (NPU)",
+          py::call_guard<py::gil_scoped_release>());
+}
+#endif
+
 #ifndef OPSGNN_DAV_2201
 void RegisterKnn(py::module_& m)
 {
@@ -392,6 +406,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     BindScatterStd(m);
     BindEdgeSoftmax(m);
 #ifdef OPSGNN_DAV_2201
+    BindCsrTranspose(m);
     BindArch22(m);
 #else
     BindArch35(m);

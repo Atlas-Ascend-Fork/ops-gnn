@@ -958,6 +958,68 @@ row = ops_gnn.ptr2ind(rowptr, 6)
 
 ---
 
+### csr_transpose — CSR Structural Transpose
+
+**Product support:**
+
+- <term>Ascend 950PR&950DT series</term>: supported
+- <term>Atlas A3 series</term>: supported
+- <term>Atlas A2 series</term>: supported
+
+**Signature:**
+
+```python
+def csr_transpose(
+    indptr: Tensor,
+    indices: Tensor,
+    num_cols: Optional[int] = None,
+) -> Tuple[Tensor, Tensor]:
+```
+
+**Arguments:**
+
+| Argument | Type | In/Out | Description |
+|------|------|------|------|
+| indptr | Tensor | in | 1-D `torch.long` CSR row pointer of length `N + 1`; non-decreasing, starting at 0 and ending at `indices.numel()` |
+| indices | Tensor | in | 1-D `torch.long` column ids of length `E`, each in `[0, num_cols)` |
+| num_cols | int | in (optional) | Number of rows `M` of the result; when omitted it is `indices.max() + 1`, which reads one device scalar |
+
+**Returns:**
+
+`(out_indptr, out_indices)`:
+
+- `out_indptr`: 1-D `torch.long` of length `M + 1`, the row pointer of the transposed matrix;
+- `out_indices`: 1-D `torch.long` of length `E`, the column ids of the transposed matrix (the original row ids), ascending inside every segment.
+
+**Description:**
+
+Transposes the sparsity structure of an (N, M) CSR matrix into (M, N) CSR: every edge `(row, column)` becomes `(column, row)`. Only the two index arrays are rewritten - no value is moved and no duplicate is merged - which is the structure half of `torch_sparse.transpose(..., coalesced=True)` and the reverse-graph step of message passing.
+
+**Notes:**
+
+- Both inputs must be `torch.long` and live on the same NPU; non-contiguous inputs are accepted.
+- The values of `indptr` are not checked on the host (same as `ind2ptr`/`ptr2ind`); the caller guarantees that it is non-decreasing, starts at 0 and ends at `indices.numel()`.
+- The row ids of every output segment come out ascending, so the result depends on the input alone, not on the number of AIVs, and can be compared element by element.
+- `E == 0` returns an all-zero pointer of length `M + 1` and an empty index; with `num_cols` omitted that means `M = 0`.
+- `num_cols == 0` together with `E > 0` is contradictory and raises `RuntimeError`.
+- On A2/A3 (arch22) the operator runs three device kernels (per-column histogram, prefix sum and per-column write-back); on 950 (arch35) it runs a composition of native primitives (`scatter_add` histogram plus a stable `argsort`). Both produce bit-identical output and launch asynchronously on the current NPU stream.
+- With a non-empty `indices`, `indptr` must describe at least one row, i.e. hold two boundaries; otherwise the call raises `RuntimeError`.
+
+**Example:**
+
+```python
+import torch
+import ops_gnn
+
+indptr = torch.tensor([0, 1, 3], dtype=torch.long, device='npu')
+indices = torch.tensor([0, 0, 1], dtype=torch.long, device='npu')
+out_indptr, out_indices = ops_gnn.csr_transpose(indptr, indices, 2)
+# out_indptr   -> tensor([0, 2, 3], device='npu:0')
+# out_indices  -> tensor([0, 1, 1], device='npu:0')
+```
+
+---
+
 ### random_walk — NPU Random Walk
 
 **Function Signature:**

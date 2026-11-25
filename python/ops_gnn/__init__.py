@@ -44,6 +44,7 @@ except (ImportError, OSError, RuntimeError, ValueError) as exc:
 if _pybind.npu_arch == 'dav-2201':
     from .fps import fps
     from .gather_csr import gather_csr
+    from .csr_transpose import csr_transpose
     from .ind2ptr import ind2ptr
     from .ptr2ind import ptr2ind
     from .scatter import (
@@ -73,6 +74,7 @@ if _pybind.npu_arch == 'dav-2201':
     __all__ = [
         'fps',
         'gather_csr',
+        'csr_transpose',
         'ind2ptr',
         'ptr2ind',
         'native_available', 'scatter', 'scatter_sum', 'scatter_add',
@@ -113,6 +115,7 @@ else:
     from .scatter_std import scatter_std
     from .edge_softmax import edge_softmax
     from .gather_csr import gather_csr
+    from .csr_transpose import csr_transpose
     from .fps import fps
     from .graclus_cluster import graclus_cluster
     from .gather_coo import gather_coo
@@ -144,6 +147,7 @@ else:
         'torch_sparse_random_walk',
         'torch_sparse_random_walk_with_rand',
         'gather_csr',
+        'csr_transpose',
         'fps',
         'graclus_cluster',
         'gather_coo',
