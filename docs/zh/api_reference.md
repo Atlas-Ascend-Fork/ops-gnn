@@ -1569,6 +1569,39 @@ copied = sddmm_csr(ptr, idx, lhs, None, op="copy_lhs", lhs_target="v")
 
 测试位于 `test/sddmm_csr/arch22/`。
 
+### csr_row_wise_sampling_uniform_fused — 融合 seed 映射的 CSR 行均匀采样
+
+```python
+ops_gnn.csr_row_wise_sampling_uniform_fused(
+    indptr, indices, rows, num_samples, replace=False, data=None,
+    seed_mapping=None, seed=None
+) -> (block_indptr, picked_rows, picked_cols, picked_data, seed_mapping, new_seed_nodes)
+```
+
+对应 DGL `CSRRowWiseSamplingUniformFused`：在 uniform 行采样基础上，同时维护
+seed 节点到采样结果行位置的映射。
+
+- 采样语义与 `csr_row_wise_sampling_uniform` 一致：`num_samples == -1` 选全部边，
+  `0` 空结果，其余为 fanout；`replace` 控制是否有放回；越界 seed 行按空行处理。
+- `picked_rows` 返回的是**行位置**（`rows` 的下标），不是顶点 id。
+- `block_indptr` 长度为 `rows.numel() + 1`，是采样结果的 CSR 指针。
+- `seed_mapping` 可选：提供时原地更新，使 `seed_mapping[rows[i]] = i`
+  （越界行跳过，重复行后者覆盖前者）；同时返回 `new_seed_nodes = rows.clone()`。
+  不提供时两者均为 `None`。
+- `data` 可选；提供时 `picked_data` 为 CSR data 值，否则为全局边序号。
+- `seed` 固定时可复现。仅 arch22 前向，不支持 autograd、异构图、3D/batched。
+
+```python
+from ops_gnn import csr_row_wise_sampling_uniform_fused
+
+mapping = torch.full((num_nodes,), -1, dtype=torch.int32).npu()
+ptr_out, row_pos, col, edge, mapping, new_seed = \
+    csr_row_wise_sampling_uniform_fused(
+        indptr, indices, rows, 8, seed_mapping=mapping, seed=42)
+```
+
+测试位于 `test/csr_row_wise_sampling_uniform_fused/arch22/`。
+
 ### disjoint_union_coo — 多个 COO 合并（对齐 DGL `DisjointUnionCoo`）
 
 ```python

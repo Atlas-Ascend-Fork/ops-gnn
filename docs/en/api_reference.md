@@ -1695,6 +1695,42 @@ copied = sddmm_csr(ptr, idx, lhs, None, op="copy_lhs", lhs_target="v")
 
 Tests live in `test/sddmm_csr/arch22/`.
 
+### csr_row_wise_sampling_uniform_fused — Uniform CSR sampling fused with seed mapping
+
+```python
+ops_gnn.csr_row_wise_sampling_uniform_fused(
+    indptr, indices, rows, num_samples, replace=False, data=None,
+    seed_mapping=None, seed=None
+) -> (block_indptr, picked_rows, picked_cols, picked_data, seed_mapping, new_seed_nodes)
+```
+
+DGL `CSRRowWiseSamplingUniformFused` parity: uniform row-wise sampling plus the
+seed-node to sampled-row-position mapping.
+
+- Sampling semantics match `csr_row_wise_sampling_uniform`: `num_samples == -1`
+  selects every edge, `0` returns an empty result, other values are the fanout;
+  `replace` enables replacement; out-of-range seed rows are empty.
+- `picked_rows` holds the **row position** (index into `rows`), not the vertex id.
+- `block_indptr` has length `rows.numel() + 1` and is the CSR pointer of the result.
+- `seed_mapping` is optional: when supplied it is updated in place so that
+  `seed_mapping[rows[i]] = i` (out-of-range rows skipped, later duplicates win);
+  `new_seed_nodes = rows.clone()` is returned alongside. Both are `None` when
+  `seed_mapping` is omitted.
+- `data` is optional; `picked_data` holds CSR data values, otherwise global edge ids.
+- A fixed `seed` is reproducible. Only arch22 forward is supported; autograd,
+  heterogeneous graphs, and 3D/batched inputs are not.
+
+```python
+from ops_gnn import csr_row_wise_sampling_uniform_fused
+
+mapping = torch.full((num_nodes,), -1, dtype=torch.int32).npu()
+ptr_out, row_pos, col, edge, mapping, new_seed = \
+    csr_row_wise_sampling_uniform_fused(
+        indptr, indices, rows, 8, seed_mapping=mapping, seed=42)
+```
+
+Tests live in `test/csr_row_wise_sampling_uniform_fused/arch22/`.
+
 ### disjoint_union_coo — COO concatenation (DGL `DisjointUnionCoo` parity)
 
 ```python

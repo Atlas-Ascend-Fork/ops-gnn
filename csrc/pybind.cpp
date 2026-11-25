@@ -29,6 +29,7 @@
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/autograd/VariableTypeUtils.h>
 #include "common/spmm/host_proof_cache.h"
+#include "csr_row_wise_sampling_uniform_fused/op_host/csr_row_wise_sampling_uniform_fused.h"
 #include "csr_transpose/op_host/csr_transpose.h"
 #include "disjoint_union_coo/op_host/disjoint_union_coo.h"
 #include "sddmm_csr/op_host/sddmm_csr.h"
@@ -253,6 +254,40 @@ void BindSegmentLogSumExp(py::module_& m)
 }
 
 #ifdef OPSGNN_DAV_2201
+void BindArch22Sampling(py::module_& m)
+{
+    m.def("csr_row_wise_sampling_uniform_fused", &opsgnn::CsrRowWiseSamplingUniformFused,
+          py::arg("indptr"), py::arg("indices"), py::arg("rows"),
+          py::arg("num_samples"), py::arg("replace") = false,
+          py::arg("data") = py::none(), py::arg("seed_mapping") = py::none(),
+          py::arg("seed") = 0,
+          "Fused uniform CSR row-wise sampling on Ascend NPU",
+          py::call_guard<py::gil_scoped_release>());
+}
+
+void BindArch22SpmmFamily(py::module_& m)
+{
+    m.def("sddmm_csr", &opsgnn::SddmmCsrForward, py::arg("indptr"), py::arg("indices"),
+          py::arg("lhs"), py::arg("rhs"), py::arg("op") = "dot",
+          py::arg("lhs_target") = 0, py::arg("rhs_target") = 2,
+          py::arg("out") = py::none(), "CSR SDDMM on Ascend NPU",
+          py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary, ExternalSpmmProofBoundary>());
+    m.def("spmm_max_csr", &opsgnn::SpmmMaxCsr, py::arg("indptr"), py::arg("indices"),
+          py::arg("x"), py::arg("out") = py::none(), "CSR SpMM max on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
+    m.def("spmm_min_csr", &opsgnn::SpmmMinCsr, py::arg("indptr"), py::arg("indices"),
+          py::arg("x"), py::arg("out") = py::none(), "CSR SpMM min on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
+    m.def("spmm_sum_csr", &opsgnn::SpmmSumCsr, py::arg("indptr"), py::arg("indices"),
+          py::arg("x"), py::arg("out") = py::none(), "CSR SpMM sum on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
+    m.def("unified_spmm_csr", &opsgnn::UnifiedSpmmCsr, py::arg("indptr"), py::arg("indices"),
+          py::arg("x"), py::arg("op") = "copy_lhs", py::arg("reduce") = "sum",
+          py::arg("out") = py::none(), "Unified two-dimensional CSR SpMM on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
+    m.def("disjoint_union_coo", &opsgnn::DisjointUnionCoo, py::arg("sources"), py::arg("dests"),
+          py::arg("num_rows"), py::arg("num_cols"),
+          py::arg("datas") = std::vector<std::optional<torch::Tensor>>{},
+          "Concatenate COO matrices with cumulative row/column/nnz offsets on Ascend NPU",
+          py::call_guard<py::gil_scoped_release>());
+}
+
 void BindArch22(py::module_& m)
 {
     ops_gnn::sparse::spmm_proof_detail::EnsureObserver();
@@ -283,25 +318,8 @@ void BindArch22(py::module_& m)
                                    std::move(out), dimSize, reduce, false));
           }, py::arg("src"), py::arg("index"), py::arg("out"), py::arg("dim_size"),
           py::arg("reduce"), py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary, ExternalSpmmProofBoundary>());
-    m.def("sddmm_csr", &opsgnn::SddmmCsrForward, py::arg("indptr"), py::arg("indices"),
-          py::arg("lhs"), py::arg("rhs"), py::arg("op") = "dot",
-          py::arg("lhs_target") = 0, py::arg("rhs_target") = 2,
-          py::arg("out") = py::none(), "CSR SDDMM on Ascend NPU",
-          py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary, ExternalSpmmProofBoundary>());
-    m.def("spmm_max_csr", &opsgnn::SpmmMaxCsr, py::arg("indptr"), py::arg("indices"),
-          py::arg("x"), py::arg("out") = py::none(), "CSR SpMM max on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
-    m.def("spmm_min_csr", &opsgnn::SpmmMinCsr, py::arg("indptr"), py::arg("indices"),
-          py::arg("x"), py::arg("out") = py::none(), "CSR SpMM min on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
-    m.def("spmm_sum_csr", &opsgnn::SpmmSumCsr, py::arg("indptr"), py::arg("indices"),
-          py::arg("x"), py::arg("out") = py::none(), "CSR SpMM sum on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
-    m.def("unified_spmm_csr", &opsgnn::UnifiedSpmmCsr, py::arg("indptr"), py::arg("indices"),
-          py::arg("x"), py::arg("op") = "copy_lhs", py::arg("reduce") = "sum",
-          py::arg("out") = py::none(), "Unified two-dimensional CSR SpMM on Ascend NPU", py::call_guard<ExternalCsrProofBoundary>());
-    m.def("disjoint_union_coo", &opsgnn::DisjointUnionCoo, py::arg("sources"), py::arg("dests"),
-          py::arg("num_rows"), py::arg("num_cols"),
-          py::arg("datas") = std::vector<std::optional<torch::Tensor>>{},
-          "Concatenate COO matrices with cumulative row/column/nnz offsets on Ascend NPU",
-          py::call_guard<py::gil_scoped_release>());
+    BindArch22Sampling(m);
+    BindArch22SpmmFamily(m);
     RegisterFps(m);
 }
 #else
