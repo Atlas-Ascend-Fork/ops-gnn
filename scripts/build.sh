@@ -31,7 +31,6 @@ BUILD_TYPE="Release"
 # 命令行 --npu-arch 优先；未指定时构建全部目标。
 NPU_ARCH="${NPU_ARCH:-${TARGET_NPU_ARCH:-}}"
 CANN_TARGET="${CANN_TARGET:-}"
-WITH_PYTHON="ON"
 INSTALL_PREFIX="${PROJECT_ROOT}/output"
 
 ###############################################################################
@@ -54,7 +53,6 @@ ${BLUE}ops-gnn 构建脚本${NC}
     --npu-arch ARCH      NPU 架构 (dav-3510/dav-2201；dav-2201 覆盖 A2/A3)
                          [默认: arch22 和 arch35 都编译]
     --cann-target TARGET 只编译目标设备 (950/a2/a3)
-    --no-python          禁用 Python 绑定 (仅 C++ 构建)
     -c, --clean          清理构建缓存 (删除 build 和 output 目录)
     -h, --help           显示帮助信息
 
@@ -70,9 +68,6 @@ ${BLUE}ops-gnn 构建脚本${NC}
 
     # 同时构建两者
     $0 all -t Debug
-
-    # C++ 构建时禁用 Python 绑定
-    $0 cpp --no-python
 
     # 运行整体测试（自动发现 test/ 下全部用例，含 test/sparse/）
     $0 test
@@ -130,10 +125,6 @@ while [[ $# -gt 0 ]]; do
             require_option_value "$@"
             CANN_TARGET="$2"
             shift 2
-            ;;
-        --no-python)
-            WITH_PYTHON="OFF"
-            shift
             ;;
         -c|--clean)
             CLEAN_BUILD="ON"
@@ -258,16 +249,14 @@ check_env() {
     log_info "检查环境..."
 
     # Python 检查
-    if [ "$BUILD_TARGET" != "cpp" ] || [ "$WITH_PYTHON" = "ON" ]; then
-        find_python
+    find_python
 
-        if ! $PYTHON_CMD -c "import torch" &> /dev/null; then
-            log_error "PyTorch 未安装，请先安装: $PYTHON_CMD -m pip install torch"
-        fi
-
-        PYTORCH_VERSION=$($PYTHON_CMD -c "import torch; print(torch.__version__)")
-        log_info "PyTorch 版本: $PYTORCH_VERSION"
+    if ! $PYTHON_CMD -c "import torch" &> /dev/null; then
+        log_error "PyTorch 未安装，请先安装: $PYTHON_CMD -m pip install torch"
     fi
+
+    PYTORCH_VERSION=$($PYTHON_CMD -c "import torch; print(torch.__version__)")
+    log_info "PyTorch 版本: $PYTORCH_VERSION"
 
     # CMake 检查
     if [ "$BUILD_TARGET" = "cpp" ] || [ "$BUILD_TARGET" = "all" ]; then
@@ -377,7 +366,7 @@ build_cpp() {
     log_info "配置 CMake..."
     cmake \
         -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-        -DWITH_PYTHON="$WITH_PYTHON" \
+        -DWITH_PYTHON=ON \
         -DNPU_ARCH="$NPU_ARCH" \
         -DCANN_TARGET="$CANN_TARGET" \
         -DOPSGNN_BUILD_WHEEL=OFF \
@@ -407,7 +396,6 @@ main() {
     log_info "NPU 架构: $LOCAL_NPU_ARCH"
     log_info "CANN 目标设备: $LOCAL_CANN_TARGET"
     log_info "编译目标: $BUILD_TARGETS"
-    log_info "Python 绑定: $WITH_PYTHON"
     log_info "清理缓存: $CLEAN_BUILD"
 
     clean_build
