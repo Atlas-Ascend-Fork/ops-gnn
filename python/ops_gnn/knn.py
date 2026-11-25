@@ -93,26 +93,45 @@ def _validate_empty_query(query: _KnnArguments) -> None:
             raise ValueError("knn: batch_x and batch_y are required when batch_size > 1")
 
 
+def _infer_batch_size(x: Tensor, y: Tensor, batch_x: Optional[Tensor],
+                      batch_y: Optional[Tensor], same_batch: bool) -> int:
+    """Derive the batch count from the batch labels, validating their lengths.
+
+    ``same_batch`` labels are read once; distinct labels take the elementwise
+    maximum on device first, so at most one synchronization happens here.
+    """
+    if batch_x is not None:
+        if x.size(0) != batch_x.numel():
+            raise ValueError("knn: batch_x length must equal x.size(0)")
+    if batch_y is not None:
+        if y.size(0) != batch_y.numel():
+            raise ValueError("knn: batch_y length must equal y.size(0)")
+    if same_batch:
+        return int(batch_x.max()) + 1
+    if batch_x is not None and batch_y is not None:
+        return int(torch.maximum(batch_x.max(), batch_y.max())) + 1
+    if batch_x is not None:
+        return int(batch_x.max()) + 1
+    if batch_y is not None:
+        return int(batch_y.max()) + 1
+    return 1
+
+
 def _knn_impl(query: _KnnArguments) -> Tensor:
     x, y, k, batch_x, batch_y, cosine, num_workers, batch_size = query
     if x.numel() == 0 or y.numel() == 0:
         _validate_empty_query(query)
         return torch.empty(2, 0, dtype=torch.long, device=x.device)
 
+    same_points = x is y
     x = x.view(-1, 1) if x.dim() == 1 else x
-    y = y.view(-1, 1) if y.dim() == 1 else y
-    x, y = x.contiguous(), y.contiguous()
+    y = x if same_points else (y.view(-1, 1) if y.dim() == 1 else y)
+    x = x.contiguous()
+    y = x if same_points else y.contiguous()
 
+    same_batch = batch_x is not None and batch_x is batch_y
     if batch_size is None:
-        batch_size = 1
-        if batch_x is not None:
-            if x.size(0) != batch_x.numel():
-                raise ValueError("knn: batch_x length must equal x.size(0)")
-            batch_size = int(batch_x.max()) + 1
-        if batch_y is not None:
-            if y.size(0) != batch_y.numel():
-                raise ValueError("knn: batch_y length must equal y.size(0)")
-            batch_size = max(batch_size, int(batch_y.max()) + 1)
+        batch_size = _infer_batch_size(x, y, batch_x, batch_y, same_batch)
     if batch_size <= 0:
         raise ValueError("knn: batch_size must be positive")
 
@@ -124,7 +143,7 @@ def _knn_impl(query: _KnnArguments) -> Tensor:
                 "knn: batch_x and batch_y are required when batch_size > 1")
         arange = torch.arange(batch_size + 1, device=x.device)
         ptr_x = torch.bucketize(arange, batch_x)
-        ptr_y = torch.bucketize(arange, batch_y)
+        ptr_y = ptr_x if same_batch else torch.bucketize(arange, batch_y)
 
     stream_handle = int(torch.npu.current_stream().npu_stream)
     return _pybind.knn(x, y, ptr_x, ptr_y, k, cosine, num_workers,
