@@ -73,6 +73,14 @@ public:
         this->coreRowBeg = GetBlockIdx() * this->rowsPerAiv;
         this->coreRowEnd = this->coreRowBeg + ((GetBlockIdx() == this->aivNum - 1) ? this->rowsLastAiv : this->rowsPerAiv);
         if (this->coreRowEnd > this->E_1) this->coreRowEnd = this->E_1;
+        this->segmentBeg = 0;
+        this->segmentEnd = this->nSegments;
+        if (this->E_1 == 1 && this->nSegments > 1 && this->K % this->ALIGN_NUM == 0) {
+            this->coreRowBeg = 0;
+            this->coreRowEnd = 1;
+            this->segmentBeg = static_cast<uint64_t>(this->nSegments) * GetBlockIdx() / GetBlockNum();
+            this->segmentEnd = static_cast<uint64_t>(this->nSegments) * (GetBlockIdx() + 1) / GetBlockNum();
+        }
 
         auto outputLength = this->E_1 * this->nSegments * this->K;
 
@@ -298,7 +306,7 @@ private:
 
         uint32_t indptrBase = GetIndptrOffset(e);
 
-        for (uint32_t seg = 0; seg < this->nSegments; seg++) {
+        for (uint32_t seg = this->segmentBeg; seg < this->segmentEnd; seg++) {
             int32_t start = indptrGm.GetValue(indptrBase + seg);
             int32_t end = indptrGm.GetValue(indptrBase + seg + 1);
 
@@ -347,6 +355,7 @@ private:
     uint32_t ALIGN_NUM, aivNum, rowsPerAiv, rowsLastAiv, KloopTime;
     uint32_t indptrPhysicalNum, strideIndptr, hasOptionalOut;
     uint32_t coreRowBeg, coreRowEnd;
+    uint32_t segmentBeg, segmentEnd;
 
     event_t eventIdMte2ToV_0, eventIdMte2ToV_1, eventIdVToMte3_0, eventIdMte3ToV_0, eventIdMte3ToMte2_0;
     event_t eventIdMte2ToMte3_0;

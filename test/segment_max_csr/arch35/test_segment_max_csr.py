@@ -21,6 +21,42 @@ _GOLDEN = runpy.run_path(Path(__file__).with_name("golden.py"))
 segment_max_csr_cpu = _GOLDEN["segment_max_csr_cpu"]
 
 
+@pytest.mark.parametrize("segments", [2, 65])
+@pytest.mark.parametrize("features", [7, 16, 2048, 2064])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32, torch.int16, torch.int32])
+@pytest.mark.parametrize("with_initial", [False, True])
+def test_single_batch_segment_parallel_coverage(npu_api, segments, features, dtype, with_initial):
+    counts = torch.arange(segments, dtype=torch.int32) % 5
+    ptr = torch.cat((torch.zeros(1, dtype=torch.int32), counts.cumsum(0).to(torch.int32)))
+    source = (torch.arange(int(ptr[-1]) * features) % 113 - 56).reshape(-1, features).to(dtype)
+    fill = -float("inf") if dtype == torch.float16 else (
+        torch.finfo(dtype).min if dtype == torch.float32 else torch.iinfo(dtype).min)
+    expected = torch.full((segments, features), fill, dtype=dtype)
+    initial = None
+    if with_initial:
+        initial = (torch.arange(segments * features) % 97 - 48).reshape(segments, features).to(dtype)
+        expected.copy_(initial)
+    for seg in range(segments):
+        start, end = int(ptr[seg]), int(ptr[seg + 1])
+        if start < end:
+            reduced = source[start:end].amax(0)
+            expected[seg] = reduced if initial is None else torch.maximum(reduced, initial[seg])
+    actual = npu_api.segment_max_csr_legacy(
+        source.npu(), ptr.npu(), None if initial is None else initial.npu())
+    torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+
+def test_segment_parallel_stream_pipeline(npu_api):
+    stream = torch.npu.Stream()
+    with torch.npu.stream(stream):
+        source = torch.arange(256 * 16, dtype=torch.float32, device="npu").reshape(256, 16)
+        ptr = torch.arange(0, 257, 4, dtype=torch.int32, device="npu")
+        actual = npu_api.segment_max_csr_legacy(source, ptr) + 3
+    stream.synchronize()
+    expected = torch.arange(256 * 16, dtype=torch.float32).reshape(64, 4, 16).amax(1) + 3
+    torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("values", [(-1., 1.), (-1., -2.), (-65504., -32.), (-0., -1.)])
 @pytest.mark.parametrize("initial", [None, -0.5, -65504.])
 @pytest.mark.parametrize("features", [16, 2048, 2064])
