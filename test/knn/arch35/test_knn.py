@@ -89,6 +89,24 @@ def random_inputs(shape, dtype, seed, distribution='normal'):
 @pytest.mark.npu
 @pytest.mark.usefixtures('npu_environment')
 @pytest.mark.parametrize('dtype', DTYPES)
+@pytest.mark.parametrize('batches', [1, 8, 32, 64])
+@pytest.mark.parametrize('queries', [1, 4])
+@pytest.mark.parametrize('last_batch', [False, True])
+def test_few_queries_with_many_nonempty_batches(ops_gnn, dtype, batches, queries, last_batch):
+    generator = torch.Generator().manual_seed(127)
+    x = torch.randn(batches * 512, 3, generator=generator).to(dtype)
+    batch = batches - 1 if last_batch else 0
+    y = x[batch * 512 + torch.arange(queries) * 7] + x.new_tensor([0.001, 0.003, 0.007])
+    batch_x = torch.arange(batches).repeat_interleave(512)
+    batch_y = torch.full((queries,), batch, dtype=torch.long)
+    expected = golden.knn(x, y, 4, batch_x, batch_y, batch_size=batches)
+    actual = ops_gnn.knn(x.npu(), y.npu(), 4, batch_x.npu(), batch_y.npu(), batch_size=batches)
+    assert_edges(actual, expected, len(x), len(y))
+
+
+@pytest.mark.npu
+@pytest.mark.usefixtures('npu_environment')
+@pytest.mark.parametrize('dtype', DTYPES)
 @pytest.mark.parametrize('seed', [0, 42])
 def test_cpu_oracle_smoke(ops_gnn, dtype, seed):
     x, y = random_inputs((256, 32, 32), dtype, seed)

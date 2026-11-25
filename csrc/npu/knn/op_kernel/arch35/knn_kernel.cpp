@@ -321,12 +321,13 @@ void Knn(
     auto platform = platform_ascendc::PlatformAscendCManager::GetInstance();
     uint32_t cores = platform->GetCoreNumAiv();
     if (cores == 0) cores = 1;
+    const uint32_t tree_cores = cores;
     if (m < static_cast<int64_t>(cores)) cores = static_cast<uint32_t>(m);
     if (!cosine) {
-        KnnCpuOrder::InitTreeKernel<T, DType><<<cores, nullptr, stream>>>(
+        KnnCpuOrder::InitTreeKernel<T, DType><<<tree_cores, nullptr, stream>>>(
             x, ptr_x, tree, bounds, n, f, batches);
-        const uint32_t build_cores = batches < static_cast<int64_t>(cores)
-                                         ? static_cast<uint32_t>(batches) : cores;
+        const uint32_t build_cores = batches < static_cast<int64_t>(tree_cores)
+                                         ? static_cast<uint32_t>(batches) : tree_cores;
         KnnCpuOrder::BuildTreeKernel<T, DType><<<build_cores, nullptr, stream>>>(
             x, ptr_x, tree, bounds, n, f, batches);
     }
