@@ -9,12 +9,14 @@
  */
 
 #pragma once
+
 #include <acl/acl.h>
 #include <cstdint>
 
 namespace opsgnn {
 
-void Ind2Ptr(const int64_t* ind, int64_t* out, int64_t M, int64_t numel,
-                         aclrtStream stream);
+// Same signature as torch.ops.torch_sparse.ind2ptr(ind, M).
+// Launches the architecture-specific kernel on the current NPU stream (async).
+void Ind2Ptr(const int64_t* ind, int64_t* out, int64_t M, int64_t numel, aclrtStream stream);
 
 }  // namespace opsgnn

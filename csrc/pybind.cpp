@@ -34,6 +34,7 @@
 #include "csr_row_wise_sampling_uniform_fused/op_host/csr_row_wise_sampling_uniform_fused.h"
 #include "csr_transpose/op_host/csr_transpose.h"
 #include "disjoint_union_coo/op_host/disjoint_union_coo.h"
+#include "ind2ptr/op_host/ind2ptr.h"
 #include "sddmm_csr/op_host/sddmm_csr.h"
 #include "spmm_max/op_host/spmm_max.h"
 #include "spmm_min/op_host/spmm_min.h"
@@ -345,6 +346,8 @@ void BindArch22(py::module_& m)
                                    std::move(out), dimSize, reduce, false));
           }, py::arg("src"), py::arg("index"), py::arg("out"), py::arg("dim_size"),
           py::arg("reduce"), py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary, ExternalSpmmProofBoundary>());
+    m.def("ind2ptr", &opsgnn::ind2ptr, py::arg("ind"), py::arg("M"),
+          "Convert sorted row indices to CSR row pointer (NPU), same as torch_sparse.ind2ptr");
     BindArch22Sampling(m);
     BindArch22SpmmFamily(m);
     BindCsrRowWiseSampling(m);

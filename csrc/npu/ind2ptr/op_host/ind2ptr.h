@@ -14,7 +14,7 @@
 namespace opsgnn {
 
 // Same signature as torch.ops.torch_sparse.ind2ptr(ind, M).
-// Launches AscendC SIMT kernel on the current NPU stream (async).
+// Launches the architecture-specific kernel on the current NPU stream (async).
 torch::Tensor ind2ptr(torch::Tensor ind, int64_t M);
 
 }  // namespace opsgnn

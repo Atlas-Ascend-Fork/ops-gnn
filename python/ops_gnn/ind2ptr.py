@@ -23,6 +23,26 @@ def _ind2ptr_npu(index: torch.Tensor, size: int) -> torch.Tensor:
     return torch.cat((index.new_zeros(1), counts.cumsum(0)))
 
 
+def _validate_arch22(ind: Tensor, num_rows: int) -> None:
+    if (ind.device.type != 'npu' or ind.layout != torch.strided
+            or ind.dtype != torch.int64):
+        raise RuntimeError('ind2ptr: ind must be a 1-D NPU int64 tensor')
+    if ind.dim() != 1:
+        raise RuntimeError('ind2ptr: ind must be a 1-D NPU int64 tensor')
+    if num_rows < 0:
+        raise RuntimeError('ind2ptr: num_rows must be non-negative')
+    _validate_sorted(ind, num_rows)
+
+
+def _validate_sorted(ind: Tensor, num_rows: int) -> None:
+    with torch.npu.device(ind.device):
+        if ind.numel():
+            invalid = ((ind < 0) | (ind >= num_rows)).any()
+            invalid = invalid | (ind[1:] < ind[:-1]).any()
+            if bool(invalid):
+                raise RuntimeError('ind2ptr: ind must be sorted and in [0, num_rows)')
+
+
 def ind2ptr(ind: Tensor, num_rows: int) -> Tensor:
     """Convert sorted row indices to a CSR row-pointer tensor.
 
@@ -51,22 +71,9 @@ def ind2ptr(ind: Tensor, num_rows: int) -> Tensor:
         >>> ops_gnn.ind2ptr(row, 8)
         tensor([0, 0, 0, 2, 2, 3, 5, 6, 6], device='npu:0')
     """
-    if _pybind.npu_arch != 'dav-2201':
-        if not ind.is_contiguous():
-            ind = ind.contiguous()
-        return _pybind.ind2ptr(ind, int(num_rows))
     num_rows = operator.index(num_rows)
-    if (ind.device.type != 'npu' or ind.layout != torch.strided
-            or ind.dtype != torch.int64):
-        raise RuntimeError('ind2ptr: ind must be a 1-D NPU int64 tensor')
-    if ind.dim() != 1:
-        raise RuntimeError('ind2ptr: ind must be a 1-D NPU int64 tensor')
-    if num_rows < 0:
-        raise RuntimeError('ind2ptr: num_rows must be non-negative')
-    with torch.npu.device(ind.device):
-        if ind.numel():
-            invalid = ((ind < 0) | (ind >= num_rows)).any()
-            invalid = invalid | (ind[1:] < ind[:-1]).any()
-            if bool(invalid):
-                raise RuntimeError('ind2ptr: ind must be sorted and in [0, num_rows)')
-        return _ind2ptr_npu(ind, num_rows)
+    if _pybind.npu_arch == 'dav-2201':
+        _validate_arch22(ind, num_rows)
+    if not ind.is_contiguous():
+        ind = ind.contiguous()
+    return _pybind.ind2ptr(ind, num_rows)

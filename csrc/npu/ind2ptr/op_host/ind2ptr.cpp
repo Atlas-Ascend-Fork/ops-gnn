@@ -9,7 +9,7 @@
  */
 
 #include "ind2ptr/op_host/ind2ptr.h"
-#include "ind2ptr/op_kernel/arch35/ind2ptr.h"
+#include "ind2ptr/op_kernel/common/ind2ptr_launch.h"
 
 #include "torch_npu/csrc/core/npu/NPUGuard.h"
 #include "torch_npu/csrc/core/npu/NPUStream.h"
@@ -21,6 +21,8 @@ torch::Tensor ind2ptr(torch::Tensor ind, int64_t M)
 {
     TORCH_CHECK(ind.dim() == 1, "ind2ptr: ind must be 1-D");
     TORCH_CHECK(ind.scalar_type() == at::kLong, "ind2ptr: ind must be int64 (torch.long)");
+    TORCH_CHECK(ind.device().type() == c10::DeviceType::PrivateUse1,
+                "ind2ptr: ind must be an NPU tensor");
     TORCH_CHECK(M >= 0, "ind2ptr: M must be non-negative");
 
     c10_npu::OptionalNPUGuard device_guard(ind.device());
@@ -39,8 +41,8 @@ torch::Tensor ind2ptr(torch::Tensor ind, int64_t M)
     const int64_t count = indHost.numel();
     for (int64_t i = 0; i < count; ++i) {
         const int64_t value = indValues[i];
-        TORCH_CHECK(value >= 0 && value <= M,
-                    "ind2ptr: ind[", i, "]=", value, " out of range [0, ", M, "]");
+        TORCH_CHECK(value >= 0 && value < M,
+                    "ind2ptr: ind[", i, "]=", value, " out of range [0, ", M, ")");
         TORCH_CHECK(i == 0 || indValues[i - 1] <= value,
                     "ind2ptr: ind must be non-decreasing, ind[", i - 1, "]=", indValues[i - 1],
                     " > ind[", i, "]=", value);

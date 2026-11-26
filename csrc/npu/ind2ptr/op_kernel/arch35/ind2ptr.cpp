@@ -11,7 +11,7 @@
 #include "acl/acl.h"
 #include "kernel_operator.h"
 #include "common/aiv_launch_utils.h"
-#include "ind2ptr/op_kernel/arch35/ind2ptr.h"
+#include "ind2ptr/op_kernel/common/ind2ptr_launch.h"
 
 namespace {
 
