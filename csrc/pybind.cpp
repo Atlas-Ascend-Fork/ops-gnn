@@ -30,6 +30,7 @@
 #include <torch/csrc/autograd/VariableTypeUtils.h>
 #include "common/spmm/host_proof_cache.h"
 #include "coalesce/op_host/coalesce.h"
+#include "csr_row_wise_sampling/op_host/csr_row_wise_sampling.h"
 #include "csr_row_wise_sampling_uniform_fused/op_host/csr_row_wise_sampling_uniform_fused.h"
 #include "csr_transpose/op_host/csr_transpose.h"
 #include "disjoint_union_coo/op_host/disjoint_union_coo.h"
@@ -289,6 +290,16 @@ void BindArch22SpmmFamily(py::module_& m)
           py::call_guard<py::gil_scoped_release>());
 }
 
+void BindCsrRowWiseSampling(py::module_& m)
+{
+    m.def("csr_row_wise_sampling", &opsgnn::CsrRowWiseSampling,
+          py::arg("indptr"), py::arg("indices"), py::arg("rows"),
+          py::arg("num_samples"), py::arg("replace") = false,
+          py::arg("data") = py::none(), py::arg("prob"), py::arg("seed") = 0,
+          "Weighted CSR row-wise sampling on Ascend NPU",
+          py::call_guard<py::gil_scoped_release>());
+}
+
 void BindCoalesce(py::module_& m)
 {
     m.def("coalesce",
@@ -336,6 +347,7 @@ void BindArch22(py::module_& m)
           py::arg("reduce"), py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary, ExternalSpmmProofBoundary>());
     BindArch22Sampling(m);
     BindArch22SpmmFamily(m);
+    BindCsrRowWiseSampling(m);
     BindCoalesce(m);
     RegisterFps(m);
 }

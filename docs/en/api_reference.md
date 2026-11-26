@@ -1695,6 +1695,68 @@ copied = sddmm_csr(ptr, idx, lhs, None, op="copy_lhs", lhs_target="v")
 
 Tests live in `test/sddmm_csr/arch22/`.
 
+### csr_row_wise_sampling — Probability/mask-weighted CSR row sampling
+
+```python
+ops_gnn.csr_row_wise_sampling(
+    indptr, indices, rows, num_samples, prob,
+    replace=False, data=None, seed=None
+) -> (row, col, data)
+```
+
+DGL `CSRRowWiseSampling` parity: sample each seed row's neighbors proportionally
+to `prob`; edges with `prob <= 0` are never picked.
+
+- `prob`: one-dimensional weights/mask with length `indices.numel()`; supports
+  `float32`, `float64` (cast to float32), and `int8`/`uint8` (non-zero -> 1.0).
+- `num_samples`: `-1` selects every edge with `prob > 0` in CSR order, `0`
+  returns an empty result, other values are the fanout. Without replacement the
+  count is `min(fanout, #positive)`; with replacement a non-empty row returns
+  `fanout` edges.
+- `replace` enables replacement; optional `data` is returned when supplied,
+  otherwise global edge ids are returned.
+- Out-of-range seed rows are empty; a fixed `seed` is reproducible.
+- Only arch22 forward is supported; autograd, heterogeneous graphs, and
+  3D/batched inputs are not.
+
+```python
+from ops_gnn import csr_row_wise_sampling
+
+row, col, edge = csr_row_wise_sampling(
+    indptr, indices, seeds, 8, prob, replace=False, seed=42)
+```
+
+Tests live in `test/csr_row_wise_sampling/arch22/`.
+
+### coo_row_wise_per_etype_sampling — Per-edge-type Weighted COO Row Sampling
+
+```python
+ops_gnn.coo_row_wise_per_etype_sampling(
+    row, col, rows, eid2etype_offset, num_samples,
+    prob_or_mask=None, replace=False, data=None, seed=None
+) -> (row, col, data)
+```
+
+DGL ``COORowWisePerEtypeSampling`` parity: ``eid2etype_offset`` delimits each
+edge type's edge-id window; every edge type is converted to a CSR slice and
+sampled with that type's probability/mask array. A ``None`` entry (or
+``prob_or_mask=None``) makes that edge type uniform.
+
+- ``num_samples``: one fanout or one value per edge type (``-1`` all, ``0`` skip).
+- ``data`` is optional (COO data value when supplied, otherwise the global edge
+  id); output is grouped by edge type.
+- Out-of-range seed rows are empty; forward-only on arch22, no autograd,
+  heterogeneous graph or 3D/batched input.
+
+```python
+from ops_gnn import coo_row_wise_per_etype_sampling
+
+out_row, out_col, edge = coo_row_wise_per_etype_sampling(
+    row, col, seeds, eid2etype_offset, [8, 8, 8], prob_or_mask=[p0, None, p2], seed=42)
+```
+
+Tests live in `test/coo_row_wise_per_etype_sampling/arch22/`.
+
 ### csr_row_wise_sampling_uniform_fused — Uniform CSR sampling fused with seed mapping
 
 ```python

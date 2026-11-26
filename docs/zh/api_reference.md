@@ -1569,6 +1569,62 @@ copied = sddmm_csr(ptr, idx, lhs, None, op="copy_lhs", lhs_target="v")
 
 测试位于 `test/sddmm_csr/arch22/`。
 
+### csr_row_wise_sampling — 带概率/掩码的 CSR 行采样
+
+```python
+ops_gnn.csr_row_wise_sampling(
+    indptr, indices, rows, num_samples, prob,
+    replace=False, data=None, seed=None
+) -> (row, col, data)
+```
+
+对应 DGL `CSRRowWiseSampling`：按 `prob` 权重对每个 seed 行的邻居采样，
+`prob <= 0` 的边不会被选中。
+
+- `prob`：长度等于 `indices.numel()` 的一维权重/掩码；支持 `float32`、`float64`
+  （转 float32）、`int8`/`uint8`（非零视为 1.0）。
+- `num_samples`：`-1` 选该行所有 `prob > 0` 的边（CSR 顺序），`0` 空结果，
+  其余为 fanout。不放回时实际条数 `min(fanout, 正权重边数)`；放回时非空行固定
+  `fanout` 条。
+- `replace`：是否允许重复采样；`data` 可选，提供时返回 CSR data 值，否则返回全局边 id。
+- 越界 seed 行按空行处理；`seed` 固定时可复现。
+- 仅 arch22 前向，不支持 autograd、异构图、3D/batched。
+
+```python
+from ops_gnn import csr_row_wise_sampling
+
+row, col, edge = csr_row_wise_sampling(
+    indptr, indices, seeds, 8, prob, replace=False, seed=42)
+```
+
+测试位于 `test/csr_row_wise_sampling/arch22/`。
+
+### coo_row_wise_per_etype_sampling — COO 按边类型加权行采样
+
+```python
+ops_gnn.coo_row_wise_per_etype_sampling(
+    row, col, rows, eid2etype_offset, num_samples,
+    prob_or_mask=None, replace=False, data=None, seed=None
+) -> (row, col, data)
+```
+
+对应 DGL `COORowWisePerEtypeSampling`：`eid2etype_offset` 给出各边类型的边 id
+窗口，每个边类型独立转成 CSR 切片并用该类型的概率/掩码加权采样。`prob_or_mask`
+中 `None`（或整体为 `None`）表示该边类型均匀采样。
+
+- `num_samples`：单个 fanout 或每个边类型一个值（`-1` 全选、`0` 跳过）。
+- `data` 可选：提供时返回 COO data 值，否则返回全局边 id；输出按边类型分组。
+- 越界 seed 行按空行处理；仅 arch22 前向，不支持 autograd、异构图、3D/batched。
+
+```python
+from ops_gnn import coo_row_wise_per_etype_sampling
+
+out_row, out_col, edge = coo_row_wise_per_etype_sampling(
+    row, col, seeds, eid2etype_offset, [8, 8, 8], prob_or_mask=[p0, None, p2], seed=42)
+```
+
+测试位于 `test/coo_row_wise_per_etype_sampling/arch22/`。
+
 ### csr_row_wise_sampling_uniform_fused — 融合 seed 映射的 CSR 行均匀采样
 
 ```python

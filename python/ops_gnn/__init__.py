@@ -42,6 +42,8 @@ except (ImportError, OSError, RuntimeError, ValueError) as exc:
     ) from exc
 
 if _pybind.npu_arch == 'dav-2201':
+    from .csr_row_wise_sampling import csr_row_wise_sampling
+    from .coo_row_wise_per_etype_sampling import coo_row_wise_per_etype_sampling
     from .csr_row_wise_sampling_uniform_fused import csr_row_wise_sampling_uniform_fused
     from .fps import fps
     from .gather_csr import gather_csr
@@ -76,6 +78,8 @@ if _pybind.npu_arch == 'dav-2201':
     from .spmm import spmm
     from .nearest import nearest
     __all__ = [
+        'csr_row_wise_sampling',
+        'coo_row_wise_per_etype_sampling',
         'csr_row_wise_sampling_uniform_fused',
         'fps',
         'gather_csr',
