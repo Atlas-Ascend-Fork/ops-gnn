@@ -1657,6 +1657,50 @@ tiling 缓冲）；kernel 按 AIV 均分边区间，UB 分块后原地加偏移�
 
 测试位于 `test/disjoint_union_coo/arch22/`。
 
+### coalesce — PyG 边去重
+
+```python
+ops_gnn.coalesce(
+    edge_index, edge_attr=None, num_nodes=None,
+    reduce="sum", is_sorted=False, sort_by_row=True
+) -> Tuple[Tensor, OptTensor]
+```
+
+对齐 `torch_geometric.utils.coalesce`：按 `(row, col)`（`sort_by_row=False` 时按
+`(col, row)`）对边排序，合并重复边，并对 `edge_attr` 按 `reduce` 归约。
+
+- `edge_index`：`[2, E]` `int64` NPU 张量；非连续输入会自动连续化。
+- `edge_attr`：可选 `[E, ...]` `float16`/`float32` NPU 张量，首维必须等于边数 `E`；
+  为 `None` 时仅排序去重、返回的 `edge_attr` 为 `None`。
+- `num_nodes`：构造排序键的进制；为 `None` 时按 `max(edge_index)+1` 推导（对齐 PyG
+  `maybe_num_nodes`），并要求 `num_nodes²` 不溢出 `int64`。
+- `reduce`：重复边归约方式，取 `"sum"` / `"mean"` / `"min"` / `"max"`。
+- `is_sorted`：为 `True` 时假定输入已按 `(row, col)` 有序并跳过排序，但仍执行去重与归约。
+- `sort_by_row`：按行优先（`True`）或列优先（`False`）排序。
+- 返回 `(edge_index, edge_attr)`：`edge_index` 为 `[2, U]` 去重且有序的边表，
+  `edge_attr` 为 `[U, ...]` 归约结果（无属性时为 `None`）；`U` 为唯一边数。
+- 仅实现前向；输入张量不会被改写。NPU 上异步执行于当前 stream，读取结果前先
+  `torch.npu.synchronize()`。仅 arch22（A2/A3）提供。
+
+```python
+import torch
+import ops_gnn
+
+edge_index = torch.tensor([[0, 1, 0, 0], [1, 0, 1, 2]], device="npu")
+edge_attr = torch.tensor([1.0, 2.0, 3.0, 4.0], device="npu")
+edge_index, edge_attr = ops_gnn.coalesce(edge_index, edge_attr)
+# edge_index = [[0, 0, 1], [1, 2, 0]]，edge_attr = [4.0, 4.0, 2.0]
+```
+
+实现说明：排序键 `key = row*num_nodes + col` 在 NPU 上构造，使用平台排序原语
+（`torch.sort`）得到有序键与置换；相邻键比较 + `nonzero` 得到每个重复段的起点
+`indptr` 与唯一边数 `U`，再用 `index_select` 取出每条唯一边的首个代表边。自定义
+Ascend C kernel（`csrc/npu/coalesce/op_kernel/arch22/`）按 `indptr` 把排序后
+`edge_attr` 的每个连续段向量归约成一行（`sum`/`mean`/`min`/`max`，fp16 在 fp32
+累加后回写），各 AIV 分担一段连续 segment；无重复输入退化为每段一行的情形。
+
+测试位于 `test/coalesce/arch22/`。
+
 ### grid_cluster — 规则网格聚类
 
 将 `[N,D]` 点坐标映射为规则网格的线性 ID；落在同一网格单元的点得到相同 ID。接口兼容 `torch_cluster.grid_cluster`。

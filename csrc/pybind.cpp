@@ -29,6 +29,7 @@
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/autograd/VariableTypeUtils.h>
 #include "common/spmm/host_proof_cache.h"
+#include "coalesce/op_host/coalesce.h"
 #include "csr_row_wise_sampling_uniform_fused/op_host/csr_row_wise_sampling_uniform_fused.h"
 #include "csr_transpose/op_host/csr_transpose.h"
 #include "disjoint_union_coo/op_host/disjoint_union_coo.h"
@@ -288,6 +289,21 @@ void BindArch22SpmmFamily(py::module_& m)
           py::call_guard<py::gil_scoped_release>());
 }
 
+void BindCoalesce(py::module_& m)
+{
+    m.def("coalesce",
+          [](torch::Tensor edge_index, std::optional<torch::Tensor> edge_attr, std::optional<int64_t> num_nodes,
+             int64_t reduce, bool is_sorted, bool sort_by_row) {
+              auto result = opsgnn::CoalesceForward(std::move(edge_index), std::move(edge_attr), num_nodes, reduce,
+                                                    is_sorted, sort_by_row);
+              py::object attr = std::get<1>(result).defined() ? py::cast(std::get<1>(result)) : py::none();
+              return py::make_tuple(std::get<0>(result), attr);
+          },
+          py::arg("edge_index"), py::arg("edge_attr"), py::arg("num_nodes"), py::arg("reduce"),
+          py::arg("is_sorted"), py::arg("sort_by_row"),
+          "Coalesce (deduplicate and reduce) a COO edge list on Ascend NPU");
+}
+
 void BindArch22(py::module_& m)
 {
     ops_gnn::sparse::spmm_proof_detail::EnsureObserver();
@@ -320,6 +336,7 @@ void BindArch22(py::module_& m)
           py::arg("reduce"), py::call_guard<py::gil_scoped_release, ExternalCsrProofBoundary, ExternalSpmmProofBoundary>());
     BindArch22Sampling(m);
     BindArch22SpmmFamily(m);
+    BindCoalesce(m);
     RegisterFps(m);
 }
 #else

@@ -69,6 +69,7 @@ if _pybind.npu_arch == 'dav-2201':
     from .scatter_log_softmax import scatter_log_softmax
     from .scatter_logsumexp import scatter_logsumexp
     from .disjoint_union_coo import disjoint_union_coo
+    from .coalesce import coalesce
     from .scatter_std import scatter_std
     from .edge_softmax import edge_softmax
     from .sddmm_csr import sddmm_csr
@@ -89,6 +90,7 @@ if _pybind.npu_arch == 'dav-2201':
         'bspmm',
         'sddmm_csr',
         'disjoint_union_coo',
+        'coalesce',
         'nearest',
         'segment_csr', 'segment_sum_csr', 'segment_add_csr',
         'segment_mean_csr', 'segment_min_csr', 'segment_max_csr',

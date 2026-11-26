@@ -1794,6 +1794,59 @@ and which any valid COO satisfies; `int32` needs a single vector `Adds`.
 
 Tests live in `test/disjoint_union_coo/arch22/`.
 
+### coalesce — PyG Edge Coalescing
+
+```python
+ops_gnn.coalesce(
+    edge_index, edge_attr=None, num_nodes=None,
+    reduce="sum", is_sorted=False, sort_by_row=True
+) -> Tuple[Tensor, OptTensor]
+```
+
+Aligned with `torch_geometric.utils.coalesce`: edges are sorted by
+`(row, col)` (or `(col, row)` when `sort_by_row=False`), duplicates are merged,
+and `edge_attr` is reduced per duplicate group.
+
+- `edge_index`: `[2, E]` `int64` NPU tensor; non-contiguous inputs are made
+  contiguous automatically.
+- `edge_attr`: optional `[E, ...]` `float16`/`float32` NPU tensor whose first
+  dimension equals the edge count `E`. When `None`, edges are only sorted and
+  deduplicated and the returned `edge_attr` is `None`.
+- `num_nodes`: radix used to build the sort key. When `None` it is derived from
+  `max(edge_index) + 1` (PyG `maybe_num_nodes`); `num_nodes²` must not overflow
+  `int64`.
+- `reduce`: per-group reduction, one of `"sum"`, `"mean"`, `"min"`, `"max"`.
+- `is_sorted`: when `True`, the input is assumed sorted by `(row, col)` and the
+  sort step is skipped; duplicates are still merged.
+- `sort_by_row`: sort by rows first (`True`) or by columns first (`False`).
+- Returns `(edge_index, edge_attr)`: `edge_index` is the `[2, U]`
+  deduplicated, sorted edge list and `edge_attr` is the `[U, ...]` reduced
+  feature tensor (or `None`). `U` is the number of unique edges.
+- Forward only; inputs are never modified. Executes asynchronously on the
+  current NPU stream; synchronise before reading results. arch22 (A2/A3) only.
+
+```python
+import torch
+import ops_gnn
+
+edge_index = torch.tensor([[0, 1, 0, 0], [1, 0, 1, 2]], device="npu")
+edge_attr = torch.tensor([1.0, 2.0, 3.0, 4.0], device="npu")
+edge_index, edge_attr = ops_gnn.coalesce(edge_index, edge_attr)
+# edge_index = [[0, 0, 1], [1, 2, 0]], edge_attr = [4.0, 4.0, 2.0]
+```
+
+Implementation: the integer key `key = row*num_nodes + col` is built on the NPU
+and sorted with the platform sort primitive (`torch.sort`), producing sorted keys
+and a permutation. Adjacent-key comparison plus `nonzero` yields the start of
+every duplicate group (`indptr`) and the unique count `U`; `index_select` then
+picks the first representative edge of each group. A dedicated Ascend C kernel
+(`csrc/npu/coalesce/op_kernel/arch22/`) folds each contiguous segment of the
+sorted `edge_attr` into one output row (`sum`/`mean`/`min`/`max`; fp16 accumulates
+in fp32 before narrowing), distributing contiguous segment ranges across AIVs.
+A duplicate-free input degenerates to one row per segment.
+
+Tests live in `test/coalesce/arch22/`.
+
 ### grid_cluster — Regular Grid Clustering
 
 Map `[N,D]` point coordinates to linear regular-grid IDs. Points in the same cell receive the same ID. The interface is compatible with `torch_cluster.grid_cluster`.

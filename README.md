@@ -207,6 +207,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `spmm` | CSR copy/binary 消息与 sum/max/min/mean 聚合 | NPU（A2/A3，arch22） | [spmm — 一维与二维 CSR 聚合](docs/zh/api_reference.md#spmm--csr-通用聚合) |
 | `bspmm` | 三维及更高维 CSR copy/binary 消息聚合 | NPU（A2/A3，arch22） | [bspmm — 高维 CSR 聚合](docs/zh/api_reference.md#bspmm--批量-csr-通用聚合) |
 | `sddmm_csr` | CSR 广义 SDDMM | NPU（A2/A3，arch22） | [sddmm_csr — CSR 广义 SDDMM](docs/zh/api_reference.md#sddmm_csr--csr-广义-sddmm) |
+| `coalesce` | PyG 边去重：排序 + 分段归约，对齐 `torch_geometric.utils.coalesce` | NPU（A2/A3，arch22） | [coalesce — PyG 边去重](docs/zh/api_reference.md#coalesce--pyg-边去重) |
 | `csr_row_wise_sampling_uniform_fused` | 融合 seed 映射的 CSR 行均匀采样 | NPU（A2/A3，arch22） | [csr_row_wise_sampling_uniform_fused — 融合 seed 映射的 CSR 行均匀采样](docs/zh/api_reference.md#csr_row_wise_sampling_uniform_fused--融合-seed-映射的-csr-行均匀采样) |
 
 ## 开发指南

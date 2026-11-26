@@ -208,6 +208,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `spmm` | CSR copy/binary messages with sum/max/min/mean aggregation | NPU (A2/A3, arch22) | [spmm — Rank-1 and Rank-2 CSR Aggregation](docs/en/api_reference.md#spmm--general-csr-aggregation) |
 | `bspmm` | Rank-3-and-higher CSR copy/binary message aggregation | NPU (A2/A3, arch22) | [bspmm — Higher-Rank CSR Aggregation](docs/en/api_reference.md#bspmm--general-batched-csr-aggregation) |
 | `sddmm_csr` | Generalized CSR SDDMM | NPU (A2/A3, arch22) | [sddmm_csr — Generalized CSR SDDMM](docs/en/api_reference.md#sddmm_csr--generalized-csr-sddmm) |
+| `coalesce` | PyG edge coalescing: sort + segment reduction, aligned with `torch_geometric.utils.coalesce` | NPU (A2/A3, arch22) | [coalesce — PyG Edge Coalescing](docs/en/api_reference.md#coalesce--pyg-edge-coalescing) |
 | `csr_row_wise_sampling_uniform_fused` | Uniform CSR sampling fused with seed mapping | NPU (A2/A3, arch22) | [csr_row_wise_sampling_uniform_fused — Uniform CSR Sampling Fused with Seed Mapping](docs/en/api_reference.md#csr_row_wise_sampling_uniform_fused--uniform-csr-sampling-fused-with-seed-mapping) |
 
 ## Development Guide
