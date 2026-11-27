@@ -436,6 +436,26 @@ class TestRandomWalk:
         _assert_legal_walk(row, col, result, num_nodes)
 
 
+@pytest.mark.parametrize("row,col,start,nodes,error", [
+    ([-1], [0], [0], None, "non-negative"),
+    ([0], [2], [0], 2, "smaller than num_nodes"),
+    ([0], [0], [2], 2, "start entries"),
+    ([], [], [], None, "num_nodes is required"),
+])
+def test_bounds_validation_for_zero_length_walk(_select_npu_device, row, col, start, nodes, error):
+    inputs = [torch.tensor(values, dtype=torch.long, device="npu") for values in (row, col, start)]
+    with pytest.raises(ValueError, match=error):
+        ops_gnn.random_walk(*inputs, 0, num_nodes=nodes)
+
+
+@pytest.mark.parametrize("nodes", [None, 8])
+def test_inferred_nodes_include_start_and_empty_graph(_select_npu_device, nodes):
+    empty = torch.empty(0, dtype=torch.long, device="npu")
+    start = torch.tensor([2, 7], dtype=torch.long, device="npu")
+    actual = ops_gnn.random_walk(empty, empty, start, 2, num_nodes=nodes)
+    assert torch.equal(actual.cpu(), torch.tensor([[2, 2, 2], [7, 7, 7]]))
+
+
 @pytest.fixture
 def csr_prepare(monkeypatch):
     # The Host-only cache path never calls the compiled random-walk binding.

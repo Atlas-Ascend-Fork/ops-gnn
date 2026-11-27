@@ -37,20 +37,25 @@ def _check_long_vector(name: str, value: Tensor) -> None:
         raise ValueError(f"{name} must be one-dimensional")
 
 
-def _resolve_num_nodes(row: Tensor, col: Tensor, start: Tensor, num_nodes: Optional[int]) -> int:
-    if num_nodes is None:
-        maxima = []
-        for tensor in (row, col, start):
-            if tensor.numel() > 0:
-                maxima.append(int(tensor.max()))
-        if not maxima:
-            raise ValueError("num_nodes is required when row, col and start are empty")
-        return max(maxima) + 1
-    if not isinstance(num_nodes, int) or isinstance(num_nodes, bool):
-        raise TypeError("num_nodes must be an int or None")
-    if num_nodes < 0:
-        raise ValueError("num_nodes must be non-negative")
-    return num_nodes
+def _collect_input_bounds(row: Tensor, col: Tensor, start: Tensor) -> dict:
+    names, extrema = [], []
+    for name, tensor in (("row", row), ("col", col), ("start", start)):
+        if tensor.numel():
+            names.append(name)
+            extrema.append(tensor.min())
+            extrema.append(tensor.max())
+    if not extrema:
+        return {}
+    stats = torch.stack(extrema).cpu().tolist()
+    return dict(zip(names, zip(stats[::2], stats[1::2])))
+
+
+def _resolve_num_nodes(bounds: dict, num_nodes: Optional[int]) -> int:
+    if num_nodes is not None:
+        return num_nodes
+    if not bounds:
+        raise ValueError("num_nodes is required when row, col and start are empty")
+    return max(pair[1] for pair in bounds.values()) + 1
 
 
 def _validate_inputs(
@@ -67,13 +72,20 @@ def _validate_inputs(
     if walk_length < 0:
         raise ValueError("walk_length must be non-negative")
 
-    resolved_nodes = _resolve_num_nodes(row, col, start, num_nodes)
+    if num_nodes is not None:
+        if not isinstance(num_nodes, int) or isinstance(num_nodes, bool):
+            raise TypeError("num_nodes must be an int or None")
+        if num_nodes < 0:
+            raise ValueError("num_nodes must be non-negative")
+
+    bounds = _collect_input_bounds(row, col, start)
+    resolved_nodes = _resolve_num_nodes(bounds, num_nodes)
     if row.numel() > 0:
-        if int(row.min()) < 0 or int(col.min()) < 0:
+        if bounds["row"][0] < 0 or bounds["col"][0] < 0:
             raise ValueError("row and col entries must be non-negative")
-        if int(row.max()) >= resolved_nodes or int(col.max()) >= resolved_nodes:
+        if bounds["row"][1] >= resolved_nodes or bounds["col"][1] >= resolved_nodes:
             raise ValueError("row and col entries must be smaller than num_nodes")
-    if start.numel() > 0 and (int(start.min()) < 0 or int(start.max()) >= resolved_nodes):
+    if start.numel() > 0 and (bounds["start"][0] < 0 or bounds["start"][1] >= resolved_nodes):
         raise ValueError("start entries must satisfy 0 <= start[i] < num_nodes")
     return resolved_nodes
 
