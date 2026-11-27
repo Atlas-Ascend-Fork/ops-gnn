@@ -1588,6 +1588,80 @@ template <typename T, SegmentReduce Reduce> class SegmentCsrArgCarry {
     }
 
   private:
+    __aicore__ inline void UpdateVectorCarry(LocalTensor<float> words, uint32_t valid) {
+        auto value = words.ReinterpretCast<T>();
+        auto wide = words[64];
+        auto repeated = words[128];
+        auto arg = words.ReinterpretCast<int16_t>()[768];
+        auto carry = words[512];
+        auto offsets = words.ReinterpretCast<uint32_t>()[768];
+        auto mask = words.ReinterpretCast<uint8_t>()[4096];
+        auto normalized = words[1088];
+        const uint32_t count = valid * 4;
+        if constexpr (std::is_same<T, half>::value) Cast(wide, value, RoundMode::CAST_NONE, valid);
+        else DataCopy(wide, value, Width);
+        PipeBarrier<PIPE_V>();
+        Gather(repeated, wide, offsets, 0, count);
+        PipeBarrier<PIPE_V>();
+        const float initial = std::is_same<T, half>::value ?
+            (Reduce == SegmentMin ? __builtin_inff() : -__builtin_inff()) :
+            (Reduce == SegmentMin ? 3.402823466e38F : -3.402823466e38F);
+        CompareScalar(mask, repeated, initial, CMPMODE::EQ, count);
+        Cast(normalized, arg, RoundMode::CAST_NONE, count);
+        PipeBarrier<PIPE_V>();
+        Select(normalized, mask, carry, normalized, SELMODE::VSEL_TENSOR_TENSOR_MODE, count);
+        PipeBarrier<PIPE_V>();
+        DataCopy(carry, normalized, Width * 4);
+        Cast(arg, normalized, RoundMode::CAST_RINT, count);
+    }
+
+  public:
+    __aicore__ inline void RunVector(GM_ADDR ptr, GM_ADDR output, GM_ADDR argument,
+                                     const SegmentCsrTilingData &t) {
+        GlobalTensor<T> values;
+        GlobalTensor<int64_t> pointers, arguments;
+        values.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(output), t.outNumel);
+        arguments.SetGlobalBuffer(reinterpret_cast<__gm__ int64_t *>(argument), t.outNumel);
+        pointers.SetGlobalBuffer(reinterpret_cast<__gm__ int64_t *>(ptr), t.indexNumel);
+        TPipe pipe;
+        TBuf<TPosition::VECCALC> storage;
+        pipe.InitBuffer(storage, 8192);
+        auto value = storage.Get<T>();
+        auto arg = storage.Get<float>()[384];
+        auto carry = storage.Get<float>()[512];
+        auto offsets = storage.Get<uint32_t>()[768];
+        auto bounds = storage.Get<int64_t>()[672];
+        for (uint32_t i = 0; i < Width * 4; ++i) offsets.SetValue(i, (i / 4) * sizeof(float));
+        Sync<HardEvent::S_V>();
+        const uint64_t tiles = (t.K + Width - 1) / Width;
+        for (uint64_t tile = GetBlockIdx() * tiles / GetBlockNum();
+             tile < (GetBlockIdx() + 1) * tiles / GetBlockNum(); ++tile) {
+            const uint64_t column = tile * Width;
+            const uint32_t valid = t.K - column < Width ? t.K - column : Width;
+            Duplicate(carry, 0.0F, valid * 4);
+            for (uint64_t task = 0; task < t.totalTasks; ++task) {
+                const uint64_t base = task / t.nSegments * t.indexBatchStride + task % t.nSegments;
+                Sync<HardEvent::S_MTE2>();
+                DataCopyPad(bounds, pointers[base], {1, 16, 0, 0, 0},
+                            DataCopyPadExtParams<int64_t>(false, 0, 0, 0));
+                Sync<HardEvent::MTE2_S>();
+                if (bounds.GetValue(0) == bounds.GetValue(1)) continue;
+                const uint64_t offset = task * t.K + column;
+                Sync<HardEvent::V_MTE2>();
+                DataCopyPad(value, values[offset], {1, valid * static_cast<uint32_t>(sizeof(T)), 0, 0, 0},
+                            DataCopyPadExtParams<T>(false, 0, 0, 0));
+                DataCopyPad(arg.ReinterpretCast<int64_t>(), arguments[offset], {1, valid * 8, 0, 0, 0},
+                            DataCopyPadExtParams<int64_t>(false, 0, 0, 0));
+                Sync<HardEvent::MTE2_V>();
+                UpdateVectorCarry(storage.Get<float>(), valid);
+                Sync<HardEvent::V_MTE3>();
+                DataCopyPad(arguments[offset], arg.ReinterpretCast<int64_t>(), {1, valid * 8, 0, 0, 0});
+                Sync<HardEvent::MTE3_MTE2>();
+            }
+        }
+    }
+
+  private:
     __aicore__ static inline bool IsInitializer(LocalTensor<T> value, uint32_t c) {
         if constexpr (std::is_same<T, float>::value) {
             const auto bits = value.template ReinterpretCast<uint32_t>().GetValue(c);
@@ -1615,6 +1689,12 @@ __global__ __aicore__ void SegmentCsrArgCarryKernel(GM_ADDR ptr, GM_ADDR output,
                                                     SegmentCsrTilingData t) {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     SegmentCsrArgCarry<T, Reduce> op;
+    if constexpr (std::is_same<T, half>::value || std::is_same<T, float>::value) {
+        if (t.K >= kVectorLanes && t.K % kVectorLanes == 0) {
+            op.RunVector(ptr, output, argument, t);
+            return;
+        }
+    }
     op.Run(ptr, output, argument, t);
 }
 } // namespace opsgnn::csr

@@ -98,6 +98,23 @@ def _run(npu_api, src, indptr, reduce="sum", options=None):
     return result
 
 
+@pytest.mark.parametrize("dtype", (torch.float16, torch.float32))
+def test_vector_argument_carry(npu_api, dtype):
+    ptr = torch.tensor([[0, 2, 2, 4, 6, 8]], dtype=torch.int64)
+    for width in (1, 63, 128):
+        for reduce in ("min", "max"):
+            initial = (float("inf") if reduce == "min" else -float("inf")) if dtype == torch.float16 else (
+                torch.finfo(dtype).max if reduce == "min" else torch.finfo(dtype).min)
+            source = torch.full((2, 8, width), initial, dtype=dtype)
+            source[0, 1] = 2
+            source[0, 4:6] = -3
+            source[0, 1, ::2] = initial
+            source[0, 4:6, ::3] = initial
+            source[1, 3] = 1
+            for _ in range(2):
+                _run(npu_api, source, ptr, reduce)
+
+
 def _source(shape, dtype, seed=SEED):
     generator = torch.Generator().manual_seed(seed)
     if dtype.is_floating_point:
