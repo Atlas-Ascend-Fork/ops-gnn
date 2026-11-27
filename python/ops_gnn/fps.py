@@ -98,9 +98,6 @@ def _single_sample_count(num_points: int, ratio: float, src_dtype: torch.dtype) 
 
 
 def _random_start(degree: Tensor) -> Tensor:
-    # torch_cluster 1.6.3 CPU uses libc rand() % degree.  The native helper
-    # intentionally shares that process-global RNG so an explicit libc srand
-    # reset reproduces the same starts in eager and TorchScript execution.
     return torch.ops.ops_gnn.fps_random_start(degree)
 
 
@@ -262,9 +259,8 @@ def fps(
     The public signature follows :func:`torch_cluster.fps`. Sample counts
     follow torch_cluster CPU's stored-ratio dtype and float32 degree product
     before ceil. Distance ties use the first (lowest) index,
-    matching the CPU reference's argmax.  Random starts use the same libc
-    ``rand() % degree`` stream as torch_cluster CPU; reproducible cross-device
-    comparison therefore requires explicitly resetting libc ``srand``.
+    matching the CPU reference's argmax.  Random starts are generated on the
+    device, uniformly over each batch's points; empty batches start at 0.
     """
     if torch.jit.is_scripting():
         if src.dim() < 1:

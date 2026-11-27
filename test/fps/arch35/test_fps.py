@@ -160,15 +160,12 @@ class TestFps:
     @pytest.mark.parametrize("dtype", SUPPORTED_DTYPES)
     def test_random_start(self, dtype):
         src = torch.randn(128, 3).to(dtype)
-        degrees = torch.tensor([src.size(0)], dtype=torch.long)
-        expected_starts = libc_random_starts(degrees, seed=42)
-        reset_libc_seed(42)
         actual = ops_gnn.fps(
             src.npu(), ratio=0.5, random_start=True
         )
         _check(
             actual, src, ratio=0.5, random_start=True,
-            expected_starts=expected_starts,
+            expected_starts=[int(actual[0].cpu())],
         )
 
     @pytest.mark.parametrize("dtype", SUPPORTED_DTYPES)

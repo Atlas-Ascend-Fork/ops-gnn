@@ -12,7 +12,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdlib>
 #include <limits>
 
 #include <c10/core/DeviceGuard.h>
@@ -176,20 +175,10 @@ torch::Tensor fps_random_start(torch::Tensor degree)
     TORCH_CHECK(degree.dim() == 1,
                 "fps: degree must be one-dimensional");
     c10::DeviceGuard guard(degree.device());
-    const torch::Tensor degree_cpu = degree.cpu().contiguous();
-    torch::Tensor start_cpu = torch::empty(
-        {degree.numel()},
-        torch::TensorOptions().dtype(torch::kLong).device(torch::kCPU));
-    const int64_t* degree_data = degree_cpu.data_ptr<int64_t>();
-    int64_t* start_data = start_cpu.data_ptr<int64_t>();
-    for (int64_t batch = 0; batch < degree.numel(); ++batch) {
-        TORCH_CHECK(degree_data[batch] >= 0,
-                    "fps: degree must be non-negative");
-        start_data[batch] = degree_data[batch] == 0
-            ? 0
-            : static_cast<int64_t>(std::rand()) % degree_data[batch];
-    }
-    return start_cpu.to(degree.device());
+    const torch::Tensor uniform = torch::rand(
+        degree.sizes(),
+        torch::TensorOptions().dtype(torch::kFloat).device(degree.device()));
+    return (uniform * degree.to(torch::kFloat)).to(torch::kLong);
 }
 
 torch::Tensor fps_npu_single(torch::Tensor src, int64_t out_size,
