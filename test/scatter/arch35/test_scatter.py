@@ -34,6 +34,42 @@ reduce_selected = _GOLDEN["reduce_selected"]
 scatter_cpu = _GOLDEN["scatter_cpu"]
 
 
+@pytest.mark.parametrize("before,length,groups,dtype,dim,kind,has_out", [
+    (2, 257, 3, torch.float32, 1, "full", False),
+    (3, 4096, 5, torch.float16, -2, "strided", True),
+    (1, 2048, 3, torch.float32, 1, "hot", False),
+    (2, 129, 2, torch.int8, 1, "hot", False),
+    (2, 8, 3, torch.float32, 1, "single", False),
+    (2, 8, 3, torch.float32, 1, "collapsed", False),
+])
+def test_mean_full_dim_index_regressions(before, length, groups, dtype, dim, kind, has_out):
+    source = torch.ones((before, length, 16), dtype=dtype)
+    index = torch.arange(length) % groups
+    if kind == "hot":
+        index.zero_()
+    elif kind == "single":
+        index = torch.zeros(1, dtype=torch.long)
+    elif kind == "collapsed":
+        index = torch.zeros((before, 1), dtype=torch.long)
+    expanded = index.reshape((1, -1, 1) if index.dim() == 1 else (before, 1, 1)).expand_as(source)
+    initial = torch.full((before, groups, 16), 2 if has_out else 0, dtype=dtype)
+    expected = initial.clone().scatter_add_(1, expanded, source)
+    count_shape = (groups,) if index.dim() == 1 else (before, groups)
+    count = torch.zeros(count_shape, dtype=dtype).scatter_add_(
+        index.dim() - 1, index, torch.ones(index.shape, dtype=dtype)).clamp_min_(1)
+    count = count.reshape((1, groups, 1) if index.dim() == 1 else (before, groups, 1))
+    expected = expected / count if dtype.is_floating_point else torch.div(expected, count, rounding_mode="floor")
+    source_npu, index_npu = source.npu(), index.npu()
+    if kind == "strided":
+        backing = torch.empty(2 * length, dtype=torch.long, device="npu")
+        index_npu = backing[::2]
+        index_npu.copy_(index.npu())
+    for _ in range(3):
+        actual = scatter_mean(source_npu, index_npu, dim=dim, dim_size=groups,
+                              out=initial.npu() if has_out else None)
+        torch.testing.assert_close(actual.cpu(), expected, rtol=1e-3, atol=1e-3)
+
+
 DEVICE_ID = int(os.environ.get("NPU_DEVICE_ID", "0"))
 REDUCTIONS = ("sum", "add", "mul", "mean", "min", "max")
 DTYPES = (

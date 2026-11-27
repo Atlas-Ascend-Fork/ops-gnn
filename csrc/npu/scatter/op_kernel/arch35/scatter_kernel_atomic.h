@@ -326,7 +326,8 @@ __attribute__((aiv)) __global__ __aicore__ void scatter_vector_zero_kernel(
             uint32_t length = static_cast<uint32_t>(
                 countElements - offset > countTileElements ?
                     countTileElements : countElements - offset);
-            DataCopy(countGm[offset], zeroCount, length);
+            DataCopyExtParams copyParams{1, length * static_cast<uint32_t>(sizeof(int32_t)), 0, 0, 0};
+            DataCopyPad(countGm[offset], zeroCount, copyParams);
         }
     }
 

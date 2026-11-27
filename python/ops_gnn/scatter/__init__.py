@@ -438,6 +438,8 @@ def _prepare_scatter(
 def _needs_original_mean_count(
     src: torch.Tensor, index: torch.Tensor, dim: int
 ) -> bool:
+    if index.dim() == 1 and index.numel() <= 2048:
+        return index.numel() == 1 and src.size(dim) != 1
     if index.dim() <= dim:
         return True
     return index.size(dim) == 1 and src.size(dim) != 1
