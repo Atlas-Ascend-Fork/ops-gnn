@@ -51,6 +51,14 @@ public:
 
         pipe->InitBuffer(featureBuffer_, tileBytes_);
         pipe->InitBuffer(repeatBuffer_, GATHER_CSR_REPEAT_BUFFER_BYTES);
+        const uint64_t avgSegmentRows = segmentCount_ > 0 ? outputRows_ / segmentCount_ : 0;
+        wordBatchingEnabled_ = featureBytes_ == sizeof(uint32_t) &&
+            (scheduleMode_ == GATHER_CSR_OUTPUT_MAJOR
+                ? jobsPerCore >= 32 : avgSegmentRows >= 32);
+        if (wordBatchingEnabled_) {
+            mte2ToS_ = static_cast<event_t>(pipe->AllocEventID<HardEvent::MTE2_S>());
+            sToV_ = static_cast<event_t>(pipe->AllocEventID<HardEvent::S_V>());
+        }
         mte2ToV_ = static_cast<event_t>(pipe->AllocEventID<HardEvent::MTE2_V>());
         mte2ToMte3_ = static_cast<event_t>(pipe->AllocEventID<HardEvent::MTE2_MTE3>());
         vToMte3_ = static_cast<event_t>(pipe->AllocEventID<HardEvent::V_MTE3>());
@@ -146,7 +154,11 @@ private:
             DataCopyPad(featureLocal, srcGm_[srcBase + featureOffset], copyParams, padParams);
 
             const uint32_t dataBlockBytes = static_cast<uint32_t>(GetDataBlockSizeInBytes());
-            if (copyBytes == featureBytes_ && copyBytes % dataBlockBytes == 0 &&
+            if (wordBatchingEnabled_ && copyBytes == featureBytes_ && rowEnd - rowStart >= 32) {
+                SetFlag<HardEvent::MTE2_S>(mte2ToS_);
+                WaitFlag<HardEvent::MTE2_S>(mte2ToS_);
+                CopyWordRowsBatched(featureLocal, repeatLocal, batchOutBase, rowStart, rowEnd);
+            } else if (copyBytes == featureBytes_ && copyBytes % dataBlockBytes == 0 &&
                 copyBytes <= GATHER_CSR_REPEAT_BUFFER_BYTES) {
                 SetFlag<HardEvent::MTE2_V>(mte2ToV_);
                 WaitFlag<HardEvent::MTE2_V>(mte2ToV_);
@@ -163,6 +175,34 @@ private:
                 SetFlag<HardEvent::MTE3_MTE2>(mte3ToMte2_);
                 WaitFlag<HardEvent::MTE3_MTE2>(mte3ToMte2_);
             }
+        }
+    }
+
+    // A four-byte row is an opaque word: duplicate its bits into a packed
+    // UB block, then write many rows per MTE3 command. No dtype conversion.
+    __aicore__ inline void CopyWordRowsBatched(const LocalTensor<uint8_t>& featureLocal,
+                                               const LocalTensor<uint8_t>& repeatLocal,
+                                               uint64_t batchOutBase,
+                                               int64_t rowStart, int64_t rowEnd)
+    {
+        constexpr uint32_t maxRows = GATHER_CSR_REPEAT_BUFFER_BYTES / sizeof(uint32_t);
+        const uint64_t segmentRows = static_cast<uint64_t>(rowEnd - rowStart);
+        const uint32_t preparedRows = segmentRows < maxRows ? static_cast<uint32_t>(segmentRows) : maxRows;
+        auto featureWords = featureLocal.ReinterpretCast<uint32_t>();
+        auto repeatWords = repeatLocal.ReinterpretCast<uint32_t>();
+        const uint32_t value = featureWords.GetValue(0);
+        SetFlag<HardEvent::S_V>(sToV_);
+        WaitFlag<HardEvent::S_V>(sToV_);
+        Duplicate(repeatWords, value, preparedRows);
+        SetFlag<HardEvent::V_MTE3>(vToMte3_);
+        WaitFlag<HardEvent::V_MTE3>(vToMte3_);
+        int64_t row = rowStart;
+        while (row < rowEnd) {
+            const uint64_t remaining = static_cast<uint64_t>(rowEnd - row);
+            const uint32_t rows = remaining < preparedRows ? static_cast<uint32_t>(remaining) : preparedRows;
+            DataCopyPad(outGm_[batchOutBase + static_cast<uint64_t>(row) * sizeof(uint32_t)],
+                        repeatLocal, DataCopyExtParams{1, rows * static_cast<uint32_t>(sizeof(uint32_t)), 0, 0, 0});
+            row += rows;
         }
     }
 
@@ -215,11 +255,14 @@ private:
         }
     }
 
+    bool wordBatchingEnabled_ = false;
     TBuf<TPosition::VECCALC> featureBuffer_;
     TBuf<TPosition::VECCALC> repeatBuffer_;
     GlobalTensor<uint8_t> srcGm_;
     GlobalTensor<int64_t> indptrGm_;
     GlobalTensor<uint8_t> outGm_;
+    event_t sToV_ = static_cast<event_t>(0);
+    event_t mte2ToS_ = static_cast<event_t>(0);
     event_t mte2ToV_ = static_cast<event_t>(0);
     event_t mte2ToMte3_ = static_cast<event_t>(0);
     event_t vToMte3_ = static_cast<event_t>(0);
