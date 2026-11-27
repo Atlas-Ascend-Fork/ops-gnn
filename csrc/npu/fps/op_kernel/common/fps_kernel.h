@@ -33,6 +33,7 @@ struct FpsLaunchArgs {
     int64_t* best_index;
     int64_t* out;
     int64_t num_points;
+    int64_t max_batch_points;
     int64_t feature_dim;
     int64_t batch_size;
     int64_t single_out_size;

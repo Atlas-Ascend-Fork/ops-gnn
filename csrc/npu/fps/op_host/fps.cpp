@@ -54,7 +54,8 @@ uint32_t AlignUp32(uint64_t value)
     return static_cast<uint32_t>(((value + alignment - 1) / alignment) * alignment);
 }
 
-uint32_t SelectTilePoints(const torch::Tensor& src, uint64_t ub_bytes)
+uint32_t SelectTilePoints(const torch::Tensor& src, uint64_t ub_bytes,
+                          int64_t dispatch_points)
 {
     const uint64_t element_bytes = src.element_size();
     const uint64_t center_bytes = AlignUp32(
@@ -77,7 +78,7 @@ uint32_t SelectTilePoints(const torch::Tensor& src, uint64_t ub_bytes)
     TORCH_CHECK(available_points >= vector_points,
                 "fps: insufficient UB capacity for one vector tile");
     const uint64_t requested = std::min<uint64_t>(
-        FPS_MAX_TILE_POINTS, static_cast<uint64_t>(src.size(0)));
+        FPS_MAX_TILE_POINTS, static_cast<uint64_t>(dispatch_points));
     const uint64_t aligned_requested =
         ((requested + vector_points - 1) / vector_points) * vector_points;
     return static_cast<uint32_t>(
@@ -90,7 +91,8 @@ void Launch(const torch::Tensor& src, const torch::Tensor& src_soa,
             const torch::Tensor& out_ptr, const torch::Tensor& start,
             torch::Tensor& dist, torch::Tensor& best_dist,
             torch::Tensor& best_index, torch::Tensor& out, int64_t batch_size,
-            int64_t single_out_size, int64_t single_start)
+            int64_t single_out_size, int64_t single_start,
+            int64_t dispatch_points)
 {
     FpsLaunchArgs<T> args{};
     const bool batched = ptr.defined();
@@ -103,18 +105,19 @@ void Launch(const torch::Tensor& src, const torch::Tensor& src_soa,
     args.best_index = best_index.data_ptr<int64_t>();
     args.out = out.data_ptr<int64_t>();
     args.num_points = src.size(0);
+    args.max_batch_points = dispatch_points;
     args.feature_dim = src.size(1);
     args.batch_size = batch_size;
     args.single_out_size = single_out_size;
     args.single_start = single_start;
 
     // SIMT 路径直接读取 GM，不使用向量路径的 UB 布局。
-    if (!FpsUsesFallback(DType, args.num_points, args.feature_dim)) {
+    if (!FpsUsesFallback(DType, args.max_batch_points, args.feature_dim)) {
         auto platform = platform_ascendc::PlatformAscendCManager::GetInstance();
         TORCH_CHECK(platform != nullptr, "fps: platform information unavailable");
         uint64_t ub_bytes = 0;
         platform->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ub_bytes);
-        args.tile_points = SelectTilePoints(src, ub_bytes);
+        args.tile_points = SelectTilePoints(src, ub_bytes, dispatch_points);
         args.tile_bytes = AlignUp32(
             static_cast<uint64_t>(args.tile_points) * src.element_size());
         args.promoted_tile_bytes = AlignUp32(
@@ -134,13 +137,14 @@ torch::Tensor AllocateAndLaunch(const torch::Tensor& src,
                                 const torch::Tensor& out_ptr,
                                 const torch::Tensor& start,
                                 int64_t out_size, int64_t batch_size,
-                                int64_t single_start)
+                                int64_t single_start,
+                                int64_t dispatch_points)
 {
     auto long_options = torch::TensorOptions()
                             .dtype(torch::kLong)
                             .device(src.device());
     const int dtype = src.scalar_type() == torch::kFloat ? 0 : 1;
-    const torch::Tensor src_soa = FpsUsesFallback(dtype, src.size(0), src.size(1))
+    const torch::Tensor src_soa = FpsUsesFallback(dtype, dispatch_points, src.size(1))
         ? torch::Tensor() : src.transpose(0, 1).contiguous();
     torch::Tensor dist = torch::empty({src.size(0)}, src.options());
     torch::Tensor best_dist = torch::empty(
@@ -150,11 +154,12 @@ torch::Tensor AllocateAndLaunch(const torch::Tensor& src,
 
     if (src.scalar_type() == torch::kFloat) {
         Launch<float, 0>(src, src_soa, ptr, out_ptr, start, dist, best_dist,
-                         best_index, out, batch_size, out_size, single_start);
+                         best_index, out, batch_size, out_size, single_start,
+                         dispatch_points);
     } else {
         Launch<uint16_t, 1>(src, src_soa, ptr, out_ptr, start, dist,
                             best_dist, best_index, out, batch_size, out_size,
-                            single_start);
+                            single_start, dispatch_points);
     }
     return out;
 }
@@ -205,7 +210,8 @@ torch::Tensor fps_npu_single(torch::Tensor src, int64_t out_size,
                                .device(src.device()));
     }
     return AllocateAndLaunch(src, torch::Tensor(), torch::Tensor(),
-                             torch::Tensor(), out_size, 1, start_index);
+                             torch::Tensor(), out_size, 1, start_index,
+                             num_points);
 }
 
 torch::Tensor fps_npu_batch(torch::Tensor src, torch::Tensor ptr,
@@ -233,6 +239,7 @@ torch::Tensor fps_npu_batch(torch::Tensor src, torch::Tensor ptr,
                 "fps: ptr must start at 0 and end at src.size(0)");
     TORCH_CHECK(out_ptr_data[0] == 0,
                 "fps: out_ptr must start at 0");
+    int64_t max_batch_points = 0;
     for (int64_t batch = 0; batch < batch_size; ++batch) {
         TORCH_CHECK(ptr_data[batch] <= ptr_data[batch + 1],
                     "fps: ptr must be non-decreasing");
@@ -246,10 +253,12 @@ torch::Tensor fps_npu_batch(torch::Tensor src, torch::Tensor ptr,
             TORCH_CHECK(start_data[batch] >= 0 && start_data[batch] < degree,
                         "fps: start index is out of range for batch ", batch);
         }
+        max_batch_points = std::max(max_batch_points, degree);
     }
     const int64_t out_size = out_ptr_data[batch_size];
     if (out_size == 0) {
         return torch::empty({0}, ptr.options());
     }
-    return AllocateAndLaunch(src, ptr, out_ptr, start, out_size, batch_size, 0);
+    return AllocateAndLaunch(src, ptr, out_ptr, start, out_size, batch_size, 0,
+                             max_batch_points);
 }

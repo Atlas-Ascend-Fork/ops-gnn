@@ -386,7 +386,7 @@ void Fps(const T* src, const FpsLaunchArgs<T>& args, aclrtStream stream)
         // retain it for feature dimensions above the performance matrix (the
         // measured cases stop at F=64), where tiny accumulated roundoff can
         // otherwise change a late discrete FPS index.
-        if (FpsUsesFallback(DType, args.num_points, args.feature_dim)) {
+        if (FpsUsesFallback(DType, args.max_batch_points, args.feature_dim)) {
             FpsFallbackKernel<float><<<1, nullptr, stream>>>(
                 reinterpret_cast<const float*>(src), args.ptr, args.out_ptr,
                 args.start, reinterpret_cast<float*>(args.dist),
@@ -404,7 +404,7 @@ void Fps(const T* src, const FpsLaunchArgs<T>& args, aclrtStream stream)
             args.promoted_tile_bytes, args.cascade_tile_bytes,
             args.center_bytes);
     } else {
-        if (FpsUsesFallback(DType, args.num_points, args.feature_dim)) {
+        if (FpsUsesFallback(DType, args.max_batch_points, args.feature_dim)) {
             FpsFallbackKernel<half><<<1, nullptr, stream>>>(
                 reinterpret_cast<const half*>(src), args.ptr, args.out_ptr,
                 args.start, reinterpret_cast<half*>(args.dist),
