@@ -1632,6 +1632,31 @@ row, col, edge = csr_row_wise_sampling(
 
 测试位于 `test/csr_row_wise_sampling/arch22/`。
 
+### coo_row_wise_sampling — COO 概率/掩码加权行采样
+
+```python
+ops_gnn.coo_row_wise_sampling(
+    row, col, rows, num_samples, prob, replace=False, seed=None
+) -> (row, col, data)
+```
+
+对应 DGL `COORowWiseSampling`：把 COO（按行稳定排序、原始边 id 作为 CSR data）
+组装为 CSR 后调用加权 CSR 采样；`prob` 按边 id 索引，`prob <= 0` 的边不选；
+返回的 `data` 为原始 COO 边 id。
+
+- `prob`：float32、float64（转 float32）、int8/uint8（非零 mask）。
+- `num_samples`：`-1` 选全部正权重边、`0` 空结果、其余为 fanout。
+- `replace` 控制是否有放回；`seed` 固定可复现；越界 seed 行按空行处理。
+- 仅 arch22 前向，不支持 autograd、异构图、3D/batched。
+
+```python
+from ops_gnn import coo_row_wise_sampling
+
+out_row, out_col, edge = coo_row_wise_sampling(row, col, seeds, 8, prob, seed=42)
+```
+
+测试位于 `test/coo_row_wise_sampling/arch22/`。
+
 ### coo_row_wise_per_etype_sampling — COO 按边类型加权行采样
 
 ```python

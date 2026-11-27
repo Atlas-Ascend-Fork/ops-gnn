@@ -207,6 +207,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `spmm` | CSR copy/binary 消息与 sum/max/min/mean 聚合 | NPU（A2/A3，arch22） | [spmm — 一维与二维 CSR 聚合](docs/zh/api_reference.md#spmm--csr-通用聚合) |
 | `bspmm` | 三维及更高维 CSR copy/binary 消息聚合 | NPU（A2/A3，arch22） | [bspmm — 高维 CSR 聚合](docs/zh/api_reference.md#bspmm--批量-csr-通用聚合) |
 | `sddmm_csr` | CSR 广义 SDDMM | NPU（A2/A3，arch22） | [sddmm_csr — CSR 广义 SDDMM](docs/zh/api_reference.md#sddmm_csr--csr-广义-sddmm) |
+| `coo_row_wise_sampling` | COO 概率/掩码加权行采样（assembler） | NPU（A2/A3，arch22） | [coo_row_wise_sampling — COO 概率/掩码加权行采样](docs/zh/api_reference.md#coo_row_wise_sampling--coo-概率掩码加权行采样) |
 | `csr_row_wise_sampling_uniform` | CSR 行均匀邻居采样 | NPU（A2/A3，arch22） | [csr_row_wise_sampling_uniform — CSR 行均匀邻居采样](docs/zh/api_reference.md#csr_row_wise_sampling_uniform--csr-行均匀邻居采样) |
 | `coo_row_wise_per_etype_sampling` | COO 按边类型加权行采样（assembler） | NPU（A2/A3，arch22） | [coo_row_wise_per_etype_sampling — COO 按边类型加权行采样](docs/zh/api_reference.md#coo_row_wise_per_etype_sampling--coo-按边类型加权行采样) |
 | `csr_row_wise_sampling` | 带概率/掩码的 CSR 行采样 | NPU（A2/A3，arch22） | [csr_row_wise_sampling — 带概率/掩码的 CSR 行采样](docs/zh/api_reference.md#csr_row_wise_sampling--带概率掩码的-csr-行采样) |

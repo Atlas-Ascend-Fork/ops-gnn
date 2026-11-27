@@ -1765,6 +1765,34 @@ row, col, edge = csr_row_wise_sampling(
 
 Tests live in `test/csr_row_wise_sampling/arch22/`.
 
+### coo_row_wise_sampling — Probability/Mask-Weighted COO Row Sampling
+
+```python
+ops_gnn.coo_row_wise_sampling(
+    row, col, rows, num_samples, prob, replace=False, seed=None
+) -> (row, col, data)
+```
+
+DGL ``COORowWiseSampling`` parity: the COO is assembled into a CSR (stable order
+by row, original edge id carried as CSR data) and sampled with the weighted CSR
+sampler; ``prob`` is indexed by edge id, edges with ``prob <= 0`` are never
+picked, and ``data`` is the original COO edge id.
+
+- ``prob``: float32, float64 (cast to float32) and int8/uint8 (non-zero mask).
+- ``num_samples``: ``-1`` selects every positive edge, ``0`` returns empty,
+  anything else is the fanout.
+- ``replace`` controls duplicates; a fixed ``seed`` is reproducible; out-of-range
+  seed rows are empty.
+- Forward-only on arch22; no autograd, heterogeneous graph or 3D/batched input.
+
+```python
+from ops_gnn import coo_row_wise_sampling
+
+out_row, out_col, edge = coo_row_wise_sampling(row, col, seeds, 8, prob, seed=42)
+```
+
+Tests live in `test/coo_row_wise_sampling/arch22/`.
+
 ### coo_row_wise_per_etype_sampling — Per-edge-type Weighted COO Row Sampling
 
 ```python
