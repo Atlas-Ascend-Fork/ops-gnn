@@ -478,6 +478,82 @@ def test_grid_path_no_internal_format_warning(device):
     assert not internal_warnings
 
 
+@pytest.mark.parametrize("dtype,cap,empty_batches,strided", [
+    (torch.float32, 64, False, False),
+    (torch.float32, 64, True, True),
+    (torch.float16, 1, False, False),
+    (torch.float16, 64, True, False),
+    (torch.bfloat16, 64, True, False),
+])
+def test_batched_device_grid_order(device, dtype, cap, empty_batches, strided):
+    generator = torch.Generator().manual_seed(125)
+    x = (torch.randint(0, 16, (16384, 3), generator=generator) / 16).to(dtype)
+    sizes = [0, 4096, 0, 4096, 8192, 0] if empty_batches else [8192, 8192]
+    bx = torch.repeat_interleave(torch.arange(len(sizes)), torch.tensor(sizes))
+    by = torch.arange(len(sizes)).repeat_interleave(2)
+    y = torch.zeros((by.numel(), 3), dtype=dtype)
+    for q, batch in enumerate(by.tolist()):
+        positions = (bx == batch).nonzero().flatten()
+        if positions.numel():
+            y[q] = x[positions[q % positions.numel()]]
+    full = full_neighbors(x, y, 0.07, False, (bx, by))
+    pairs = [(q, i) for q, neighbors in enumerate(full) for i in neighbors[:cap]]
+    expected = torch.tensor(pairs, dtype=torch.long).t().contiguous()
+    xn, yn = x.to(device), y.to(device)
+    if strided:
+        xb = torch.empty((x.size(0), 6), dtype=dtype, device=device)
+        yb = torch.empty((y.size(0), 6), dtype=dtype, device=device)
+        xb[:, ::2].copy_(xn)
+        yb[:, ::2].copy_(yn)
+        xn, yn = xb[:, ::2], yb[:, ::2]
+    actual = radius(xn, yn, 0.07, batch_x=bx.to(device), batch_y=by.to(device),
+                    max_num_neighbors=cap, batch_size=len(sizes))
+    assert actual.device == xn.device
+    assert torch.equal(actual.cpu(), expected)
+
+
+@pytest.mark.parametrize("n", [16383, 16384, 16385])
+def test_batched_device_grid_dispatch_boundary(device, n):
+    batches, dtype = 32, torch.float32
+    x = torch.zeros((n, 3), dtype=dtype)
+    bx = torch.arange(n) * batches // n
+    by = torch.arange(batches)
+    y = torch.zeros((batches, 3), dtype=dtype)
+    full = full_neighbors(x, y, 0.25, False, (bx, by))
+    expected = torch.tensor([(q, i) for q, ids in enumerate(full) for i in ids[:4]]).t().contiguous()
+    actual = radius(x.to(device), y.to(device), 0.25,
+                    batch_x=bx.to(device), batch_y=by.to(device), max_num_neighbors=4)
+    assert torch.equal(actual.cpu(), expected)
+
+
+def test_batched_device_grid_stream_pipeline(device):
+    stream = torch.npu.Stream()
+    with torch.npu.stream(stream):
+        x = torch.zeros((16384, 3), device=device) + 0.5
+        y = torch.zeros((8, 3), device=device) + 0.5
+        bx = torch.arange(16384, device=device) // 8192
+        by = torch.arange(8, device=device) // 4
+        actual = radius(x, y, 0.25, batch_x=bx, batch_y=by, max_num_neighbors=4) + 7
+    stream.synchronize()
+    expected = torch.stack((torch.arange(8).repeat_interleave(4),
+                            torch.cat((torch.arange(4).repeat(4), (torch.arange(4) + 8192).repeat(4))))) + 7
+    assert torch.equal(actual.cpu(), expected)
+
+
+def test_batched_device_grid_total_cell_limit(device):
+    n, batches = 16384, 128
+    x = torch.zeros((n, 3))
+    x[-1] = 33.
+    bx = torch.arange(n) // 128
+    by = torch.arange(batches)
+    y = torch.zeros((batches, 3))
+    expected = torch.stack((by.repeat_interleave(4),
+                            (by[:, None] * 128 + torch.arange(4)).flatten()))
+    actual = radius(x.to(device), y.to(device), 1., batch_x=bx.to(device),
+                    batch_y=by.to(device), max_num_neighbors=4)
+    assert torch.equal(actual.cpu(), expected)
+
+
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("dimensions", [3, 5])
 @pytest.mark.parametrize("cap", [1, 4, 65])

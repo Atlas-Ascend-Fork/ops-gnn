@@ -277,11 +277,9 @@ GridHostData BuildGrid(const torch::Tensor& x_cpu,
     return out;
 }
 
-// Device-side grid build for the single-batch fast path. Grid construction
-// (min/max, cell assign, sort, index_select) runs entirely on the device,
-// removing the x.cpu() round-trip and CPU-side torch.sort which degrades
-// badly under the cgroup CPU quota at N>=32K. Only used when batch_size == 1.
+// Grid tensors stay on the device; only the coordinate bounds are read back.
 GridHostData BuildGridDevice(const torch::Tensor& x_dev,
+                             const torch::Tensor& ptr_x_dev, int64_t batch_size,
                              double r, int64_t n,
                              int64_t m, int64_t feature_dim,
                              int64_t max_num_neighbors) {
@@ -306,9 +304,19 @@ GridHostData BuildGridDevice(const torch::Tensor& x_dev,
         return out;
     }
 
+    constexpr int64_t kMaxDenseCells = 4 * 1024 * 1024;
+    const int64_t batchDivisor = batch_size > 0 ? batch_size : 1;
+    if (batch_size <= 0 || grid_cell_count > kMaxDenseCells / batchDivisor) {
+        return out;
+    }
+
     auto cell_t = ComputeCellIds(x_f32, min_ptr, cell_size, dims);
 
     auto arange_t = torch::arange(n, torch::TensorOptions().dtype(torch::kLong).device(x_dev.device()));
+    if (batch_size > 1) {
+        auto batch_ids = torch::bucketize(arange_t, ptr_x_dev, false, true) - 1;
+        cell_t = batch_ids * grid_cell_count + cell_t;
+    }
     torch::Tensor keys_t = cell_t * n + arange_t;
     auto sorted_pair = torch::sort(keys_t);
     torch::Tensor orig_idx = std::get<1>(sorted_pair);
@@ -316,7 +324,7 @@ GridHostData BuildGridDevice(const torch::Tensor& x_dev,
     torch::Tensor reordered_idx = orig_idx.clone();
 
     torch::Tensor offsets_tensor =
-        BuildOffsetsDevice(x_dev, cell_t, grid_cell_count);
+        BuildOffsetsDevice(x_dev, cell_t, batch_size * grid_cell_count);
 
     FinalizeGrid(out, grid_cell_count, cell_size, min_ptr, dims,
                  offsets_tensor, reordered_x, reordered_idx);
@@ -525,20 +533,21 @@ BatchContext ResolveBatch(torch::Tensor& x, torch::Tensor& y,
     return ctx;
 }
 
-// Build the spatial grid. The single-batch fast path builds on-device; the
-// batched path builds on CPU with the intra-op thread pool capped to the
-// container's CPU quota (prevents cgroup CFS throttling at N>=32K).
+// Keep small batched inputs on the existing Host path.
 GridHostData BuildGridScoped(const torch::Tensor& x, const BatchContext& ctx,
                              double r, int64_t n, int64_t m, int64_t feature_dim,
                              int64_t max_num_neighbors) {
     int32_t cap = NumThreadsCap();
     NumThreadsGuard thread_guard(cap);
     GridHostData grid;
-    if (ctx.batch_size == 1) {
-        grid = BuildGridDevice(x, r, n, m, feature_dim, max_num_neighbors);
-        aclError sync_ret = aclrtSynchronizeDevice();
-        TORCH_CHECK(sync_ret == ACL_SUCCESS,
-                    "radius_npu: device-grid-build sync failed: ", sync_ret);
+    if (ctx.batch_size == 1 || n >= 16384) {
+        grid = BuildGridDevice(x, ctx.ptr_x_npu, ctx.batch_size, r, n, m,
+                               feature_dim, max_num_neighbors);
+        if (ctx.batch_size == 1) {
+            aclError sync_ret = aclrtSynchronizeDevice();
+            TORCH_CHECK(sync_ret == ACL_SUCCESS,
+                        "radius_npu: device-grid-build sync failed: ", sync_ret);
+        }
     } else {
         torch::Tensor x_cpu = x.cpu().contiguous();
         grid = BuildGrid(x_cpu, ctx.ptr_x_cpu, ctx.batch_size, r, n, m,
@@ -594,10 +603,9 @@ torch::Tensor BuildTilingDevice(const torch::Tensor& x, const BatchContext& ctx,
 }
 
 // Upload the grid metadata (offsets, reordered x/orig idx, config) to device.
-void UploadGrid(const torch::Tensor& x, const BatchContext& ctx,
-                const GridHostData& grid, LaunchBundle& b) {
+void UploadGrid(const torch::Tensor& x, const GridHostData& grid, LaunchBundle& b) {
     b.offsets_npu = grid.cell_offsets.to(x.device());
-    if (ctx.batch_size == 1) {
+    if (grid.reordered_x.device() == x.device()) {
         // Device grid build already produced NPU tensors.
         b.reordered_npu = grid.reordered_x;
         b.orig_npu = grid.reordered_orig_idx;
@@ -653,7 +661,7 @@ LaunchBundle PrepareLaunch(const torch::Tensor& x, const BatchContext& ctx,
     LaunchBundle b;
     AllocateBuffers(x, m, max_num_neighbors, b);
     if (grid.use_grid) {
-        UploadGrid(x, ctx, grid, b);
+        UploadGrid(x, grid, b);
     }
     b.tiling_npu =
         BuildTilingDevice(x, ctx, grid, r, n, m, feature_dim,
