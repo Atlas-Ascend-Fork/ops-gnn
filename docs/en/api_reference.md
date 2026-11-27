@@ -1695,6 +1695,43 @@ copied = sddmm_csr(ptr, idx, lhs, None, op="copy_lhs", lhs_target="v")
 
 Tests live in `test/sddmm_csr/arch22/`.
 
+### csr_row_wise_sampling_uniform — Uniform CSR row-wise neighbor sampling
+
+```python
+ops_gnn.csr_row_wise_sampling_uniform(
+    indptr, indices, rows, num_samples, replace=False, data=None, seed=None
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]
+```
+
+DGL `CSRRowWiseSamplingUniform` parity: for every row in `rows`, sample
+`num_samples` edges uniformly from that CSR row's neighbors.
+
+- `indptr` / `indices` / `rows`: one-dimensional `int32`/`int64` on the same NPU
+  with matching dtype. Out-of-range rows are treated as empty rows.
+- `num_samples`: `-1` selects every edge of the row, `0` returns an empty
+  result, and any other value is the fanout. Without replacement the actual
+  count is `min(fanout, degree)`; with replacement a non-empty row returns
+  exactly `fanout` edges.
+- `replace`: whether repeated picks are allowed.
+- `data`: optional CSR data. When supplied, the returned `data` holds the CSR
+  data value; otherwise it holds the global edge id
+  (`indptr[row] + local_index`).
+- `seed`: RNG seed; `None` generates one. A fixed seed is reproducible.
+
+Returns `(row, col, data, out_ptr)`, all with `indptr`'s dtype and device;
+`out_ptr` has length `rows.numel() + 1` and is the CSR pointer of the result.
+
+```python
+from ops_gnn import csr_row_wise_sampling_uniform
+
+row, col, edge, ptr = csr_row_wise_sampling_uniform(
+    indptr, indices, rows, num_samples=8, replace=False, seed=42)
+```
+
+Only arch22 forward is supported; autograd, heterogeneous graphs, and
+3D/batched inputs are not supported.
+Tests live in `test/csr_row_wise_sampling_uniform/arch22/`.
+
 ### csr_row_wise_sampling — Probability/mask-weighted CSR row sampling
 
 ```python

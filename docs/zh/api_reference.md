@@ -1569,6 +1569,39 @@ copied = sddmm_csr(ptr, idx, lhs, None, op="copy_lhs", lhs_target="v")
 
 测试位于 `test/sddmm_csr/arch22/`。
 
+### csr_row_wise_sampling_uniform — CSR 行均匀邻居采样
+
+```python
+ops_gnn.csr_row_wise_sampling_uniform(
+    indptr, indices, rows, num_samples, replace=False, data=None, seed=None
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]
+```
+
+对应 DGL `CSRRowWiseSamplingUniform`：对 `rows` 指定的每个 CSR 行，从该行的
+邻居中等概率采样 `num_samples` 条边（允许重复时用 `replace=True`）。
+
+- `indptr` / `indices` / `rows`：同一 NPU 上的一维 `int32`/`int64`，三者 dtype 必须一致；
+  `rows` 中的越界行按空行处理（返回 0 条边）。
+- `num_samples`：`-1` 表示选取该行全部边；`0` 返回空结果；其余为 fanout。
+  不放回时实际条数为 `min(fanout, degree)`；放回时非空行固定为 `fanout` 条。
+- `replace`：是否允许重复采样。
+- `data`：可选 CSR data；提供时返回值中的 `data` 为对应 CSR data 值，
+  否则为全局边序号（`indptr[row] + local_index`）。
+- `seed`：随机种子；`None` 时自动生成。固定 `seed` 可复现。
+
+返回 `(row, col, data, out_ptr)`，全部与 `indptr` 同 dtype、同 device；
+`out_ptr` 长度为 `rows.numel() + 1`，是采样结果的 CSR 指针。
+
+```python
+from ops_gnn import csr_row_wise_sampling_uniform
+
+row, col, edge, ptr = csr_row_wise_sampling_uniform(
+    indptr, indices, rows, num_samples=8, replace=False, seed=42)
+```
+
+仅支持 arch22 前向；不支持 autograd、异构图和 3D/batched 输入。
+测试位于 `test/csr_row_wise_sampling_uniform/arch22/`。
+
 ### csr_row_wise_sampling — 带概率/掩码的 CSR 行采样
 
 ```python
