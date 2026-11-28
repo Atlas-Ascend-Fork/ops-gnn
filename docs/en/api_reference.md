@@ -1695,6 +1695,43 @@ copied = sddmm_csr(ptr, idx, lhs, None, op="copy_lhs", lhs_target="v")
 
 Tests live in `test/sddmm_csr/arch22/`.
 
+### csr_row_wise_per_etype_sampling_uniform — Per-edge-type uniform COO sampling
+
+```python
+ops_gnn.csr_row_wise_per_etype_sampling_uniform(
+    row, col, rows, eid2etype_offset, num_samples,
+    replace=False, data=None, seed=None
+) -> (row, col, data)
+```
+
+DGL `CSRRowWisePerEtypeSamplingUniform` parity: COO edges are stored grouped by
+edge type, `eid2etype_offset` gives each edge type's edge-id window, and each
+edge type is sampled independently on its subgraph. Results are concatenated in
+edge-type order (etype-major).
+
+- `eid2etype_offset`: length `num_etypes + 1`, starts at 0, nondecreasing, and
+  ends at `row.numel()`.
+- `num_samples`: a single int shared by all edge types, or a sequence of length
+  `num_etypes`; `-1` selects every edge of the row, `0` skips the edge type, and
+  any other value is the fanout.
+- `replace` enables replacement; optional `data` is returned when supplied,
+  otherwise global edge ids are returned.
+- Out-of-range seed rows are empty; a fixed `seed` is reproducible.
+- Only arch22 forward is supported; autograd, heterogeneous graphs, and
+  3D/batched inputs are not.
+
+Implementation note: the COO→CSR subgraph conversion currently runs on the host
+(DGL's coo2csr cache is not ported); the sampling kernel itself is AscendC.
+
+```python
+from ops_gnn import csr_row_wise_per_etype_sampling_uniform
+
+r, c, e = csr_row_wise_per_etype_sampling_uniform(
+    coo_row, coo_col, seeds, eid2etype_offset, num_samples=[8, 4, -1], seed=42)
+```
+
+Tests live in `test/csr_row_wise_per_etype_sampling_uniform/arch22/`.
+
 ### csr_row_wise_sampling_uniform — Uniform CSR row-wise neighbor sampling
 
 ```python

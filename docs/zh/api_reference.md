@@ -1569,6 +1569,38 @@ copied = sddmm_csr(ptr, idx, lhs, None, op="copy_lhs", lhs_target="v")
 
 测试位于 `test/sddmm_csr/arch22/`。
 
+### csr_row_wise_per_etype_sampling_uniform — 按边类型分组的 COO 行均匀采样
+
+```python
+ops_gnn.csr_row_wise_per_etype_sampling_uniform(
+    row, col, rows, eid2etype_offset, num_samples,
+    replace=False, data=None, seed=None
+) -> (row, col, data)
+```
+
+对应 DGL `CSRRowWisePerEtypeSamplingUniform`：COO 边按边类型连续存放，
+`eid2etype_offset` 给出每个边类型的边 id 区间；对每个边类型分别在其子图上做
+uniform 行采样，最后按边类型顺序（etype-major）拼接返回。
+
+- `eid2etype_offset`：长度 `num_etypes + 1`，从 0 开始、单调不减、最后等于 `row.numel()`。
+- `num_samples`：可为单个 int（所有边类型共用）或长度 `num_etypes` 的序列；
+  `-1` 选该行全部边，`0` 跳过该边类型，其余为 fanout。
+- `replace`：是否允许重复采样；`data` 可选，提供时返回 COO data 值，否则返回全局边 id。
+- 越界 seed 行按空行处理；`seed` 固定时可复现。
+- 仅 arch22 前向，不支持 autograd、异构图、3D/batched。
+
+实现说明：当前 COO→CSR 子图转换在 host 侧完成（未移植 DGL 的 coo2csr 缓存），
+采样内核仍为 AscendC。
+
+```python
+from ops_gnn import csr_row_wise_per_etype_sampling_uniform
+
+r, c, e = csr_row_wise_per_etype_sampling_uniform(
+    coo_row, coo_col, seeds, eid2etype_offset, num_samples=[8, 4, -1], seed=42)
+```
+
+测试位于 `test/csr_row_wise_per_etype_sampling_uniform/arch22/`。
+
 ### csr_row_wise_sampling_uniform — CSR 行均匀邻居采样
 
 ```python

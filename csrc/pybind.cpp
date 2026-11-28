@@ -31,6 +31,7 @@
 #include "common/spmm/host_proof_cache.h"
 #include "coalesce/op_host/coalesce.h"
 #include "csr_row_wise_sampling/op_host/csr_row_wise_sampling.h"
+#include "csr_row_wise_per_etype_sampling_uniform/op_host/csr_row_wise_per_etype_sampling_uniform.h"
 #include "csr_row_wise_sampling_uniform_fused/op_host/csr_row_wise_sampling_uniform_fused.h"
 #include "csr_transpose/op_host/csr_transpose.h"
 #include "disjoint_union_coo/op_host/disjoint_union_coo.h"
@@ -311,6 +312,18 @@ void BindCsrRowWiseSampling(py::module_& m)
           py::call_guard<py::gil_scoped_release>());
 }
 
+void BindPerEtypeUniformSampling(py::module_& m)
+{
+    m.def("csr_row_wise_per_etype_sampling_uniform",
+          &opsgnn::CsrRowWisePerEtypeSamplingUniform,
+          py::arg("row"), py::arg("col"), py::arg("rows"),
+          py::arg("eid2etype_offset"), py::arg("num_samples"),
+          py::arg("replace") = false, py::arg("data") = py::none(),
+          py::arg("seed") = 0,
+          "Per-edge-type uniform COO row-wise sampling on Ascend NPU",
+          py::call_guard<py::gil_scoped_release>());
+}
+
 void BindCoalesce(py::module_& m)
 {
     m.def("coalesce",
@@ -361,6 +374,7 @@ void BindArch22(py::module_& m)
     BindArch22Sampling(m);
     BindArch22SpmmFamily(m);
     BindCsrRowWiseSampling(m);
+    BindPerEtypeUniformSampling(m);
     BindCoalesce(m);
     RegisterSpspmm(m);
     RegisterFps(m);
