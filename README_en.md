@@ -214,6 +214,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `csr_row_wise_sampling` | Probability/mask-weighted CSR row sampling | NPU (A2/A3, arch22) | [csr_row_wise_sampling — Probability/Mask-Weighted CSR Row Sampling](docs/en/api_reference.md#csr_row_wise_sampling--probabilitymask-weighted-csr-row-sampling) |
 | `coalesce` | PyG edge coalescing: sort + segment reduction, aligned with `torch_geometric.utils.coalesce` | NPU (A2/A3, arch22) | [coalesce — PyG Edge Coalescing](docs/en/api_reference.md#coalesce--pyg-edge-coalescing) |
 | `csr_row_wise_sampling_uniform_fused` | Uniform CSR sampling fused with seed mapping | NPU (A2/A3, arch22) | [csr_row_wise_sampling_uniform_fused — Uniform CSR Sampling Fused with Seed Mapping](docs/en/api_reference.md#csr_row_wise_sampling_uniform_fused--uniform-csr-sampling-fused-with-seed-mapping) |
+| `spspmm` | Sparse x sparse matmul aligned with `torch_sparse.spspmm`, row-major coalesced COO output | NPU (950 / A2 / A3) | [spspmm — Sparse x Sparse Matmul](docs/en/api_reference.md#spspmm--sparse-x-sparse-matmul) |
 
 ## Development Guide
 

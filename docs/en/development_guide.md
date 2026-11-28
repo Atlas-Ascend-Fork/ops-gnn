@@ -472,6 +472,69 @@ SpMM; initial topology conversion is outside this average.
 Task acceptance inputs, ATK and profiler tools are in a separate PR validation
 attachment.
 
+### spspmm
+
+See the [API reference](api_reference.md#spspmm--sparse-x-sparse-matmul) for
+constraints and examples.
+
+#### File responsibilities
+
+| File | Responsibility |
+| --- | --- |
+| `python/ops_gnn/spspmm.py` | Public API, COO validation, sort-and-merge pass for `coalesced=False` |
+| `csrc/npu/spspmm/op_host/spspmm.cpp` | ATen API, int64-to-int32 narrowing, buffer allocation, `nnz(C)` readback and the five-stage dispatch on the current NPU stream |
+| `csrc/npu/spspmm/op_kernel/common/spspmm_common.h` | Declarations shared by both architectures: scan chunk, candidate-slot limit, error-flag width and `SpspmmShape` |
+| `csrc/npu/spspmm/op_kernel/arch35/spspmm.cpp` | 950 device entry points and `<<<>>>` launches |
+| `csrc/npu/spspmm/op_kernel/arch35/spspmm_kernel.h` | arch35 SIMT kernels: coordinate narrowing and validation, histogram, three-pass prefix sum, candidate-product count, ordered merge and COO compaction |
+| `csrc/npu/spspmm/op_kernel/arch35/spspmm_tiling.h` | Thread count, merge sentinel and other arch35 constants |
+| `csrc/npu/spspmm/op_kernel/arch22/spspmm.cpp` / `spspmm_kernel.h` | arch22 classic AscendC kernels: per-block histogram, tiled three-pass prefix sum, per-row ordered merge (UB cursors with a global-cursor fallback) and compaction |
+| `csrc/pybind.cpp` | `spspmm` binding, registered in both architecture branches |
+
+The kernels are organised as `count -> compute -> compact`: a row histogram plus a
+prefix sum build the CSR row pointers; every row counts its `sum nnzB(k)`
+candidate upper bound, which is prefix summed; one execution unit per row (a block
+on arch22, a thread on arch35) then merges the touched B rows with cursors,
+accumulating products in ascending column order; the
+unique counts are prefix summed once more, `nnz(C)` is read back, and the
+candidates are compacted into the COO output. arch35 uses SIMT threads and device
+atomics for the histogram; arch22 uses scalar `GetValue`/`SetValue` access with
+`DataCopyPad` stores and aligns the blocks that neighbouring AIVs could share. The
+column merge uses neither atomics nor shared memory on either architecture, so
+both the structure and the values are deterministic.
+
+#### Build and dependencies
+
+Ascend 950 (`dav-3510`) uses CANN 9.1.0 and A2/A3 (`dav-2201`) uses CANN 9.2.x;
+both need matching PyTorch/torch_npu and no further third-party dependencies.
+From the repository root, for the target platform:
+
+```bash
+source /usr/local/Ascend/cann/set_env.sh
+# Ascend 950 (arch35)
+CANN_TARGET=950 NPU_ARCH=dav-3510 MAX_JOBS=2 python -m pip install --no-build-isolation --no-deps -e .
+# A2/A3 (arch22)
+CANN_TARGET=a2 NPU_ARCH=dav-2201 MAX_JOBS=2 python -m pip install --no-build-isolation --no-deps -e .
+```
+
+The new operator directory is collected by the repository CMake architecture
+scan, so `CMakeLists.txt` needs no change.
+
+#### Tests and benchmarks
+
+```bash
+python -m pytest -q test/spspmm/arch35/test_spspmm.py
+python test/spspmm/arch35/benchmark_spspmm.py --iter 20
+python -m pytest -q test/spspmm/arch22/test_spspmm.py
+python test/spspmm/arch22/benchmark_spspmm.py --iter 20
+```
+
+The test directory holds the benchmark, the golden and the functional test only.
+The golden accumulates in float64 on the CPU and the cases cover random shapes,
+empty operands, `k == 1`, self loops, duplicate coordinates, cancelling weights,
+a hub row, more rows than one prefix-sum chunk, the `coalesced=True` validation
+and argument guards. The benchmark reports the native path on coalesced inputs
+and the default merge path separately, each as the median of three rounds.
+
 ## More Resources
 
 - **[Back to README](../../README_en.md)**

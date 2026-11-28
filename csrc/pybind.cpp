@@ -39,6 +39,7 @@
 #include "spmm_max/op_host/spmm_max.h"
 #include "spmm_min/op_host/spmm_min.h"
 #include "spmm_sum/op_host/spmm_sum.h"
+#include "spspmm/op_host/spspmm.h"
 #include "unified_spmm/op_host/unified_spmm.h"
 #else
 #include "gather_coo/op_host/gather_coo.h"
@@ -50,6 +51,7 @@
 #include "ind2ptr/op_host/ind2ptr.h"
 #include "matrix_exp/op_host/matrix_exp.h"
 #include "ptr2ind/op_host/ptr2ind.h"
+#include "spspmm/op_host/spspmm.h"
 #include "torch_sparse_spmm/op_host/torch_sparse_spmm.h"
 #include "non_diag_mask/op_host/non_diag_mask.h"
 #include "torch_sparse_random_walk/op_host/torch_sparse_random_walk.h"
@@ -256,6 +258,14 @@ void BindSegmentLogSumExp(py::module_& m)
           py::call_guard<py::gil_scoped_release>());
 }
 
+// One Host pipeline serves both architectures, so the binding is shared.
+void RegisterSpspmm(py::module_& m)
+{
+    m.def("spspmm", &opsgnn::SpspmmForward, py::arg("index_a"), py::arg("value_a"),
+          py::arg("index_b"), py::arg("value_b"), py::arg("m"), py::arg("k"), py::arg("n"),
+          "Sparse x sparse matmul forward (row-major coalesced COO result)");
+}
+
 #ifdef OPSGNN_DAV_2201
 void BindArch22Sampling(py::module_& m)
 {
@@ -352,6 +362,7 @@ void BindArch22(py::module_& m)
     BindArch22SpmmFamily(m);
     BindCsrRowWiseSampling(m);
     BindCoalesce(m);
+    RegisterSpspmm(m);
     RegisterFps(m);
 }
 #else
@@ -382,36 +393,14 @@ void BindMatrixExp(py::module_& m)
         "Matrix exponential on NPU, aligned with torch.linalg.matrix_exp");
 }
 
-void BindArch35(py::module_& m)
+void BindArch35Gather(py::module_& m)
 {
-    m.attr("npu_arch") = "dav-3510";
-    BindSegmentLogSumExp(m);
-    m.def("grid_cluster", &opsgnn::grid_cluster_npu,
-          py::arg("pos"), py::arg("size"), py::arg("start") = py::none(),
-          py::arg("end") = py::none(), "Regular grid clustering on NPU");
-    BindTorchSparseSpmm(m);
-    BindSegmentCoo(m);
-    m.def("random_walk", &opsgnn::random_walk_npu,
-          py::arg("rowptr"), py::arg("col"), py::arg("start"), py::arg("walk_length"),
-          py::arg("p") = 1.0, py::arg("q") = 1.0, py::arg("return_edge_indices") = false,
-          py::arg("neighbors_sorted") = true,
-          "Random walk on a CSR graph (NPU)");
     m.def("gather_csr", &opsgnn::gather_csr, py::arg("src"), py::arg("indptr"),
           py::arg("out") = py::none(), "Gather CSR (NPU)");
     m.def("segment_max_csr", &opsgnn::segment_max_csr, py::arg("src"), py::arg("indptr"),
           py::arg("optional_out") = torch::Tensor(), "Segment max csr(NPU)");
     BindMatrixExp(m);
     RegisterFps(m);
-    m.def("radius", &opsgnn::radius_npu, py::arg("x"), py::arg("y"),
-          py::arg("ptr_x") = py::none(), py::arg("ptr_y") = py::none(),
-          py::arg("r"), py::arg("max_num_neighbors"),
-          py::arg("num_workers"), py::arg("ignore_same_index") = false,
-          py::arg("stream_handle") = 0,
-          "Radius neighbor search on NPU");
-    RegisterKnn(m);
-    m.def("graclus_cluster_npu", &opsgnn::graclus_cluster_npu, py::arg("rowptr"), py::arg("col"),
-          py::arg("weight"), py::arg("node_perm"), py::arg("num_nodes"), py::arg("has_weight"),
-          py::arg("weight_mode"), "Graclus greedy clustering core(NPU)");
     m.def("ind2ptr", &opsgnn::ind2ptr, py::arg("ind"), py::arg("M"),
           "Convert sorted row indices to CSR row pointer (NPU), same as torch_sparse.ind2ptr");
     m.def("ptr2ind", &opsgnn::ptr2ind, py::arg("ptr"), py::arg("E"),
@@ -432,6 +421,41 @@ void BindArch35(py::module_& m)
     m.def("scatter_forward", &opsgnn::scatter_forward, py::arg("src"), py::arg("index"),
           py::arg("dim"), py::arg("out"), py::arg("reduce"), py::arg("has_out"),
           py::arg("hot_target") = -1, "torch_scatter-compatible forward reduction(NPU)");
+}
+
+
+void BindArch35NeighborSearch(py::module_& m)
+{
+    m.def("random_walk", &opsgnn::random_walk_npu,
+          py::arg("rowptr"), py::arg("col"), py::arg("start"), py::arg("walk_length"),
+          py::arg("p") = 1.0, py::arg("q") = 1.0, py::arg("return_edge_indices") = false,
+          py::arg("neighbors_sorted") = true,
+          "Random walk on a CSR graph (NPU)");
+    m.def("radius", &opsgnn::radius_npu, py::arg("x"), py::arg("y"),
+          py::arg("ptr_x") = py::none(), py::arg("ptr_y") = py::none(),
+          py::arg("r"), py::arg("max_num_neighbors"),
+          py::arg("num_workers"), py::arg("ignore_same_index") = false,
+          py::arg("stream_handle") = 0,
+          "Radius neighbor search on NPU");
+    RegisterKnn(m);
+    m.def("graclus_cluster_npu", &opsgnn::graclus_cluster_npu, py::arg("rowptr"), py::arg("col"),
+          py::arg("weight"), py::arg("node_perm"), py::arg("num_nodes"), py::arg("has_weight"),
+          py::arg("weight_mode"), "Graclus greedy clustering core(NPU)");
+}
+
+
+void BindArch35(py::module_& m)
+{
+    m.attr("npu_arch") = "dav-3510";
+    BindSegmentLogSumExp(m);
+    m.def("grid_cluster", &opsgnn::grid_cluster_npu,
+          py::arg("pos"), py::arg("size"), py::arg("start") = py::none(),
+          py::arg("end") = py::none(), "Regular grid clustering on NPU");
+    BindTorchSparseSpmm(m);
+    RegisterSpspmm(m);
+    BindSegmentCoo(m);
+    BindArch35Gather(m);
+    BindArch35NeighborSearch(m);
 }
 #endif
 

@@ -213,6 +213,7 @@ print(result.shape)  # torch.Size([4, 6, 64])
 | `csr_row_wise_sampling` | 带概率/掩码的 CSR 行采样 | NPU（A2/A3，arch22） | [csr_row_wise_sampling — 带概率/掩码的 CSR 行采样](docs/zh/api_reference.md#csr_row_wise_sampling--带概率掩码的-csr-行采样) |
 | `coalesce` | PyG 边去重：排序 + 分段归约，对齐 `torch_geometric.utils.coalesce` | NPU（A2/A3，arch22） | [coalesce — PyG 边去重](docs/zh/api_reference.md#coalesce--pyg-边去重) |
 | `csr_row_wise_sampling_uniform_fused` | 融合 seed 映射的 CSR 行均匀采样 | NPU（A2/A3，arch22） | [csr_row_wise_sampling_uniform_fused — 融合 seed 映射的 CSR 行均匀采样](docs/zh/api_reference.md#csr_row_wise_sampling_uniform_fused--融合-seed-映射的-csr-行均匀采样) |
+| `spspmm` | 稀疏×稀疏矩阵乘（对齐 `torch_sparse.spspmm`），输出行主序合并 COO | NPU（950 / A2 / A3） | [spspmm — 稀疏×稀疏矩阵乘](docs/zh/api_reference.md#spspmm--稀疏稀疏矩阵乘) |
 
 ## 开发指南
 

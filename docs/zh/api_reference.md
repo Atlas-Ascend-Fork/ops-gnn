@@ -1917,6 +1917,72 @@ with torch.no_grad():
 - `clear_validation_cache()` 清理缓存，`validation_cache_info()` 返回只读统计。
   `coo_to_csr` 用于独立转换计时，输入必须符合其文档约束。
 
+### spspmm — 稀疏×稀疏矩阵乘
+
+为 `torch_sparse.spspmm` 提供原生实现：两个 COO 稀疏矩阵相乘，返回合并（coalesced）后的
+COO 结果。Ascend 950（arch35）使用 SIMT 内核，A2/A3（arch22）使用经典 AscendC 内核，
+两者的接口、语义与输出布局完全一致。
+
+#### 接口
+
+```python
+def spspmm(
+    index_a: Tensor, value_a: Tensor,
+    index_b: Tensor, value_b: Tensor,
+    m: int, k: int, n: int,
+    coalesced: bool = False,
+) -> tuple[Tensor, Tensor]
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `index_a` / `index_b` | `[2, nnz]` 的 int64 COO 坐标，分别为 `(m, k)` 与 `(k, n)` 矩阵 |
+| `value_a` / `value_b` | 一维边权，长度等于各自 `nnz`，dtype 须一致，支持 FP32/FP16 |
+| `m` / `k` / `n` | 乘积形状：`m` 行、共享内维 `k`、`n` 列，均为非负整数 |
+| `coalesced` | 为 `True` 时表示输入已按行主序排列且坐标唯一，跳过合并阶段 |
+
+返回 `(index_c, value_c)`：`index_c` 是 `[2, nnzC]` 的 int64 坐标，`value_c` 是 `nnzC`
+个与输入同 dtype 的边权，均位于输入所在的 NPU 上。
+
+参数名按仓库的 snake_case 风格书写，位置顺序与 `torch_sparse.spspmm` 一致，按位置传参的
+既有代码可以直接替换模块名使用。
+
+#### 语义与限制
+
+- 输出为行主序：行号升序，行内列号严格升序且不重复；同一坐标的多个乘积按和累加。
+- 结构零保留：若某坐标的乘积抵消为零，该坐标仍出现在输出中，`value_c` 为 0。
+- 默认 `coalesced=False` 会在设备上先对两个输入排序并合并重复坐标；`coalesced=True`
+  时由设备校验行号升序、行内列号严格升序，不满足则报错而不是静默给出错误结果。
+- `k == 0` 或 `n == 0` 且输入含边属于非法输入；`nnzA == 0`、`nnzB == 0` 或
+  `n == 0` 时返回空结果。
+- 乘积数与数据相关，内核先按行统计候选乘积上界再做候选区压缩；候选区超过
+  `2^30` 个槽位时显式报错，不进入分配器。
+- arch22 的逐行归并优先把 cursors 放在 UB；A 行超过 8192 项时由单个 block 使用
+  设备 cursors 完成该行，因此不限制单行规模。
+- 输出长度 `nnz(C)` 与数据相关，Host 需从设备回读若干标量（输入校验标志、候选区槽位数、
+  `nnz(C)`），每次回读都会同步当前 NPU stream。
+- 当前仅前向，不提供 autograd；输入带 `requires_grad` 时显式报错，避免静默丢梯度。
+
+#### 使用
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+torch.npu.set_device(0)
+index_a = torch.tensor([[0, 0, 1], [0, 1, 0]], device="npu", dtype=torch.int64)
+value_a = torch.tensor([1.0, 2.0, 3.0], device="npu")
+index_b = torch.tensor([[0, 1, 1], [0, 0, 1]], device="npu", dtype=torch.int64)
+value_b = torch.tensor([4.0, 5.0, 6.0], device="npu")
+
+index_c, value_c = ops_gnn.spspmm(index_a, value_a, index_b, value_b, 2, 2, 2)
+```
+
+测试与 benchmark 见 [开发指南](development_guide.md#spspmm)。
+
+---
+
 ### knn / knn_graph — 精确近邻搜索
 
 本算子在 Ascend C SIMT 中执行精确候选点扫描与 Top-K，提供

@@ -78,6 +78,7 @@ if _pybind.npu_arch == 'dav-2201':
     from .edge_softmax import edge_softmax
     from .sddmm_csr import sddmm_csr
     from .spmm import spmm
+    from .spspmm import spspmm
     from .nearest import nearest
     __all__ = [
         'csr_row_wise_sampling_uniform',
@@ -95,6 +96,7 @@ if _pybind.npu_arch == 'dav-2201':
         'native_available', 'scatter', 'scatter_sum', 'scatter_add',
         'scatter_mul', 'scatter_mean', 'scatter_min', 'scatter_max',
         'spmm',
+        'spspmm',
         'bspmm',
         'sddmm_csr',
         'disjoint_union_coo',
@@ -141,6 +143,7 @@ else:
     from .matrix_exp import matrix_exp
     from .ptr2ind import ptr2ind
     from .sort_edge_index import sort_edge_index
+    from .spspmm import spspmm
     from .random_walk import random_walk
     from .scatter import (
         native_available,
@@ -204,6 +207,7 @@ else:
         'matrix_exp',
         'ptr2ind',
         'sort_edge_index',
+        'spspmm',
         'radius',
         'radius_graph',
         'knn',

@@ -461,6 +461,60 @@ benchmark 在脚本内生成输入，报告同步后的平均调用耗时（毫�
 COO 测量预热后的调用，包含边权重排和 SpMM；首次转换不计入该平均值。
 任务验收用例、ATK 和 profiler 工具保存在 PR 的独立验证附件中。
 
+### spspmm
+
+接口约束和示例见 [API 文档](api_reference.md#spspmm--稀疏稀疏矩阵乘)。
+
+#### 文件职责
+
+| 文件 | 职责 |
+| --- | --- |
+| `python/ops_gnn/spspmm.py` | 公共接口、COO 参数校验、`coalesced=False` 时的排序合并 |
+| `csrc/npu/spspmm/op_host/spspmm.cpp` | ATen 接口、int64→int32 收窄、缓冲区分配、`nnz(C)` 回读与当前 NPU stream 上的五段调度 |
+| `csrc/npu/spspmm/op_kernel/common/spspmm_common.h` | 两架构共享的接口声明、扫描分块、候选槽位上限、错误标志宽度与 `SpspmmShape` |
+| `csrc/npu/spspmm/op_kernel/arch35/spspmm.cpp` | 950 设备入口与 `<<<>>>` 启动（行直方图、前缀和、逐行归并、压缩） |
+| `csrc/npu/spspmm/op_kernel/arch35/spspmm_kernel.h` | arch35 SIMT 内核：坐标收窄与校验、直方图、三遍前缀和、候选乘积计数、有序归并与 COO 压缩 |
+| `csrc/npu/spspmm/op_kernel/arch35/spspmm_tiling.h` | 线程数与归并哨兵等 arch35 常量 |
+| `csrc/npu/spspmm/op_kernel/arch22/spspmm.cpp` / `spspmm_kernel.h` | arch22 经典 AscendC 内核与启动：逐 block 直方图、分块三遍前缀和、逐行有序归并（UB cursors，超长行回落设备 cursors）与压缩 |
+| `csrc/pybind.cpp` | `spspmm` 绑定，arch22 与 arch35 两个分支都注册 |
+
+内核按 `count → 计算 → 压缩` 组织：行直方图加前缀和得到 CSR 行指针；逐行统计
+`Σ nnzB(k)` 候选上界并前缀和；每行由一个执行单元（arch22 为 block，arch35 为线程）
+用 cursors 做 k 路有序归并，按列升序累加得到唯一列；最后按唯一计数做前缀和，
+回读 `nnz(C)` 后分配输出并压缩。
+arch35 用 SIMT 线程、直方图阶段用设备原子加计数；arch22 以 `GetValue`/`SetValue` 标量
+访问配合 `DataCopyPad` 写出，并对相邻 block 可能共享的 32 字节块做对齐处理。两个架构的
+列合并阶段都不使用原子或共享内存，结构与数值均确定。
+
+#### 构建与依赖
+
+950 使用 CANN 9.1.0，A2/A3 使用 CANN 9.2.x，均只需匹配的 PyTorch/torch_npu，无额外第三方依赖。
+在 ops-gnn 仓库根目录按目标平台执行：
+
+```bash
+source /usr/local/Ascend/cann/set_env.sh
+# Ascend 950（arch35）
+CANN_TARGET=950 NPU_ARCH=dav-3510 MAX_JOBS=2 python -m pip install --no-build-isolation --no-deps -e .
+# A2/A3（arch22）
+CANN_TARGET=a2 NPU_ARCH=dav-2201 MAX_JOBS=2 python -m pip install --no-build-isolation --no-deps -e .
+```
+
+新增算子目录由仓库 CMake 的架构目录扫描自动收集，无需修改 `CMakeLists.txt`。
+
+#### 测试与性能测试
+
+```bash
+python -m pytest -q test/spspmm/arch35/test_spspmm.py
+python test/spspmm/arch35/benchmark_spspmm.py --iter 20
+python -m pytest -q test/spspmm/arch22/test_spspmm.py
+python test/spspmm/arch22/benchmark_spspmm.py --iter 20
+```
+
+测试目录仅包含 benchmark、golden 和功能测试三个文件。golden 用 float64 在 CPU 上
+独立累加，覆盖随机形状、空输入、`k == 1`、自环、重复坐标、零值抵消、hub 行、
+超过一个前缀和分块的行数、`coalesced=True` 校验和非法输入防护。benchmark 分别测量
+已合并输入的原生内核路径与默认合入路径，每项为三轮中位数。
+
 ## 七、更多资源
 
 - **[返回 README](../../README.md)**

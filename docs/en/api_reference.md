@@ -2082,6 +2082,63 @@ with torch.no_grad():
   validation_cache_info returns an immutable snapshot. coo_to_csr profiles a fresh
   conversion on inputs satisfying its documented preconditions.
 
+### spspmm — Sparse x Sparse Matmul
+
+Native implementation of `torch_sparse.spspmm`: multiplies two
+COO sparse matrices and returns the coalesced COO product. Ascend 950 (arch35)
+runs SIMT kernels and A2/A3 (arch22) runs classic AscendC kernels; the API,
+semantics and output layout are identical on both.
+
+```python
+def spspmm(
+    index_a: Tensor, value_a: Tensor,
+    index_b: Tensor, value_b: Tensor,
+    m: int, k: int, n: int,
+    coalesced: bool = False,
+) -> tuple[Tensor, Tensor]
+```
+
+`index_a`/`index_b` are int64 `[2, nnz]` coordinates of the `(m, k)` and `(k, n)`
+operands; `value_a`/`value_b` hold one FP32 or FP16 weight per edge and share one
+dtype. The result is `(index_c, value_c)`: int64 `[2, nnzC]` coordinates and the
+matching weights on the same NPU.
+
+The argument names follow the repository's snake_case style; the positional order
+matches `torch_sparse.spspmm`, so positional calls only need the module name
+replaced.
+
+- The output is row-major: row ids ascend, column ids ascend strictly inside
+  every row, and no coordinate repeats; duplicate products are summed.
+- Structural zeros survive: a coordinate whose products cancel is kept with
+  weight zero.
+- The default `coalesced=False` sorts and merges both operands on the device
+  first. With `coalesced=True` the device validates that the rows ascend and the
+  columns ascend strictly, and raises instead of returning a wrong result.
+- `nnzA == 0`, `nnzB == 0` or `n == 0` yields an empty product; edges with
+  `k == 0` or `n == 0` are rejected.
+- The candidate product count is data dependent; inputs needing more than `2^30`
+  candidate slots are rejected explicitly.
+- The result length `nnz(C)` is data dependent, so the host reads a few scalars
+  (the input validation flag, the candidate slot count and `nnz(C)`) back from the
+  device; every read synchronizes the current NPU stream.
+- Forward only: no autograd, and inputs that require grad are rejected rather
+  than silently detached.
+
+```python
+import torch
+import torch_npu
+import ops_gnn
+
+torch.npu.set_device(0)
+index_a = torch.tensor([[0, 0, 1], [0, 1, 0]], device="npu", dtype=torch.int64)
+value_a = torch.tensor([1.0, 2.0, 3.0], device="npu")
+index_b = torch.tensor([[0, 1, 1], [0, 0, 1]], device="npu", dtype=torch.int64)
+value_b = torch.tensor([4.0, 5.0, 6.0], device="npu")
+index_c, value_c = ops_gnn.spspmm(index_a, value_a, index_b, value_b, 2, 2, 2)
+```
+
+---
+
 ### knn / knn_graph — Exact Neighbor Search
 
 This operator performs exact candidate scanning and Top-K selection with
